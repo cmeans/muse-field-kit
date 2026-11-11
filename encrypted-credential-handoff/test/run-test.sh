@@ -6,8 +6,8 @@
 #   1. decrypt direction: blob.txt decrypts to expected.json's values, the
 #      --check output matches expected-check.txt exactly, and the helper's
 #      OWN stdout and stderr never carry a dummy value;
-#   2. the child's stdin passes through consume.py untouched (a stdio
-#      child's stdin is its transport; the blob must not consume it), and
+#   2. the command's stdin passes through consume.py untouched (a stdio
+#      server's stdin is its transport; the blob must not consume it), and
 #      the helper execs the command, so a TERM sent to the helper reaches
 #      the command and leaves no credentialed process behind;
 #   3. encrypt direction: a fresh blob produced by ../handoff.sh (with the
@@ -105,7 +105,7 @@ diff "$S/out" expected-check.txt || fail "--check output differs from expected-c
 no_dummy_in "$S/out"
 echo "ok"
 
-# The child writes what it received to a file, and prints nothing, so
+# The command writes what it received to a file, and prints nothing, so
 # anything on stdout or stderr came from the helper itself.
 echo "== 1b. reference decrypt, injected environment, nothing from the helper =="
 consume --label example --blob-file blob.txt -- python3 -c '
@@ -140,14 +140,14 @@ print(os.environ["SERVICE_USERNAME"], os.environ.get("CUSTOM_PASS"), os.environ.
 [ "$out" = "only-user None inherited" ] || fail "an inherited mapped variable reached the command: $out"
 echo "ok"
 
-echo "== 2a. child stdin passes through untouched =="
+echo "== 2a. the command's stdin passes through untouched =="
 out=$(printf 'hello-stdin' | consume --label example --blob-file blob.txt -- python3 -c '
 import os, sys
 print(os.environ["SERVICE_USERNAME"] == sys.argv[1])
 print(sys.stdin.read())
 ' "$U")
 [ "$out" = "True
-hello-stdin" ] || fail "child stdin was consumed or altered"
+hello-stdin" ] || fail "the command's stdin was consumed or altered"
 echo "ok"
 
 echo "== 2b. the helper execs the command; TERM leaves nothing running =="
@@ -217,6 +217,24 @@ got=$(env -u HANDOFF_PRIVKEY HOME="$S/home" HANDOFF_KEY_DIR="$S/no-such-dir" bas
 if [ "$got" != "$want" ] || ! grep -qxF "key file: $S/home/.config/handoff/handoff-priv.pem" "$S/err"; then
   fail "--fingerprint's default is not consume.py's default ($got; $(cat "$S/err"))"
 fi
+# ...and consume.py really decrypts with that default, unset or empty.
+for privkey in unset empty; do
+  if [ "$privkey" = unset ]; then
+    env -u HANDOFF_PRIVKEY HOME="$S/home" python3 ../consume.py --label example --check --blob-file blob.txt >"$S/out"
+  else
+    HANDOFF_PRIVKEY='' HOME="$S/home" python3 ../consume.py --label example --check --blob-file blob.txt >"$S/out"
+  fi
+  diff -q "$S/out" expected-check.txt >/dev/null || fail "consume.py's default key (HANDOFF_PRIVKEY $privkey) is not ~/.config/handoff/handoff-priv.pem"
+done
+got=$(HANDOFF_PRIVKEY='' HOME="$S/home" bash ../agent-setup.sh --fingerprint 2>/dev/null)
+[ "$got" = "$want" ] || fail "agent-setup.sh with an empty HANDOFF_PRIVKEY gave $got"
+# A literal ~ (as an MCP client's JSON env passes it) is expanded by both.
+# shellcheck disable=SC2088
+HANDOFF_PRIVKEY='~/.config/handoff/handoff-priv.pem' HOME="$S/home" python3 ../consume.py --label example --check --blob-file blob.txt >"$S/out" \
+  || fail "consume.py did not expand a literal ~ in HANDOFF_PRIVKEY"
+# shellcheck disable=SC2088
+got=$(HANDOFF_PRIVKEY='~/.config/handoff/handoff-priv.pem' HOME="$S/home" bash ../agent-setup.sh --fingerprint 2>/dev/null)
+[ "$got" = "$want" ] || fail "agent-setup.sh did not expand a literal ~ in HANDOFF_PRIVKEY"
 echo "ok"
 
 echo "== 4b. a freshly generated key: setup output, --fingerprint and handoff.sh agree =="
@@ -231,6 +249,13 @@ from_key=$(HANDOFF_PRIVKEY="$S/agent/handoff-priv.pem" bash ../agent-setup.sh --
 [ -n "$printed" ] && [ "$printed" = "$from_handoff" ] && [ "$from_key" = "$from_handoff" ] \
   || fail "fingerprints disagree: setup $printed, handoff.sh $from_handoff, --fingerprint $from_key"
 [ "$from_handoff" != "$want" ] || fail "the new key has the dummy key's fingerprint"
+# A relative HANDOFF_KEY_DIR is reported as an absolute path.
+mkdir -p "$S/cwd"
+here=$PWD
+(cd "$S/cwd" && HANDOFF_KEY_DIR=rel bash "$here/../agent-setup.sh" >"$S/setup-out" 2>/dev/null) \
+  || fail "agent-setup.sh with a relative HANDOFF_KEY_DIR failed"
+grep -qxF "this key lives at: $S/cwd/rel/handoff-priv.pem" "$S/setup-out" \
+  || fail "agent-setup.sh printed a relative key path: $(grep 'lives at' "$S/setup-out")"
 echo "ok"
 
 echo "== 5. refusals =="
@@ -251,6 +276,12 @@ expect_refusal "no command and no --check" 1 "no command given" \
   consume --label example --blob-file blob.txt
 expect_refusal "no --label" 1 "--label is required" \
   consume --check --blob-file blob.txt
+printf '\377\376' > "$S/not-text.txt"
+expect_refusal "blob file not text" 1 "as text" \
+  consume --label example --check --blob-file "$S/not-text.txt"
+mkdir -p "$S/py-only"; ln -sf "$(command -v python3)" "$S/py-only/python3"
+expect_refusal "openssl not installed" 1 "openssl not found" \
+  env PATH="$S/py-only" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "input not base64" 1 "not valid base64" \
   consume --label example --check --blob '!!not base64!!'
 expect_refusal "damaged blob" 1 "decryption failed" \
@@ -272,6 +303,12 @@ for name in GIT_SSH_COMMAND JDK_JAVA_OPTIONS _JAVA_OPTIONS DYLD_INSERT_LIBRARIES
   expect_refusal "--env $name" 1 "would change how the command starts" \
     consume --label example --blob-file blob.txt --env "password=$name" -- true
 done
+expect_refusal "--env unknown field (a typo)" 1 "not a known credential field" \
+  consume --label example --blob-file blob.txt --env pasword=APP_PASS -- true
+expect_refusal "--env wrong-case field" 1 "not a known credential field" \
+  consume --label example --blob-file blob.txt --env Password=APP_PASS -- true
+expect_refusal "--env one field twice" 1 "maps 'password' twice" \
+  consume --label example --blob-file blob.txt --env password=A_P --env password=B_P -- true
 expect_refusal "--env not a variable name" 1 "not a valid variable name" \
   consume --label example --blob-file blob.txt --env 'password=A B' -- true
 expect_refusal "--env two fields, one target" 1 "same environment variable" \
