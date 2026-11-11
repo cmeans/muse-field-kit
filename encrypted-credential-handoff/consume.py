@@ -3,7 +3,10 @@
 exec python3 -I "$0" "$@" || exit 127
 (Lines 1-3 are for sh: run as ./consume.py or sh consume.py, this file
 re-runs itself as python3 -I, with no env -S, which BusyBox and older
-coreutils lack. To Python they are the start of this docstring.)
+coreutils lack. To Python they are the start of this docstring. Keep line
+2 exactly as it is: a formatter that puts a space after its opening quotes
+makes sh print an error on every run. run-test.sh checks the launcher is
+silent.)
 
 Consume-side template for the encrypted credential handoff.
 
@@ -46,9 +49,10 @@ and $HANDOFF_PRIVKEY. Other variables pass through as inherited, including
 a credential an outer wrapper mapped under a name this call doesn't use:
 don't nest wrappers, or start the inner one with a clean environment.
 
-A blob file must be a regular file. A pipe, a FIFO, a tty, /dev/stdin and
-a process substitution (--blob-file <(fetch)) are refused: give the blob
-with --blob "$(fetch)" or $HANDOFF_BLOB instead.
+A blob file must be a regular file. A pipe, a FIFO, a tty or a device
+(so /dev/stdin on a pipe) and a process substitution (--blob-file
+<(fetch)) are refused: give the blob with --blob "$(fetch)" or
+$HANDOFF_BLOB instead.
 
 Exactly one blob source (--blob, --blob-file or $HANDOFF_BLOB), and
 --label, --blob, --blob-file and --check at most once each: a wrapper's
@@ -371,8 +375,9 @@ def parse_args(argv):
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 os.close(fd)
                 raise fail(
-                    f"blob file at {blob_file} is not a regular file; "
-                    "use --blob or $HANDOFF_BLOB for a pipe"
+                    f"blob file at {blob_file} is not a regular file (a "
+                    "directory, pipe, FIFO or device); give the blob with "
+                    "--blob or $HANDOFF_BLOB"
                 )
             # utf-8-sig: some editors save a byte-order mark first.
             with os.fdopen(fd, "r", encoding="utf-8-sig") as fh:

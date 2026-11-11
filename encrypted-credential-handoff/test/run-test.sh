@@ -326,7 +326,6 @@ expect_refusal "--env PYTHONSTARTUP" 1 "is on the refused list" \
   consume --label example --blob-file blob.txt --env password=PYTHONSTARTUP -- true
 expect_refusal "--env BASH_ENV" 1 "is on the refused list" \
   consume --label example --blob-file blob.txt --env password=BASH_ENV -- true
-# https_proxy in lower case: the names are compared case-insensitively.
 # Every refused name, in upper and lower case, and every refused prefix.
 # The list is written out here, not read from consume.py, so dropping an
 # entry there fails the test.
@@ -468,9 +467,12 @@ mkdir -p "$S/pp"
 printf 'open(%s, "w").close()\n' "'$S/pp/HIT'" > "$S/pp/sitecustomize.py"
 # Through sh, which is what a #!/bin/sh launch does, so the test doesn't
 # need the execute bit.
-PYTHONPATH="$S/pp" sh ../consume.py --label example --check --blob-file blob.txt >/dev/null \
+PYTHONPATH="$S/pp" sh ../consume.py --label example --check --blob-file blob.txt >/dev/null 2>"$S/launch-err" \
   || fail "consume.py's sh launcher failed to run"
 [ ! -e "$S/pp/HIT" ] || fail "consume.py's launcher ran the caller's sitecustomize (not isolated)"
+# ...and silent: a reformatted line 2 (""" ":) makes sh print an error on
+# every run while still working.
+[ ! -s "$S/launch-err" ] || fail "consume.py's launcher wrote to stderr: $(cat "$S/launch-err")"
 # The OpenSSL 4 wrapper passes agent-setup.sh's and handoff.sh's gates too.
 [ "$(PATH="$S/ssl4:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "agent-setup.sh refused OpenSSL 4"
