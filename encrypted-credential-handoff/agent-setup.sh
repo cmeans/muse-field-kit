@@ -51,6 +51,7 @@ case "${1-}" in
       echo "agent-setup.sh: --fingerprint was given an empty KEY" >&2; exit 2
     fi
     key="${2:-${HANDOFF_PRIVKEY:-$HOME/.config/handoff/handoff-priv.pem}}"
+    key="${key/#\~/$HOME}"   # as consume.py does: a JSON env passes ~ literally
     [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     fp=$(fingerprint_of "$key") || { echo "could not read key at $key" >&2; exit 1; }
     echo "key file: $key" >&2
@@ -83,6 +84,10 @@ else
   mkdir -p "$KEY_DIR"
   chmod 700 "$KEY_DIR"
 fi
+# An absolute path from here on: the path printed below is what wrappers
+# set HANDOFF_PRIVKEY to, from whatever directory they run in.
+KEY_DIR=$(cd "$KEY_DIR" && pwd)
+PRIV="$KEY_DIR/handoff-priv.pem"
 
 # No stderr suppression: if key generation fails, the human needs the cause.
 # Remove any partial file a failed run leaves behind.

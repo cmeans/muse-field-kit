@@ -4,7 +4,7 @@
 Fetches nothing itself: the caller (a per-service wrapper) fetches the
 base64 blob from wherever ciphertexts are stored and supplies it by
 argument, file, or environment variable — never on stdin, which belongs
-to the child process (a stdio MCP server's stdin is its transport).
+to the command (a stdio MCP server's stdin is its transport).
 This helper decrypts IN MEMORY with the private key (default
 ~/.config/handoff/handoff-priv.pem, override with $HANDOFF_PRIVKEY),
 verifies the payload's purpose binding, and either:
@@ -33,6 +33,7 @@ the command it was set up with (SETUP.md, hard rules).
 
 Per-service variable names differ; map them per invocation instead of
 editing this file:  --env username=APP_USER --env password=APP_PASS
+Only the fields above can be mapped, each at most once.
 A target must be a plain variable name, never one that changes how the
 command starts (PATH, LD_*, PYTHON*, GIT_*, BASH_ENV, ...; a partial list),
 and two fields can't share one target, the default mappings included.
@@ -45,8 +46,8 @@ fields is noted by COUNT only; a payload with no known credential field
 at all is refused, so a typo'd payload can't silently launch a tool with
 no credentials.
 
-The injected values live in the child's environment for the life of the
-child process and are inherited by its children — and the target command
+The injected values live in the command's environment for the life of
+the command and are inherited by its children — and the target command
 must not log its own environment or resolved config, and must never be
 handed a credential on its command line (argv is world-readable).
 
@@ -63,8 +64,10 @@ import stat
 import subprocess
 import sys
 
-PRIVKEY = os.environ.get(
-    "HANDOFF_PRIVKEY", os.path.expanduser("~/.config/handoff/handoff-priv.pem")
+# Unset or empty means the default, as in agent-setup.sh --fingerprint. A
+# leading ~ is expanded, since an MCP client's JSON env passes it literally.
+PRIVKEY = os.path.expanduser(
+    os.environ.get("HANDOFF_PRIVKEY") or "~/.config/handoff/handoff-priv.pem"
 )
 BLOB_ENV = "HANDOFF_BLOB"
 
@@ -117,17 +120,20 @@ def decrypt(blob_b64: str) -> dict:
         cipher = base64.b64decode(compact, validate=True)
     except Exception:
         raise fail("input is not valid base64")
-    proc = subprocess.run(
-        [
-            "openssl", "pkeyutl", "-decrypt",
-            "-inkey", PRIVKEY,
-            "-pkeyopt", "rsa_padding_mode:oaep",
-            "-pkeyopt", "rsa_oaep_md:sha256",
-            "-pkeyopt", "rsa_mgf1_md:sha256",
-        ],
-        input=cipher,
-        capture_output=True,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                "openssl", "pkeyutl", "-decrypt",
+                "-inkey", PRIVKEY,
+                "-pkeyopt", "rsa_padding_mode:oaep",
+                "-pkeyopt", "rsa_oaep_md:sha256",
+                "-pkeyopt", "rsa_mgf1_md:sha256",
+            ],
+            input=cipher,
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        raise fail("openssl not found") from None
     if proc.returncode != 0:
         # openssl's stderr names algorithms and key problems, never secrets.
         detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
@@ -191,6 +197,7 @@ def parse_args(argv):
     blob = None
     blob_file = None
     env_map = dict(DEFAULT_ENV_MAP)
+    remapped = set()
     cmd = []
     i = 0
     while i < len(argv):
@@ -215,6 +222,15 @@ def parse_args(argv):
                 field, name = v.split("=", 1)
                 if not field or not name:
                     raise fail("--env takes field=NAME")
+                # Only the known credential fields can be remapped: a typo
+                # (pasword=APP_PASS) would otherwise add a field no payload
+                # has, and the command would start without APP_PASS. New
+                # fields are a payload-schema change (SETUP.md).
+                if field not in DEFAULT_ENV_MAP:
+                    raise fail(f"--env field {field!r} is not a known credential field")
+                if field in remapped:
+                    raise fail(f"--env maps {field!r} twice")
+                remapped.add(field)
                 check_env_name(name)
                 env_map[field] = name
         elif a == "--check":
@@ -237,8 +253,8 @@ def parse_args(argv):
         try:
             with open(blob_file, "r", encoding="utf-8") as fh:
                 blob = fh.read()
-        except OSError:
-            raise fail(f"cannot read blob file at {blob_file}")
+        except (OSError, UnicodeError):
+            raise fail(f"cannot read blob file at {blob_file} as text") from None
     if blob is None:
         blob = os.environ.get(BLOB_ENV)
     if blob is None:
@@ -256,7 +272,7 @@ def main() -> int:
             print(f"{name}: {len(creds[name].encode('utf-8'))} bytes")
         return 0
     env = dict(os.environ)
-    env.pop(BLOB_ENV, None)  # the child needs the credentials, not the blob
+    env.pop(BLOB_ENV, None)  # the command needs the credentials, not the blob
     # Every mapped variable comes from this payload or not at all: a value
     # already in the caller's environment for a field the payload leaves out
     # would otherwise reach the command beside the payload's values (a
