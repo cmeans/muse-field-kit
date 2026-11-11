@@ -1,0 +1,8 @@
+# LF everywhere it matters: a CRLF checkout breaks consume.py's sh launcher
+# (#!/bin/sh\r) and puts \r on the last argument, and the test vectors are
+# compared byte for byte.
+*.sh   text eol=lf
+*.py   text eol=lf
+*.json text eol=lf
+*.txt  text eol=lf
+*.pem  text eol=lf

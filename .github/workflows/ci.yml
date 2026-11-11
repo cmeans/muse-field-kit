@@ -43,6 +43,15 @@ jobs:
             echo "not executable in git: $bad"
             exit 1
           fi
+      - name: No CR line endings in the scripts and vectors
+        # .gitattributes keeps them LF on checkout; this catches a commit
+        # that slipped a CR in anyway.
+        run: |
+          bad=$(git ls-files -z -- '*.sh' '*.py' '*.json' '*.txt' '*.pem' | xargs -0 grep -l $'\r' || true)
+          if [ -n "$bad" ]; then
+            echo "CR line endings in: $bad"
+            exit 1
+          fi
       - name: shellcheck
         run: shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*.sh
       - name: ruff

@@ -75,7 +75,15 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          PR_LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name]')
+          read -r NOW PR_LABELS < <(gh pr view "$PR" --repo "$REPO" --json headRefOid,labels \
+            --jq '[.headRefOid, ([.labels[].name] | tojson)] | @tsv') || true
+          [ -n "${NOW:-}" ] || { echo "could not read the PR"; exit 1; }
+          if [ "$NOW" != "$HEAD_SHA" ]; then
+            # A push landed after the unlabel: its own on-push run sets
+            # Awaiting CI, and this event's head's CI result is stale.
+            echo "PR moved to $NOW — not promoting for $HEAD_SHA"
+            exit 0
+          fi
           if echo "$PR_LABELS" | grep -q '"Dev Active"'; then
             echo "Dev Active is back — nothing to do"
             exit 0
