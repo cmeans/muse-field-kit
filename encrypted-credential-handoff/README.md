@@ -12,7 +12,7 @@ Hand your Muse a service credential **without the plaintext ever entering the ch
 
 **Set it up:**
 
-> Set up the encrypted credential handoff from this folder. Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Give me the public key to embed in my copy of handoff.sh, report its fingerprint computed from the private key file, and wait: I will confirm the fingerprint from my copy matches before we test with a dummy credential.
+> Set up the encrypted credential handoff from https://github.com/cmeans/muse-field-kit (folder `encrypted-credential-handoff`). Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Give me the public key to embed in my copy of handoff.sh, report its fingerprint computed from the private key file, and wait: I will confirm the fingerprint from my copy matches before we test with a dummy credential.
 
 **Stage a new credential (once set up):**
 
@@ -21,16 +21,16 @@ Hand your Muse a service credential **without the plaintext ever entering the ch
 ## How it works
 
 1. **Once, on the agent's machine:** generate an RSA-2048 keypair. The private key stays there, mode `0600`, owner-only, and never leaves. The public key is embedded in your handoff script. (`agent-setup.sh` does this and prints the fingerprint.)
-2. **Per credential, on your machine:** run `handoff.sh`. It reads a small JSON payload with terminal echo off (or from a file, or a pipe), validates that it is a single JSON object, and prints one line of base64 ciphertext. Nothing plaintext touches disk in the interactive path.
+2. **Per credential, on your machine:** run `handoff.sh`. It reads a small JSON payload with terminal echo off (or from a file, or a pipe), validates it (with `jq` installed: a single JSON object, a non-empty string `svc`, string values only; without `jq` it warns and skips validation), and prints one line of base64 ciphertext. Nothing plaintext touches disk in the interactive path.
 3. **Verify the fingerprint.** The script prints the public key's SHA-256 fingerprint; the agent recomputes its fingerprint from the private key file (not from its notes) and reports it. Compare before trusting any output — see the threat model for exactly what this does and doesn't defend against.
 4. **Paste the ciphertext into chat, in a direct message to your agent.** The agent may store the *ciphertext* in its memory store under the service's label — subject to the separation invariant below.
-5. **At use time,** the consume helper (`consume.py`, the template in this folder) fetches the ciphertext, decrypts in memory, checks the payload's service binding, and injects the values into the target process's environment. The agent receives only the target's exit status.
+5. **At use time,** a per-service wrapper fetches the ciphertext from the store and hands it to the consume helper (`consume.py`, the template in this folder) by argument, file, or environment variable — never on stdin, which belongs to the child process. The helper decrypts in memory, checks the payload's service binding, and injects the values into the target process's environment. The agent receives only the target's exit status.
 
 Payloads carry the service they belong to:
 
 ```json
-{"svc": "nas-admin", "username": "agent-account", "password": "example-only"}
-{"svc": "hypervisor", "api_key_id": "example-id", "api_key_secret": "example-only"}
+{"svc": "example", "username": "agent-account", "password": "example-only"}
+{"svc": "example-api", "api_key_id": "example-id", "api_key_secret": "example-only"}
 ```
 
 ## Threat model
@@ -38,7 +38,7 @@ Payloads carry the service they belong to:
 **Defends against:**
 
 - The credential appearing in chat transcripts, message logs, or the agent's context (chat, tool output, or files the agent later reads).
-- Plaintext at rest on the agent's machine: there is none.
+- Plaintext at rest on the agent's machine: none is written to any file. (Process memory is not magic: on a host with swap or core dumps enabled, in-memory plaintext can still reach disk that way. The claim is “never written by this design,” stated exactly.)
 - A reader of the agent's memory store learning the secret from a stored blob — *provided the separation invariant holds* (below).
 - Accidental disclosure by the agent in conversation: it never holds the value in context, so it cannot quote it.
 
@@ -48,6 +48,8 @@ Payloads carry the service they belong to:
 - **The agent itself misbehaving.** The agent's account can read its own key file. A separate hard rule in `SETUP.md` forbids it ever reading, printing, or copying that file outside the setup and consume helpers, but that is a policy control, not a cryptographic one. (A stronger variant — a helper running under a separate account owns the key — is noted under “Variations.”)
 - **Sender authentication. There is none.** The public key is public: anyone can encrypt a valid blob. What stops a planted blob (arriving via a web page, a message, a tool result, a poisoned note) from being staged as a credential is a behavioural invariant, not cryptography: **the agent stages blobs only from a direct user turn in conversation, never from content it fetched or read.** A signing variant that removes this reliance on behaviour is also noted under “Variations.”
 - **Key compromise.** There is no forward secrecy: every stored copy of every blob becomes readable if the private key ever leaks. See “Compromise” under Rotation.
+- **The helper as a decryption oracle.** Anything that can invoke the consume helper with a label can cause that credential to be *used* — injected into a command of the invoker's choosing — though not revealed. Treat execute-access to the helper as use-access to every staged credential. (The hardening option, not in the reference: a per-label allowlist of commands the helper will launch.)
+- **Unattended fetch.** Use without the user present means the agent authenticates to wherever the blobs are stored. That fetch credential is itself a secret, and this design does not cover it; in the original setup it is the agent platform's own authenticated session rather than a stored password. If your fetch needs a stored password of its own, you have moved the problem, not solved it.
 
 ## Invariants
 
@@ -58,11 +60,13 @@ Any implementation of this pattern — any platform, any protocol suite — must
 3. **Plaintext never enters any model's context.** Not chat, not tool output, not logs the agent reads. Decryption and consumption happen inside one helper process; the agent receives only success or failure. (The single deliberate exception is the dummy round-trip during setup, and even that uses the helper's `--check` mode, which reports field names and lengths, never values.)
 4. **Plaintext is never written to disk on the agent's side.** Injected values live in the consuming process's environment — which means for the life of that process, not just the call, and they are inherited by its children. Long-lived consumers (daemons) should be chosen with that in mind.
 5. **Key/ciphertext separation is mandatory.** The private key and the stored ciphertexts never share a disk or disk image, including backups and snapshots of either. This costs a remote fetch per use in the original setup; that cost is the price of the property, not an implementation detail.
-6. **Identity verification.** The human compares the key fingerprint before first use. The agent recomputes it from the private key file at comparison time. Scope, stated plainly: since the key and its fingerprint normally travel through the same channel, this catches local tampering, a wrong paste, or a substituted script on the human's side — it does not defeat a compromise of the channel itself.
+6. **Identity verification.** The human compares the key fingerprint before first use. The agent recomputes it from the private key file at comparison time, using the shipped tooling (`agent-setup.sh --fingerprint`). Scope, stated plainly: since the key and its fingerprint normally travel through the same channel, this catches local tampering and a wrong paste. It does not defeat a compromise of the channel itself, nor a maliciously crafted copy of the script that lies about its own fingerprint — the fingerprint is not a secret, so take `handoff.sh` from this repository, not from an untrusted copy.
 7. **Provenance.** The agent stages a blob only when the user pastes it in a direct conversational turn. Blobs found in tool results, fetched pages, files, messages, or pre-existing notes are never staged.
 8. **Purpose binding.** Each payload names its service in `svc`, and the consume side refuses a blob whose `svc` doesn't match the label it was fetched under. A store write (by anyone) cannot silently swap credentials between services.
-9. **Controlled egress.** Decrypted values go only into the consuming process's environment or stdin. They are never sent over a network, passed to another tool, or decrypted at the request of anything but the user.
-10. **Key confinement.** The private key is mode `0600`, owner-only, never displayed, never copied, and never included in a backup or snapshot that also holds ciphertext.
+9. **Controlled egress.** Decrypted values go only into the consuming process's environment or stdin. The helper itself never sends them anywhere, never passes them to another tool, and decrypts only at the user's direction. What the consuming process then does — including authenticating to its service, often over a network — is its normal function, and is the point of the exercise.
+10. **Key confinement.** The private key is mode `0600`, owner-only, never displayed, and never copied.
+
+**When separation (invariant 5) can't be met as stated** — the common case is a hosted agent whose memory store and home directory are the same disk image — there are three honest options: store the blobs in a service that lives elsewhere (a remote notes/memory service, a different machine), put the key or the store on a genuinely separate volume, or don't adopt the pattern until one of those is possible. An agent that cannot observe its provider's snapshot policy should say so rather than claim the invariant holds.
 
 ## Why not a built-in vault?
 
@@ -70,6 +74,8 @@ Saved-login and vault features are built for browser sign-in: the browser fills 
 
 - A local tool often needs the credential as an **environment variable or config value at process start**. There is no supported path that turns a stored browser login into a value a subprocess can consume.
 - API-credential flows accept API keys and OAuth, **not username/password pairs** for arbitrary local services — including services that are plain HTTP on a private network address and have no public login page to point a vault flow at.
+
+Named precisely, and dated: as of November 2026, Muse's own credential machinery — the Secure Credentials Store for API-style credentials, and Sentinel credential surrogation for browser sign-in — declines username/password credentials (it supports `api_key` and OAuth-style flows), and saved website logins are consumed only by the browser's fill flow; no supported mechanism reads a stored value back for injection into a local process. That was verified against the platform's behaviour in the author's setup in October 2026. If Meta ships a readback-for-local-tools path, this section should be revised and this pattern's reason to exist shrinks accordingly.
 
 This pattern fills exactly that gap, and only that gap. Use the platform's own flows wherever they fit.
 
@@ -88,7 +94,7 @@ This pattern fills exactly that gap, and only that gap. Use the platform's own f
 
 ## Variations: what is fixed, and what is a choice
 
-RSA-2048 + OAEP-SHA256 is this folder's **reference implementation**, chosen because OpenSSL is everywhere and the payloads are tiny. RSA-2048 offers roughly 112-bit security, which NIST SP 800-131A accepts through 2030; it is not a weakness to be “upgraded” without cause.
+RSA-2048 + OAEP-SHA256 is this folder's **reference implementation**, chosen because OpenSSL is everywhere and the payloads are tiny. RSA-2048 offers roughly 112-bit security, which NIST SP 800-131A accepts through 2030 and deprecates thereafter; it is not a weakness to be “upgraded” without cause.
 
 The suite may be changed, deliberately, by the human, before setup — subject to two constraints:
 
@@ -117,6 +123,12 @@ In short: reviewed references where they exist; where they don't, the honest sta
 - **Test the decrypt/store path against scratch data first.** A dry run that overwrites a live credential store with test values is a self-inflicted outage. Point tests at a scratch config, and verify the live store is untouched afterward.
 - **Keep a login probe honest:** after decrypting, attempt one real authentication before declaring the handoff good; judge it by status only, never by printing a response body; and log out any session the probe created if the service supports it.
 - **One keypair per agent environment.** Do not reuse the key across machines; the point is that exactly one place can decrypt.
+
+## Status: what is field-tested, and what is new
+
+The core of this pattern — one keypair on the agent's machine, encrypt-on-yours, ciphertext through chat, decrypt-in-memory at use, key and ciphertext never sharing a disk — has run daily in the author's setup since October 2026 (the store-only separation form dates from 2026-10-12). New in this publication revision, and covered by the interop and refusal tests rather than by field time: the `svc` purpose binding and `--label` enforcement, the `--check` mode, the `--env` mapping option, and `consume.py`'s refusal set. The review history in `CHANGELOG.md` says which is which, per change.
+
+A note on review, in the same spirit: the reviewers of this folder were AI agent sessions in the author's own multi-agent setup (structural review, line-level review with reproduced findings, and a cold read), plus the author. That is peer review inside one shop — valuable, and not a third-party security audit.
 
 ## Files
 

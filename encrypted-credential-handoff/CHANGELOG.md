@@ -1,8 +1,26 @@
 # Changelog — encrypted-credential-handoff
 
+## Unreleased — round-2 (cold-read) revision (2026-11-11)
+
+Produced by a cold read of PR #1 by a reviewer seeing the folder for the first time (an AI agent session outside the author's setup; see the README's review note). Findings were graded blockers / substantive / observations; the blockers and substantives are addressed here.
+
+- **B1 — `consume.py` no longer consumes stdin.** It previously read the blob from stdin and then launched the child with that exhausted stdin, which would hand a stdio child (e.g. an MCP server) an immediate EOF on its transport. The blob now arrives by `--blob`, `--blob-file`, or `$HANDOFF_BLOB`; stdin passes to the child untouched, and `test/run-test.sh` has a regression test whose child reads stdin.
+- **B2 (script half) — `test/run-test.sh` trap fixed.** Both temp paths are created before the EXIT trap is set; previously an early failure expanded an unassigned variable under `set -u`, aborted the trap, and left the temp key copy behind. (The other half of B2 — file modes in the pushed snapshot — is a publication-mechanics fix, applied to the branch separately.)
+- **S1 — `agent-setup.sh --fingerprint`** added: recompute an existing key's fingerprint through the shipped tooling, as invariant 6 and SETUP's comparison step require.
+- **S2 — `consume.py` never echoes payload content.** The purpose-mismatch error printed the decrypted `svc` value and unknown-field warnings printed raw field names; with unauthenticated payloads, that was a prompt-injection channel into the agent's tool output. Mismatch now names only the caller's label; unknown fields are counted, not named. Non-string-field errors no longer name the field either.
+- **S3 — Threat model** now lists the helper-as-decryption-oracle route (execute-access = use-access) and the per-label command-allowlist hardening option.
+- **S4 — Four over-claims corrected:** invariant 6's substituted-script wording (a crafted script can lie about its fingerprint), “no plaintext at rest” (swap/core-dump caveat, claim restated exactly), invariant 9's “never sent over a network” (the helper never sends; the consumer's authentication is its normal function), and review provenance (the reviewers are AI agent sessions in the author's setup, not a third-party audit — now stated in the README).
+- **S5 — `--env field=NAME`** (repeatable) added to `consume.py`; per-service variable names are configuration, not edits to the script. SETUP's wiring step says so.
+- **S6 — argv rule:** SETUP gains a hard rule against credentials on command lines, with the reasoning, and step 6 shows a conforming probe's shape.
+- **S7 — `--check` is dummy-only, in both documents.** The docstring no longer advertises it for staged-blob verification; SETUP states the reason (lengths are context-visible).
+- **S8 — Separation honesty:** the README now gives the three options when key and store can't be separated, and the threat model covers the unattended-fetch credential explicitly.
+- **S9 — Vault section names the mechanisms** (Secure Credentials Store; Sentinel credential surrogation), states the precise gap (username/password declined; no readback path for local processes), and dates the verification (October 2026), with a commitment to revise if the platform ships such a path.
+- **S10 — Field-tested vs new:** the README's new Status section separates the daily-use core (October 2026) from the publication-revision additions (`svc` binding, `--check`, `--env`, the refusal set).
+- Observations: `handoff.sh` now requires OpenSSL 3 (fails closed on LibreSSL) and validates `svc`/string values at encrypt time (with `jq`); base64 input tolerates wrapped pastes; `--check` with a command is an error rather than silently ignored; the private-key check also verifies ownership; `.gitignore`'s `*priv*` narrowed to `*priv` (it also matched e.g. `docs/privacy.md`); a repo-root `SECURITY.md` added (GitHub surfaces policies from root/`docs`/`.github`, not subfolders); the setup prompt names the repo URL; invariant 10 no longer restates invariant 5; refusal paths are now pinned by tests.
+
 ## Unreleased — pre-publication revision (2026-11-11)
 
-Produced by a two-round independent review (structural review of the documents, then a line-level review of the scripts, with findings reproduced on a separate machine) before this folder's first public commit.
+Produced by a two-round review (structural review of the documents, then a line-level review of the scripts, with findings reproduced on a separate machine) before this folder's first public commit. Reviewers were AI agent sessions in the author's multi-agent setup; see the round-2 entry and the README's review note.
 
 - **Renamed** from “blind-RSA credential handoff” to **encrypted credential handoff**: “blind RSA” already names a different, standardized technique (blind signatures), and the old name mis-signalled the mechanism.
 - **Threat model added** to the README, including what the pattern does not defend against: host trust, the agent-account caveat, the absence of sender authentication, and no forward secrecy under key compromise.

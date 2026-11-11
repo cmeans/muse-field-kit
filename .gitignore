@@ -1,7 +1,7 @@
 # Never commit real keys or staged credentials, in any folder.
 *.pem
 *.key
-*priv*
+*priv
 secrets.*
 blob.txt
 __pycache__/

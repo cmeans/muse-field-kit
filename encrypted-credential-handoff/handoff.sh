@@ -26,6 +26,14 @@ set -euo pipefail
 
 command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 
+# Fail closed on the wrong crypto tool: LibreSSL's pkeyutl OAEP behaviour
+# differs and is unverified for this protocol.
+ssl_version=$(openssl version)
+case "$ssl_version" in
+  "OpenSSL 3."*|"OpenSSL 4."*) ;;
+  *) echo "requires OpenSSL 3+; found: $ssl_version" >&2; exit 1 ;;
+esac
+
 # The agent's long-lived handoff public key (encryption only — safe to share).
 # NOTE: `read -d ''` exits non-zero at EOF by design; `|| true` keeps
 # `set -e` from killing the script here.
@@ -98,11 +106,16 @@ fi
 
 # --- validate ---------------------------------------------------------
 if command -v jq >/dev/null; then
-  # Exactly one JSON value, and it must be an object: `jq -e .` alone also
-  # accepts arrays, bare strings, and several concatenated values, all of
-  # which would fail confusingly on the decrypt side.
-  printf '%s' "$SECRET_JSON" | jq -e -s 'length==1 and (.[0]|type)=="object"' >/dev/null 2>&1 \
-    || { echo "input must be a single JSON object, aborting" >&2; exit 1; }
+  # Exactly one JSON value, an object, carrying a non-empty string "svc"
+  # and only string values: `jq -e .` alone also accepts arrays, bare
+  # strings, and several concatenated values, and a payload that fails the
+  # consume side's binding or shape checks should fail here, early, where
+  # the human can see why.
+  printf '%s' "$SECRET_JSON" | jq -e -s \
+    'length==1 and (.[0]|type)=="object"
+     and (.[0].svc|type)=="string" and (.[0].svc|length)>0
+     and (.[0]|all(.[]; type=="string"))' >/dev/null 2>&1 \
+    || { echo "input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2; exit 1; }
 else
   echo "warning: jq not found — skipping JSON validation" >&2
 fi

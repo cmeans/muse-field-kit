@@ -15,6 +15,23 @@ PRIV="$KEY_DIR/handoff-priv.pem"
 
 command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 
+fingerprint_of() {
+  openssl pkey -in "$PRIV" -pubout 2>/dev/null \
+    | openssl pkey -pubin -outform DER \
+    | openssl dgst -sha256 -binary | openssl base64
+}
+
+# Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
+# The setup and SETUP.md rules require the fingerprint to come from the
+# key file itself, never from notes, and forbid the agent reading the key
+# with general-purpose tools: this mode is the sanctioned path.
+if [ "${1-}" = "--fingerprint" ]; then
+  [ -r "$PRIV" ] || { echo "no key at $PRIV" >&2; exit 1; }
+  fp=$(fingerprint_of) || { echo "could not read key at $PRIV" >&2; exit 1; }
+  echo "SHA256:$fp"
+  exit 0
+fi
+
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
   echo "for rotation, set HANDOFF_KEY_DIR to a fresh directory instead" >&2
@@ -23,17 +40,18 @@ fi
 
 # Only chmod a directory this script created: if the user pointed
 # HANDOFF_KEY_DIR at an existing directory by mistake, silently tightening
-# its permissions would be a nasty surprise.
+# its permissions would be a nasty surprise. Say so when that happens.
 if [ -d "$KEY_DIR" ]; then
-  :
+  echo "note: key directory $KEY_DIR already exists; its permissions were left unchanged (expected 0700)" >&2
 else
   mkdir -p "$KEY_DIR"
   chmod 700 "$KEY_DIR"
 fi
 
 # No stderr suppression: if key generation fails, the human needs the cause.
+# Remove any partial file a failed run leaves behind.
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$PRIV" \
-  || { echo "key generation failed" >&2; exit 1; }
+  || { rm -f "$PRIV"; echo "key generation failed" >&2; exit 1; }
 chmod 600 "$PRIV"
 
 PUB=$(openssl pkey -in "$PRIV" -pubout) \

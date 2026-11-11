@@ -2,7 +2,7 @@
 
 Field-tested patterns, guides, and small tools for extending [Muse](https://ai.meta.com/muse), Meta's personal AI agent. The patterns here are in daily use in one person's setup. The scripts are their generalized, publication form — written to be adopted, not copied from a live machine — and nothing here is a demo built for this repo.
 
-I'm a developer. I develop MCP servers and related tooling, and I run Muse as a design partner, a builder, and one of a group of AI agents that test and cross-check each other's work. This repo collects the transferable pieces of that setup: the patterns, not the configs. No credentials, addresses, hostnames, or inventories are included, and the examples use placeholders throughout.
+I'm a developer. I develop MCP servers and related tooling, and I run Muse as a design partner, a builder, and one of a group of AI agents that test and cross-check each other's work. This repo collects the transferable pieces of that setup: the patterns, not the configs. No credentials, addresses, hostnames, or inventories are included, and the examples use placeholders throughout. Each folder also states plainly which of its parts are field-tested and which are new from the publication process itself — “generalized from daily use” should never quietly mean “rewritten last week.”
 
 **Platform:** my setup is Linux throughout, and everything here is developed and tested on Linux first. The *patterns* are platform-independent; the *scripts* are reviewed Linux implementations of them. Each folder states its platform position plainly: where a reviewed reference exists for another platform it is included, and where a port would currently be unreviewed, the folder says so rather than pretending otherwise.
 

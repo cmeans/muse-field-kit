@@ -19,4 +19,6 @@ An implementation is interoperable with the reference when:
 1. It decrypts `blob.txt` with `test-dummy-priv.pem` to exactly `expected.json` (the `svc` binding check against the label `example` must pass).
 2. It encrypts `expected.json` to `test-dummy-pub.pem`, and the reference `consume.py` decrypts the result to the same values (run it with `HANDOFF_PRIVKEY` pointing at a `0600` copy of the dummy key — the reference helper refuses group/other-readable key files, including this published one at its repo permissions).
 
+`run-test.sh` also covers the reference helper's child-stdin pass-through and its documented refusals (purpose mismatch, a payload with no known credential field — `unknown.json` / `blob-unknown.txt` — and `--check` combined with a command).
+
 Passing both directions is the minimum bar before a port touches a real credential (see `../SETUP.md`).
