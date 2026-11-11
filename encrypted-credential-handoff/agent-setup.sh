@@ -22,28 +22,37 @@
 set -euo pipefail
 umask 077
 
-[ -n "${HOME-}" ] || { echo "agent-setup.sh: HOME is not set" >&2; exit 1; }
+# HOME is needed only for the default paths and for a leading ~: an absolute
+# HANDOFF_KEY_DIR, HANDOFF_PRIVKEY or KEY works without it, as in consume.py.
+need_home() {  # WHAT
+  [ -n "${HOME-}" ] || { echo "agent-setup.sh: HOME is not set, and $1 needs it; set HOME or use an absolute path" >&2; exit 1; }
+}
 
 # The one default, the same as consume.py's.
-DEFAULT_DIR="$HOME/.config/handoff"
-DEFAULT_PRIV="$DEFAULT_DIR/handoff-priv.pem"
+default_dir() { need_home "the default key directory"; printf '%s\n' "$HOME/.config/handoff"; }
 
 # Expand a leading ~/ (an MCP client's JSON env passes it literally) and
 # refuse ~user, exactly as consume.py does, so the two never disagree.
 expand_home() {  # PATH WHAT
   # shellcheck disable=SC2088  # matching a literal ~ is the point
   case "$1" in
-    "~"|"~/"*) printf '%s\n' "$HOME${1#\~}" ;;
+    "~"|"~/"*) need_home "a ~ in $2"; printf '%s\n' "$HOME${1#\~}" ;;
     "~"*) echo "agent-setup.sh: $2 '$1': only ~/ is expanded, not ~user; use an absolute path" >&2
           return 1 ;;
     *) printf '%s\n' "$1" ;;
   esac
 }
 
-KEY_DIR=$(expand_home "${HANDOFF_KEY_DIR:-$DEFAULT_DIR}" HANDOFF_KEY_DIR) || exit 1
-PRIV="$KEY_DIR/handoff-priv.pem"
-
-command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
+# The same gate as handoff.sh and consume.py: LibreSSL is unverified here.
+need_openssl() {
+  command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
+  local v
+  v=$(openssl version)
+  case "$v" in
+    "OpenSSL 3."*|"OpenSSL 4."*) ;;
+    *) echo "requires OpenSSL 3 or 4; found: $v" >&2; exit 1 ;;
+  esac
+}
 
 # openssl's stderr stays visible: when the key can't be read, the cause
 # (permissions, a passphrase, a damaged file) is what the human needs.
@@ -68,8 +77,14 @@ case "${1-}" in
     if [ $# -eq 2 ] && [ -z "$2" ]; then
       echo "agent-setup.sh: --fingerprint was given an empty KEY" >&2; exit 2
     fi
-    what=HANDOFF_PRIVKEY; [ $# -lt 2 ] || what=KEY
-    key=$(expand_home "${2:-${HANDOFF_PRIVKEY:-$DEFAULT_PRIV}}" "$what") || exit 1
+    need_openssl
+    if [ $# -eq 2 ]; then
+      key=$(expand_home "$2" KEY) || exit 1
+    elif [ -n "${HANDOFF_PRIVKEY-}" ]; then
+      key=$(expand_home "$HANDOFF_PRIVKEY" HANDOFF_PRIVKEY) || exit 1
+    else
+      key="$(default_dir)/handoff-priv.pem" || exit 1
+    fi
     [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     fp=$(fingerprint_of "$key") || { echo "could not read key at $key" >&2; exit 1; }
     echo "key file: $key" >&2
@@ -86,6 +101,14 @@ case "${1-}" in
     exit 2
     ;;
 esac
+
+need_openssl
+if [ -n "${HANDOFF_KEY_DIR-}" ]; then
+  KEY_DIR=$(expand_home "$HANDOFF_KEY_DIR" HANDOFF_KEY_DIR) || exit 1
+else
+  KEY_DIR=$(default_dir) || exit 1
+fi
+PRIV="$KEY_DIR/handoff-priv.pem"
 
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
@@ -130,6 +153,6 @@ echo
 echo "consume side: the decrypt helper reads \$HANDOFF_PRIVKEY"
 echo "(default ~/.config/handoff/handoff-priv.pem)."
 echo "this key lives at: $PRIV"
-if [ "$PRIV" != "$DEFAULT_PRIV" ]; then
+if [ "$PRIV" != "${HOME:+$HOME/.config/handoff/handoff-priv.pem}" ]; then
   echo "non-default location: set HANDOFF_PRIVKEY=$PRIV wherever the helper runs"
 fi

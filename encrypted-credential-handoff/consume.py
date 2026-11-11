@@ -1,5 +1,11 @@
-#!/usr/bin/env -S python3 -I
-"""Consume-side template for the encrypted credential handoff.
+#!/bin/sh
+"""":
+exec python3 -I "$0" "$@"
+(Lines 1-3 are for sh: run as ./consume.py, this file re-runs itself as
+`python3 -I`, with no `env -S`, which BusyBox and older coreutils lack.
+To Python they are the start of this docstring.)
+
+Consume-side template for the encrypted credential handoff.
 
 Fetches nothing itself: the caller (a per-service wrapper) fetches the
 base64 blob from wherever ciphertexts are stored and supplies it by
@@ -42,8 +48,9 @@ Exactly one blob source (--blob, --blob-file or $HANDOFF_BLOB), and
 --label, --blob, --blob-file and --check at most once each: a wrapper's
 caller can't relabel it by appending options. An empty credential value
 is refused.
-A target must be a plain variable name, never one that changes how the
-command starts (PATH, LD_*, PYTHON*, GIT_*, BASH_ENV, ...; a partial list),
+A target must be a plain variable name, never one that changes what the
+command runs or where it connects (PATH, LD_*, PYTHON*, GIT_*, BASH_ENV,
+the proxy and CA-bundle variables, ...; a partial list, in any case),
 and two fields can't share one target, the default mappings included.
 Mapped variables come from the payload only: one the payload leaves out is
 removed from the command's environment, not inherited from the caller's.
@@ -64,8 +71,9 @@ Usage:
     consume.py --label example --blob-file blob.txt -- my-tool --serve
     consume.py --label test --check --blob-file blob.txt
 """
-# The shebang runs Python isolated (-I): the caller's PYTHON* variables and
-# user site-packages don't reach the helper itself.
+# Run as ./consume.py, the helper is isolated (python3 -I, see the top of
+# the docstring): the caller's PYTHON* variables and user site-packages don't
+# reach it. A wrapper that calls Python itself should run python3 -I too.
 import base64
 import json
 import os
@@ -256,7 +264,8 @@ def check_env_name(name: str) -> None:
     upper = name.upper()
     if upper in REFUSED_ENV_NAMES or upper.startswith(REFUSED_ENV_PREFIXES):
         raise fail(
-            f"--env target {name!r} would change how the command starts; refusing"
+            f"--env target {name!r} is on the refused list: it changes what the "
+            "command runs or where it connects; refusing"
         )
 
 
@@ -335,9 +344,13 @@ def parse_args(argv):
     if blob_file is not None:
         path = expand_home(blob_file, "--blob-file")
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            # utf-8-sig: some editors save a byte-order mark first.
+            with open(path, "r", encoding="utf-8-sig") as fh:
                 blob = fh.read(MAX_BLOB_FILE + 1)
-        except (OSError, UnicodeError):
+        except OSError as e:
+            # strerror comes from the OS, never from the file's contents.
+            raise fail(f"cannot read blob file at {blob_file}: {e.strerror}") from None
+        except UnicodeError:
             raise fail(f"cannot read blob file at {blob_file} as text") from None
         if len(blob) > MAX_BLOB_FILE:
             raise fail(f"blob file at {blob_file} is over {MAX_BLOB_FILE} characters; not a blob")

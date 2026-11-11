@@ -83,7 +83,7 @@ jobs:
           # Dev Active came off without a push: a verdict or a review in
           # progress stands, and promoting beside it would leave conflicting
           # labels (Ready for QA next to QA Approved, with QA Gate green).
-          for LABEL in "QA Active" "Ready for QA Signoff" "QA Approved"; do
+          for LABEL in "QA Active" "QA Failed" "Ready for QA Signoff" "QA Approved"; do
             if echo "$PR_LABELS" | grep -q "\"$LABEL\""; then
               echo "$LABEL present — not promoting"
               exit 0
