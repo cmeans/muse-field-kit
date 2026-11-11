@@ -26,7 +26,7 @@ set -euo pipefail
 
 command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 
-# Fail closed on the wrong crypto tool: LibreSSL's pkeyutl OAEP behaviour
+# Fail closed on the wrong crypto tool: LibreSSL's pkeyutl OAEP behavior
 # differs and is unverified for this protocol.
 ssl_version=$(openssl version)
 case "$ssl_version" in
