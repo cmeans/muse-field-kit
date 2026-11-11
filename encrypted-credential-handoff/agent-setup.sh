@@ -29,7 +29,14 @@ need_home() {  # WHAT
 }
 
 # The one default, the same as consume.py's.
-default_dir() { need_home "the default key directory"; printf '%s\n' "$HOME/.config/handoff"; }
+# HOME is normalized as KEY_DIR is below (a trailing slash, a symlink), so
+# the default compares equal to itself in the "non-default location" check.
+default_dir() {
+  need_home "the default key directory"
+  local h
+  h=$(cd "$HOME" 2>/dev/null && pwd) || h=$HOME
+  printf '%s\n' "$h/.config/handoff"
+}
 
 # Expand a leading ~/ (an MCP client's JSON env passes it literally) and
 # refuse ~user, exactly as consume.py does, so the two never disagree.
@@ -153,6 +160,6 @@ echo
 echo "consume side: the decrypt helper reads \$HANDOFF_PRIVKEY"
 echo "(default ~/.config/handoff/handoff-priv.pem)."
 echo "this key lives at: $PRIV"
-if [ "$PRIV" != "${HOME:+$HOME/.config/handoff/handoff-priv.pem}" ]; then
+if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-priv.pem" ]; then
   echo "non-default location: set HANDOFF_PRIVKEY=$PRIV wherever the helper runs"
 fi

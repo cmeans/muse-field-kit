@@ -141,7 +141,7 @@ def expand_home(path: str, what: str) -> str:
     if path == "~" or path.startswith("~/"):
         home = os.environ.get("HOME")
         if not home:
-            raise fail(f"{what} starts with ~ but HOME is not set")
+            raise fail(f"HOME is not set, and {what} needs it; set HOME or use an absolute path")
         return home + path[1:]
     if path.startswith("~"):
         raise fail(f"{what} {path!r}: only ~/ is expanded, not ~user; use an absolute path")
@@ -150,7 +150,11 @@ def expand_home(path: str, what: str) -> str:
 
 def privkey_path() -> str:
     # Unset or empty means the default, as in agent-setup.sh --fingerprint.
-    return expand_home(os.environ.get(PRIVKEY_ENV) or DEFAULT_PRIVKEY, PRIVKEY_ENV)
+    # An error names what the path came from, not a variable nobody set.
+    value = os.environ.get(PRIVKEY_ENV)
+    if value:
+        return expand_home(value, PRIVKEY_ENV)
+    return expand_home(DEFAULT_PRIVKEY, "the default key path")
 
 
 def check_openssl() -> None:
@@ -161,6 +165,11 @@ def check_openssl() -> None:
     except FileNotFoundError:
         raise fail("openssl not found") from None
     version = out.stdout.strip()
+    if out.returncode != 0:
+        # openssl's own reason (a broken OPENSSL_CONF, a missing provider):
+        # its stderr names configuration problems, never secrets.
+        detail = out.stderr.strip().splitlines()
+        raise fail("openssl version failed" + (f": {detail[-1]}" if detail else ""))
     if not (version.startswith("OpenSSL 3.") or version.startswith("OpenSSL 4.")):
         raise fail(f"requires OpenSSL 3 or 4; found: {version or 'no version output'}")
 
@@ -346,6 +355,11 @@ def parse_args(argv):
         try:
             # utf-8-sig: some editors save a byte-order mark first.
             with open(path, "r", encoding="utf-8-sig") as fh:
+                # A regular file only: --blob-file /dev/stdin (or a pipe, a
+                # tty) would take the command's stdin. A redirect from a
+                # file (< blob.txt) is a regular file and isn't caught here.
+                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    raise fail(f"blob file at {blob_file} is not a regular file")
                 blob = fh.read(MAX_BLOB_FILE + 1)
         except OSError as e:
             # strerror comes from the OS, never from the file's contents.
