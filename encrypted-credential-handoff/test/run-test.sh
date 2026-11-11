@@ -24,7 +24,7 @@
 # steps 1-2 against these vectors with its own decrypt side, and step 3
 # with its own encrypt side feeding the reference decrypt side.
 #
-# The scripts are run through python3 / bash explicitly, so the test
+# The scripts are run through python3 / bash / sh explicitly, so the test
 # doesn't depend on their execute bits surviving a download.
 set -Eeuo pipefail
 # A failing command substitution (got=$(...)) stops the script under set -e
@@ -439,9 +439,39 @@ expect_refusal "agent-setup.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" 
 # PYTHONPATH doesn't run.
 mkdir -p "$S/pp"
 printf 'open(%s, "w").close()\n' "'$S/pp/HIT'" > "$S/pp/sitecustomize.py"
-PYTHONPATH="$S/pp" ../consume.py --label example --check --blob-file blob.txt >/dev/null \
-  || fail "./consume.py failed to run"
-[ ! -e "$S/pp/HIT" ] || fail "./consume.py ran the caller's sitecustomize (not isolated)"
+# Through sh, which is what a #!/bin/sh launch does, so the test doesn't
+# need the execute bit.
+PYTHONPATH="$S/pp" sh ../consume.py --label example --check --blob-file blob.txt >/dev/null \
+  || fail "consume.py's sh launcher failed to run"
+[ ! -e "$S/pp/HIT" ] || fail "consume.py's launcher ran the caller's sitecustomize (not isolated)"
+# The OpenSSL 4 wrapper passes agent-setup.sh's and handoff.sh's gates too.
+[ "$(PATH="$S/ssl4:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
+  || fail "agent-setup.sh refused OpenSSL 4"
+[ "$(PATH="$S/ssl4:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint)" = "$want" ] \
+  || fail "handoff.sh refused OpenSSL 4"
+expect_refusal "agent-setup.sh generation, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
+  env PATH="$S/fake-ssl:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/libressl-key" bash ../agent-setup.sh
+[ ! -e "$S/libressl-key" ] || fail "agent-setup.sh created a key directory under LibreSSL"
+# shellcheck disable=SC2088
+expect_refusal "agent-setup.sh, ~ without HOME" 1 "a ~ in HANDOFF_KEY_DIR needs it" \
+  env -u HOME HANDOFF_KEY_DIR='~/kd' bash ../agent-setup.sh
+expect_refusal "consume.py default key without HOME" 1 "the default key path needs it" \
+  env -u HOME -u HANDOFF_PRIVKEY python3 ../consume.py --label example --check --blob-file blob.txt
+# A key at the default location isn't reported as non-default, even with a
+# trailing slash on HOME.
+for h in "$S/home5" "$S/home6/"; do
+  mkdir -p "$h"
+  env -u HANDOFF_KEY_DIR HOME="$h" bash ../agent-setup.sh >"$S/setup-out" 2>/dev/null \
+    || fail "agent-setup.sh at the default location failed (HOME=$h)"
+  ! grep -q "non-default" "$S/setup-out" || fail "the default location was reported as non-default (HOME=$h)"
+done
+# A blob file that isn't a regular file (a pipe on stdin) would take the
+# command's stdin: refused.
+expect_refusal "blob file on a pipe" 1 "is not a regular file" \
+  bash -c 'cat blob.txt | python3 ../consume.py --label example --check --blob-file /dev/stdin'
+printf '#!/bin/sh\necho "openssl: error loading config" >&2\nexit 1\n' > "$S/fake-ssl/openssl"
+expect_refusal "openssl version failing" 1 "openssl version failed: openssl: error loading config" \
+  env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "agent-setup.sh re-run over an existing key" 1 "refusing to overwrite existing key" \
   env HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh
 expect_refusal "agent-setup.sh unknown argument" 2 "usage: agent-setup.sh" \
