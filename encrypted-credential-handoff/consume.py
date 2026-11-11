@@ -9,17 +9,22 @@ This helper decrypts IN MEMORY with the private key (default
 ~/.config/handoff/handoff-priv.pem, override with $HANDOFF_PRIVKEY),
 verifies the payload's purpose binding, and either:
 
-  run mode    runs a command with the credential values injected into
-              its environment (the child's stdin/stdout/stderr pass
-              through untouched), or
+  run mode    replaces itself (exec) with a command, the credential values
+              injected into its environment; the command's stdin, stdout
+              and stderr are the helper's own, untouched, or
   --check     prints field names and value lengths ONLY. For the SETUP
               DUMMY round-trip only: lengths are output too, so never
               run --check on a real credential.
 
-The plaintext is never written to disk and never printed, in any mode,
-on success or on error. Nothing derived from the payload — not a value,
-not a field name — is echoed in any message: payloads are unauthenticated
-input, and error text lands in the agent's tool output.
+This helper never writes the plaintext to disk and never prints it, in
+any mode, on success or on error. Nothing derived from the payload — not a
+value, not a field name — is echoed in any message (--check's field names
+and lengths excepted): payloads are unauthenticated input, and error text
+lands in the agent's tool output. What the launched command prints is the
+command's own business: a command that prints its environment (printenv)
+reveals the credential to whoever ran the helper. So execute access to this
+helper is read access to every staged credential, and each label runs only
+the command it was set up with (SETUP.md, hard rules).
 
     username / password          -> SERVICE_USERNAME / SERVICE_PASSWORD
     api_key_id / api_key_secret  -> SERVICE_API_KEY_ID / SERVICE_API_KEY_SECRET
@@ -28,6 +33,9 @@ input, and error text lands in the agent's tool output.
 
 Per-service variable names differ; map them per invocation instead of
 editing this file:  --env username=APP_USER --env password=APP_PASS
+A target must be a plain variable name, never one that changes how the
+command starts (PATH, LD_*, PYTHON*, BASH_ENV, ...), and two fields can't
+share one target.
 
 Every payload must carry "svc", and it must equal the --label the blob
 was fetched under; otherwise this helper refuses. A payload with unknown
@@ -48,6 +56,7 @@ Usage:
 import base64
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -65,6 +74,19 @@ DEFAULT_ENV_MAP = {
     "token_id": "SERVICE_TOKEN_ID",
     "token_secret": "SERVICE_TOKEN_SECRET",
 }
+
+# --env target names: a plain identifier, and never one that changes which
+# program runs or how it starts. Mapping a payload field onto PATH, for
+# example, would let whoever wrote the payload choose the binary. This list
+# is a backstop, not the control: SETUP.md's hard rule pins each label to its
+# recorded command and mappings.
+ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+REFUSED_ENV_NAMES = {
+    "PATH", "HOME", "IFS", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "PS4",
+    "NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB",
+    "JAVA_TOOL_OPTIONS", BLOB_ENV, "HANDOFF_PRIVKEY",
+}
+REFUSED_ENV_PREFIXES = ("LD_", "DYLD_", "PYTHON", "BASH_FUNC_")
 
 
 def fail(msg: str) -> "SystemExit":
@@ -140,6 +162,15 @@ def check_payload(payload: dict, label: str, env_map: dict) -> dict:
     return creds
 
 
+def check_env_name(name: str) -> None:
+    if not ENV_NAME_RE.fullmatch(name):
+        raise fail(f"--env target {name!r} is not a valid variable name")
+    if name in REFUSED_ENV_NAMES or name.startswith(REFUSED_ENV_PREFIXES):
+        raise fail(
+            f"--env target {name!r} would change how the command starts; refusing"
+        )
+
+
 def parse_args(argv):
     label = None
     check = False
@@ -170,12 +201,16 @@ def parse_args(argv):
                 field, name = v.split("=", 1)
                 if not field or not name:
                     raise fail("--env takes field=NAME")
+                check_env_name(name)
                 env_map[field] = name
         elif a == "--check":
             check = True
         else:
             raise fail(f"unrecognized argument: {a}")
         i += 1
+    targets = list(env_map.values())
+    if len(set(targets)) != len(targets):
+        raise fail("two fields map to the same environment variable; refusing")
     if not label:
         raise fail("--label is required (the service label the blob was fetched under)")
     if check and cmd:
@@ -209,10 +244,28 @@ def main() -> int:
     for field, value in creds.items():
         env[env_map[field]] = value
     # Deliberately no logging of env or creds here — that is the whole point.
-    # stdin is inherited untouched: it is the child's channel, not ours.
-    rc = subprocess.run(cmd, env=env).returncode
-    # A child killed by signal N reports -N; map to the shell convention.
-    return 128 + (-rc) if rc < 0 else rc
+    # exec, not a subprocess: the command takes over this process, so a
+    # signal meant for the helper (an MCP client stopping its server sends
+    # TERM) reaches the command itself, and no parent is left that could
+    # exit and leave a credentialed child running. It also means this
+    # process holds no copy of the plaintext after the hand-over. stdin,
+    # stdout and stderr are inherited untouched: they are the command's.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execvpe(cmd[0], cmd, env)
+    except OSError as e:
+        # Only the caller's own command name appears here, never payload data.
+        code = 127 if isinstance(e, FileNotFoundError) else 126
+        print(f"consume.py: cannot run {cmd[0]!r}: {e.strerror}", file=sys.stderr)
+        return code
+    except ValueError:
+        # An embedded NUL, in the command or in a credential value. Say
+        # neither which nor where: the value may be the payload's.
+        print("consume.py: the command or a credential contains a NUL byte; refusing",
+              file=sys.stderr)
+        return 126
+    return 0  # not reached: execvpe only returns by raising
 
 
 if __name__ == "__main__":
