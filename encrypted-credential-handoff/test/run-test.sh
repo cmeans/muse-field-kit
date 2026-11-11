@@ -311,18 +311,18 @@ expect_refusal "group/other-readable key" 1 "must be owner-only" \
   env HANDOFF_PRIVKEY="$S/loose.pem" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "missing key" 1 "cannot read private key" \
   env HANDOFF_PRIVKEY="$S/no-such-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
-expect_refusal "--env PATH" 1 "would change how the command starts" \
+expect_refusal "--env PATH" 1 "is on the refused list" \
   consume --label example --blob-file blob.txt --env password=PATH -- true
-expect_refusal "--env LD_PRELOAD" 1 "would change how the command starts" \
+expect_refusal "--env LD_PRELOAD" 1 "is on the refused list" \
   consume --label example --blob-file blob.txt --env password=LD_PRELOAD -- true
-expect_refusal "--env PYTHONSTARTUP" 1 "would change how the command starts" \
+expect_refusal "--env PYTHONSTARTUP" 1 "is on the refused list" \
   consume --label example --blob-file blob.txt --env password=PYTHONSTARTUP -- true
-expect_refusal "--env BASH_ENV" 1 "would change how the command starts" \
+expect_refusal "--env BASH_ENV" 1 "is on the refused list" \
   consume --label example --blob-file blob.txt --env password=BASH_ENV -- true
 # https_proxy in lower case: the names are compared case-insensitively.
 for name in GIT_SSH_COMMAND JDK_JAVA_OPTIONS _JAVA_OPTIONS DYLD_INSERT_LIBRARIES HOME IFS ENV GCONV_PATH HANDOFF_PRIVKEY HANDOFF_BLOB \
     OPENSSL_CONF https_proxy ALL_PROXY SSL_CERT_FILE REQUESTS_CA_BUNDLE CLASSPATH PROMPT_COMMAND; do
-  expect_refusal "--env $name" 1 "would change how the command starts" \
+  expect_refusal "--env $name" 1 "is on the refused list" \
     consume --label example --blob-file blob.txt --env "password=$name" -- true
 done
 expect_refusal "--env unknown field (a typo)" 1 "not a known credential field" \
@@ -401,8 +401,47 @@ expect_refusal "~user in HANDOFF_PRIVKEY (agent-setup.sh)" 1 "only ~/ is expande
 # shellcheck disable=SC2088
 expect_refusal "~user in HANDOFF_KEY_DIR" 1 "only ~/ is expanded" \
   env HANDOFF_KEY_DIR='~root/kd' bash ../agent-setup.sh
-expect_refusal "agent-setup.sh without HOME" 1 "HOME is not set" \
-  env -u HOME bash ../agent-setup.sh --fingerprint
+expect_refusal "agent-setup.sh without HOME, default key" 1 "HOME is not set" \
+  env -u HOME -u HANDOFF_PRIVKEY bash ../agent-setup.sh --fingerprint
+# ...but HOME isn't needed with an absolute key or key directory.
+env -u HOME bash ../agent-setup.sh --fingerprint >/dev/null 2>&1 \
+  || fail "agent-setup.sh --fingerprint with an absolute HANDOFF_PRIVKEY needed HOME"
+env -u HOME HANDOFF_KEY_DIR="$S/nohome-key" bash ../agent-setup.sh >/dev/null 2>&1 \
+  || fail "agent-setup.sh with an absolute HANDOFF_KEY_DIR needed HOME"
+# ~/ and a bare ~ in HANDOFF_KEY_DIR are expanded.
+mkdir -p "$S/home3"
+# shellcheck disable=SC2088
+HOME="$S/home3" HANDOFF_KEY_DIR='~/kd' bash ../agent-setup.sh >/dev/null 2>&1 \
+  && [ -f "$S/home3/kd/handoff-priv.pem" ] || fail "HANDOFF_KEY_DIR='~/kd' did not land in \$HOME/kd"
+mkdir -p "$S/home4"
+HOME="$S/home4" HANDOFF_KEY_DIR='~' bash ../agent-setup.sh >/dev/null 2>&1 \
+  && [ -f "$S/home4/handoff-priv.pem" ] || fail "HANDOFF_KEY_DIR='~' did not land in \$HOME"
+# shellcheck disable=SC2088
+expect_refusal "~user in --fingerprint's KEY" 1 "agent-setup.sh: KEY '~root/k.pem'" \
+  bash ../agent-setup.sh --fingerprint '~root/k.pem'
+expect_refusal "--check twice" 1 "--check given twice" \
+  consume --label example --check --check --blob-file blob.txt
+expect_refusal "blob file missing" 1 "No such file or directory" \
+  consume --label example --check --blob-file "$S/no-such-blob.txt"
+# A blob file saved with a byte-order mark still works.
+printf '\357\273\277' > "$S/bom.txt"; cat blob.txt >> "$S/bom.txt"
+consume --label example --check --blob-file "$S/bom.txt" >/dev/null || fail "a blob file with a BOM was refused"
+# OpenSSL 4 passes the gate (a wrapper that reports 4.0.0 and passes the rest on).
+mkdir -p "$S/ssl4"; ln -sf "$(command -v python3)" "$S/ssl4/python3"
+# shellcheck disable=SC2016  # $1 and $@ belong to the generated script
+printf '#!/bin/sh\nif [ "$1" = version ]; then echo "OpenSSL 4.0.0 1 Jan 2027"; else exec %s "$@"; fi\n' "$(command -v openssl)" > "$S/ssl4/openssl"
+chmod 755 "$S/ssl4/openssl"
+PATH="$S/ssl4" python3 ../consume.py --label example --check --blob-file blob.txt >/dev/null \
+  || fail "consume.py refused OpenSSL 4"
+expect_refusal "agent-setup.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
+  env PATH="$S/fake-ssl:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
+# Run as ./consume.py, the helper is isolated: a planted sitecustomize on
+# PYTHONPATH doesn't run.
+mkdir -p "$S/pp"
+printf 'open(%s, "w").close()\n' "'$S/pp/HIT'" > "$S/pp/sitecustomize.py"
+PYTHONPATH="$S/pp" ../consume.py --label example --check --blob-file blob.txt >/dev/null \
+  || fail "./consume.py failed to run"
+[ ! -e "$S/pp/HIT" ] || fail "./consume.py ran the caller's sitecustomize (not isolated)"
 expect_refusal "agent-setup.sh re-run over an existing key" 1 "refusing to overwrite existing key" \
   env HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh
 expect_refusal "agent-setup.sh unknown argument" 2 "usage: agent-setup.sh" \
