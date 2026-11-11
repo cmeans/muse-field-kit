@@ -7,6 +7,17 @@
 #   public key:  printed at the end, for embedding in handoff.sh
 # Also prints the public key's SHA-256 fingerprint, which the human compares
 # before trusting any blob, and the consume-side key path to configure.
+#
+# Usage:
+#   agent-setup.sh                      generate a new keypair
+#   agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint
+#
+# Environment:
+#   HANDOFF_KEY_DIR  where a NEW key is generated (default ~/.config/handoff);
+#                    rotation points this at a fresh directory.
+#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint reads, the same variable
+#                    consume.py decrypts with (default: the key in
+#                    $HANDOFF_KEY_DIR). A KEY argument overrides both.
 set -euo pipefail
 umask 077
 
@@ -15,8 +26,10 @@ PRIV="$KEY_DIR/handoff-priv.pem"
 
 command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 
+# openssl's stderr stays visible: when the key can't be read, the cause
+# (permissions, a passphrase, a damaged file) is what the human needs.
 fingerprint_of() {
-  openssl pkey -in "$PRIV" -pubout 2>/dev/null \
+  openssl pkey -in "$1" -pubout \
     | openssl pkey -pubin -outform DER \
     | openssl dgst -sha256 -binary | openssl base64
 }
@@ -24,13 +37,29 @@ fingerprint_of() {
 # Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
 # The setup and SETUP.md rules require the fingerprint to come from the
 # key file itself, never from notes, and forbid the agent reading the key
-# with general-purpose tools: this mode is the sanctioned path.
-if [ "${1-}" = "--fingerprint" ]; then
-  [ -r "$PRIV" ] || { echo "no key at $PRIV" >&2; exit 1; }
-  fp=$(fingerprint_of) || { echo "could not read key at $PRIV" >&2; exit 1; }
-  echo "SHA256:$fp"
-  exit 0
-fi
+# with general-purpose tools: this mode is the sanctioned path. It reads
+# the key the consume side uses ($HANDOFF_PRIVKEY), and says which file it
+# read, so that during rotation the old key can't be reported by mistake.
+case "${1-}" in
+  --fingerprint)
+    [ $# -le 2 ] || { echo "usage: agent-setup.sh --fingerprint [KEY]" >&2; exit 2; }
+    key="${2:-${HANDOFF_PRIVKEY:-$PRIV}}"
+    [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
+    fp=$(fingerprint_of "$key") || { echo "could not read key at $key" >&2; exit 1; }
+    echo "key file: $key" >&2
+    echo "SHA256:$fp"
+    exit 0
+    ;;
+  "") ;;
+  *)
+    # Anything else (--help, a typo of --fingerprint) must not fall through
+    # to generating a key.
+    echo "usage: agent-setup.sh                      generate a new keypair" >&2
+    echo "       agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint" >&2
+    if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then exit 0; fi
+    exit 2
+    ;;
+esac
 
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
