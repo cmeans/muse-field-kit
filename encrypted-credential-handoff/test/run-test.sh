@@ -29,7 +29,9 @@
 set -Eeuo pipefail
 # A failing command substitution (got=$(...)) stops the script under set -e
 # before its own check can say why: name the line instead.
-trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
+# Only in the top-level shell: with set -E a failure inside $(...) would
+# otherwise be reported twice.
+trap '[ "$BASH_SUBSHELL" = 0 ] && echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 cd "$(dirname "$0")"
 
 # The dummy values in expected.json / blob.txt. Distinct on purpose: a test
@@ -143,11 +145,11 @@ echo "== 1d. mapped variables come from the payload only =="
 # mapped to CUSTOM_PASS): a nested wrapper's parent may have set it for
 # another service.
 out=$(SERVICE_PASSWORD=inherited CUSTOM_PASS=inherited consume --label example \
-  --blob "$(enc '{"svc":"example","username":"only-user"}')" --env password=CUSTOM_PASS -- python3 -c '
+  --blob "$(enc '{"svc":"example","username":"mk-Zq9-only-user"}')" --env password=CUSTOM_PASS -- python3 -c '
 import os
 print(os.environ["SERVICE_USERNAME"], os.environ.get("CUSTOM_PASS"), os.environ.get("SERVICE_PASSWORD"))
 ')
-[ "$out" = "only-user None None" ] || fail "an inherited credential variable reached the command: $out"
+[ "$out" = "mk-Zq9-only-user None None" ] || fail "an inherited credential variable reached the command: $out"
 echo "ok"
 
 echo "== 2a. the command's stdin passes through untouched =="
@@ -161,25 +163,30 @@ hello-stdin" ] || fail "the command's stdin was consumed or altered"
 echo "ok"
 
 echo "== 2b. the helper execs the command; TERM leaves nothing running =="
-# python3 directly, not the consume() function: a backgrounded function
-# runs in a forked subshell, and $! would be that subshell's PID.
-python3 ../consume.py --label example --blob-file blob.txt -- python3 -c '
+# Both entry points: python3 directly, and the sh launcher on lines 1-3
+# (what ./consume.py runs), which must exec Python in its own place too.
+# Called directly, not through consume(): a backgrounded function runs in a
+# forked subshell, and $! would be that subshell's PID.
+for launcher in python3 sh; do
+  : >"$S/pid"
+  "$launcher" ../consume.py --label example --blob-file blob.txt -- python3 -c '
 import os, time
 print(os.getpid(), flush=True)
 time.sleep(60)
 ' >"$S/pid" &
-helper=$!
-for _ in $(seq 100); do [ -s "$S/pid" ] && break; sleep 0.1; done
-child=$(cat "$S/pid")
-[ -n "$child" ] || { kill "$helper" 2>/dev/null; fail "command never started"; }
-if [ "$child" != "$helper" ]; then
-  kill "$child" "$helper" 2>/dev/null || true
-  fail "the command runs as a separate child ($child) of the helper ($helper), not in its place"
-fi
-kill -TERM "$helper"
-rc=0; wait "$helper" || rc=$?
-[ "$rc" = 143 ] || fail "TERM: exit $rc, expected 143"
-! kill -0 "$child" 2>/dev/null || fail "a process with the credential is still running"
+  helper=$!
+  for _ in $(seq 100); do [ -s "$S/pid" ] && break; sleep 0.1; done
+  child=$(cat "$S/pid")
+  [ -n "$child" ] || { kill "$helper" 2>/dev/null; fail "command never started ($launcher)"; }
+  if [ "$child" != "$helper" ]; then
+    kill "$child" "$helper" 2>/dev/null || true
+    fail "via $launcher, the command runs as a separate child ($child) of the helper ($helper), not in its place"
+  fi
+  kill -TERM "$helper"
+  rc=0; wait "$helper" || rc=$?
+  [ "$rc" = 143 ] || fail "TERM via $launcher: exit $rc, expected 143"
+  ! kill -0 "$child" 2>/dev/null || fail "a process with the credential is still running ($launcher)"
+done
 echo "ok"
 
 echo "== 3. reference encrypt (handoff.sh) -> reference decrypt =="
@@ -210,7 +217,7 @@ else
   echo "skip: no /proc, signal dispositions not checked"
 fi
 # 190 bytes is the RSA-2048/OAEP-SHA256 ceiling: exactly that must work.
-max=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "y" * 159}, separators=(",", ":")), end="")')
+max=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "mk-Zq9" + "y" * 153}, separators=(",", ":")), end="")')
 [ "${#max}" = 190 ] || fail "test setup: maximum payload is ${#max} bytes, not 190"
 bash "$S/handoff-dummy.sh" <<<"$max" >"$S/blob3" 2>/dev/null || fail "handoff.sh refused a 190-byte payload"
 out=$(HANDOFF_BLOB="$(cat "$S/blob3")" consume --label example -- python3 -c '
@@ -320,11 +327,31 @@ expect_refusal "--env PYTHONSTARTUP" 1 "is on the refused list" \
 expect_refusal "--env BASH_ENV" 1 "is on the refused list" \
   consume --label example --blob-file blob.txt --env password=BASH_ENV -- true
 # https_proxy in lower case: the names are compared case-insensitively.
-for name in GIT_SSH_COMMAND JDK_JAVA_OPTIONS _JAVA_OPTIONS DYLD_INSERT_LIBRARIES HOME IFS ENV GCONV_PATH HANDOFF_PRIVKEY HANDOFF_BLOB \
-    OPENSSL_CONF https_proxy ALL_PROXY SSL_CERT_FILE REQUESTS_CA_BUNDLE CLASSPATH PROMPT_COMMAND; do
-  expect_refusal "--env $name" 1 "is on the refused list" \
-    consume --label example --blob-file blob.txt --env "password=$name" -- true
+# Every refused name, in upper and lower case, and every refused prefix.
+# The list is written out here, not read from consume.py, so dropping an
+# entry there fails the test.
+refused_names="ALL_PROXY BASHOPTS BASH_ENV CLASSPATH CURL_CA_BUNDLE CURL_HOME DOCKER_HOST
+  EDITOR ENV FTP_PROXY GCONV_PATH GLIBC_TUNABLES HANDOFF_BLOB HANDOFF_PRIVKEY HOME
+  HOSTALIASES HTTPS_PROXY HTTP_PROXY IFS JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS KUBECONFIG
+  LUA_INIT NODE_EXTRA_CA_CERTS NODE_OPTIONS NODE_PATH NO_PROXY PAGER PATH PERL5DB
+  PERL5LIB PERL5OPT PERLLIB PROMPT_COMMAND PS4 REQUESTS_CA_BUNDLE RUBYLIB RUBYOPT
+  SHELLOPTS SSH_ASKPASS SSH_AUTH_SOCK SSLKEYLOGFILE SSL_CERT_DIR SSL_CERT_FILE VISUAL
+  WGETRC XDG_CONFIG_HOME ZDOTDIR _JAVA_OPTIONS"
+refused_prefixes="LD_ DYLD_ PYTHON BASH_FUNC_ GIT_ LUA_INIT_ OPENSSL_ NPM_CONFIG_ PIP_"
+n=0
+for name in $refused_names; do
+  for v in "$name" "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"; do
+    expect_refusal "--env $v" 1 "is on the refused list" \
+      consume --label example --blob-file blob.txt --env "password=$v" -- true >/dev/null
+    n=$((n + 1))
+  done
 done
+for prefix in $refused_prefixes; do
+  expect_refusal "--env ${prefix}X" 1 "is on the refused list" \
+    consume --label example --blob-file blob.txt --env "password=${prefix}X" -- true >/dev/null
+  n=$((n + 1))
+done
+echo "ok (refused: $n --env targets, every listed name in both cases and every prefix)"
 expect_refusal "--env unknown field (a typo)" 1 "not a known credential field" \
   consume --label example --blob-file blob.txt --env pasword=APP_PASS -- true
 expect_refusal "--env wrong-case field" 1 "not a known credential field" \
@@ -452,6 +479,12 @@ PYTHONPATH="$S/pp" sh ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "agent-setup.sh generation, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/fake-ssl:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/libressl-key" bash ../agent-setup.sh
 [ ! -e "$S/libressl-key" ] || fail "agent-setup.sh created a key directory under LibreSSL"
+mkdir -p "$S/libressl"
+printf '#!/bin/sh\necho "LibreSSL 3.8.2"\n' > "$S/libressl/openssl"; chmod 755 "$S/libressl/openssl"
+expect_refusal "handoff.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
+  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
+expect_refusal "handoff.sh encrypting, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
+  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" <<<'{"svc":"example","password":"mk-Zq9"}'
 # shellcheck disable=SC2088
 expect_refusal "agent-setup.sh, ~ without HOME" 1 "a ~ in HANDOFF_KEY_DIR needs it" \
   env -u HOME HANDOFF_KEY_DIR='~/kd' bash ../agent-setup.sh
@@ -469,6 +502,14 @@ done
 # command's stdin: refused.
 expect_refusal "blob file on a pipe" 1 "is not a regular file" \
   bash -c 'cat blob.txt | python3 ../consume.py --label example --check --blob-file /dev/stdin'
+# A FIFO with no writer is refused, not waited on (timeout catches a hang).
+mkfifo "$S/blob.fifo"
+expect_refusal "blob file is a FIFO" 1 "is not a regular file" \
+  timeout 20 python3 ../consume.py --label example --check --blob-file "$S/blob.fifo"
+# openssl output that isn't UTF-8 is a clean refusal, not a traceback.
+printf '#!/bin/sh\nprintf "bad \\351 byte\\n" >&2\nexit 1\n' > "$S/fake-ssl/openssl"
+expect_refusal "openssl version, undecodable stderr" 1 "openssl version failed" \
+  env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
 printf '#!/bin/sh\necho "openssl: error loading config" >&2\nexit 1\n' > "$S/fake-ssl/openssl"
 expect_refusal "openssl version failing" 1 "openssl version failed: openssl: error loading config" \
   env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
@@ -488,17 +529,17 @@ expect_refusal "agent-setup.sh --fingerprint, a public key" 1 "could not read ke
 # At most 3 lines: the first openssl stage's error (one or two lines) and
 # "could not read key". More means the next stage's error came through too.
 [ "$(grep -c . "$S/err")" -le 3 ] || fail "--fingerprint on a public key printed the second openssl stage's error too"
-long=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "x" * 160}, separators=(",", ":")), end="")')
+long=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "mk-Zq9" + "x" * 154}, separators=(",", ":")), end="")')
 [ "${#long}" = 191 ] || fail "test setup: oversize payload is ${#long} bytes, not 191"
 expect_refusal "handoff.sh 191-byte payload" 1 "payload is 191 bytes" \
   bash "$S/handoff-dummy.sh" <<<"$long"
 if command -v jq >/dev/null; then
   expect_refusal "handoff.sh non-object payload" 1 "must be a single JSON object" \
-    bash "$S/handoff-dummy.sh" <<<'["example"]'
+    bash "$S/handoff-dummy.sh" <<<'["mk-Zq9"]'
   expect_refusal "handoff.sh two concatenated objects" 1 "must be a single JSON object" \
-    bash "$S/handoff-dummy.sh" <<<'{"svc":"example","password":"x"}{"svc":"example"}'
+    bash "$S/handoff-dummy.sh" <<<'{"svc":"example","password":"mk-Zq9"}{"svc":"example"}'
   expect_refusal "handoff.sh payload without svc" 1 "must be a single JSON object" \
-    bash "$S/handoff-dummy.sh" <<<'{"password":"x"}'
+    bash "$S/handoff-dummy.sh" <<<'{"password":"mk-Zq9"}'
 else
   echo "skip: jq not installed, handoff.sh shape refusals not tested"
 fi
