@@ -29,7 +29,7 @@ Anything in this list is a **mechanism change**: it requires a written proposal 
 - The payload schema (including the `svc` field)
 - A label's recorded command, `--env` mappings, or endpoint
 
-Anything not on this list — fixing a typo in a message, adjusting a label, recording setup notes — you may do directly, and report in your setup summary.
+Anything not on this list — fixing a typo in a message, recording setup notes — you may do directly, and report in your setup summary.
 
 ## Steps
 
@@ -38,7 +38,7 @@ Anything not on this list — fixing a typo in a message, adjusting a label, rec
    - `HANDOFF_KEY_DIR` — where `agent-setup.sh` generates a **new** key (`$HANDOFF_KEY_DIR/handoff-priv.pem`).
    - `HANDOFF_PRIVKEY` — the full path of the **existing** key that `consume.py` decrypts with and `agent-setup.sh --fingerprint` reads.
 
-   If you choose a non-default location, they must agree: `HANDOFF_KEY_DIR=/path/dir` at generation means `HANDOFF_PRIVKEY=/path/dir/handoff-priv.pem` in every wrapper and every fingerprint check. Write `HANDOFF_PRIVKEY` as an absolute path (a leading `~` is expanded too, but nothing else is), and use the path `agent-setup.sh` prints.
+   If you choose a non-default location, they must agree: `HANDOFF_KEY_DIR=/path/dir` at generation means `HANDOFF_PRIVKEY=/path/dir/handoff-priv.pem` in every wrapper and every fingerprint check. Write `HANDOFF_PRIVKEY` as an absolute path, and use the path `agent-setup.sh` prints. (A leading `~/` is expanded too, in `HANDOFF_PRIVKEY`, `HANDOFF_KEY_DIR` and `--blob-file`, by both scripts; `~user` is refused.)
    **Platform:** the reference implementation is Linux. macOS is expected-but-unreviewed (README explains the OpenSSL/LibreSSL caveat); Windows has no reference yet. If your user is not on Linux, do not force these scripts and do not prescribe a subsystem workaround: tell the user the platform's status plainly, and if they want to proceed, develop a platform-native equivalent that preserves the protocol exactly and every invariant, declare its dependencies and get the user's go-ahead before installing anything, and gate it on the user's review plus the `test/` interop test before it touches a real credential. An agent-written port is unreviewed by definition — treat it with that level of care.
 2. **Generate the keypair:** run `./agent-setup.sh` (or, for a non-default location, `HANDOFF_KEY_DIR=/path/dir ./agent-setup.sh`). It refuses to overwrite an existing key — if it does, a handoff is already set up; report that instead of forcing anything. The script prints the public key, its SHA-256 fingerprint, and the key's path (set `HANDOFF_PRIVKEY` to that path in wrappers if it isn't the default).
 3. **Hand the user their side.** Give them `handoff.sh` from this folder (from the repo they cloned, or the file itself). Tell them where the marked block is — near the top, between `-----BEGIN/END PUBLIC KEY-----` — and that the public key is not a secret and may travel through chat. They embed it and run `handoff.sh --fingerprint`.
