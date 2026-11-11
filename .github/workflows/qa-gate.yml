@@ -2,6 +2,9 @@ name: QA Gate
 
 # Posts a "QA Gate" commit status that is success only while the PR has the
 # QA Approved label (the maintainer's sign-off). Adapted from mcp-synology.
+# "QA Gate" (the status context) is a required check in main's ruleset: if it
+# is renamed, update the ruleset, or every PR waits on a check that never comes.
+# On a fork's PR the token is read-only and no status is posted.
 on:
   pull_request:
     branches: [main]
@@ -43,8 +46,13 @@ jobs:
           esac
 
           # labeled / unlabeled: decide from the PR as it is now, not the event payload.
-          read -r HEAD APPROVED < <(gh api "repos/$REPO/pulls/$PR" \
+          # A command substitution, not a process substitution: under set -e a
+          # failed API call then fails the job, instead of reading as an empty
+          # head and exiting green on the "stale event" path.
+          OUT=$(gh api "repos/$REPO/pulls/$PR" \
             --jq '[.head.sha, ([.labels[].name] | index("QA Approved") != null)] | @tsv')
+          read -r HEAD APPROVED <<<"$OUT"
+          [ -n "$HEAD" ] || { echo "no head SHA in the API reply"; exit 1; }
           if [ "$HEAD" != "$EVENT_SHA" ]; then
             echo "Stale event: $EVENT_SHA is no longer the head ($HEAD); not changing QA Gate"
             exit 0

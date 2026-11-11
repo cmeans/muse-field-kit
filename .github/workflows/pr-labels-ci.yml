@@ -11,6 +11,10 @@ name: PR Label Automation (CI)
 # PR's copy, so a change to it takes effect only after merge. On the PR that
 # adds it, the transitions are made by hand.
 #
+# Fork PRs: this runs with the base repository's token, but finds a PR only
+# by its head commit and head repository, so a fork can't steer it at
+# another PR.
+#
 # workflow_dispatch is here so the file can be run once by hand after it
 # first lands: the workflow_run listener doesn't always register until the
 # workflow has had a run, and a dispatched run (which matches no job below)
@@ -63,6 +67,15 @@ jobs:
           fi
           if ! echo "$LABELS" | grep -qx "Awaiting CI"; then
             echo "PR #$PR isn't at Awaiting CI — nothing to do"
+            exit 0
+          fi
+
+          # A push since this run started makes its result stale: re-check
+          # the head right before editing, so a commit with no CI of its own
+          # is never promoted.
+          NOW=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          if [ "$NOW" != "$HEAD_SHA" ]; then
+            echo "PR #$PR moved to $NOW — this run's result is stale"
             exit 0
           fi
 

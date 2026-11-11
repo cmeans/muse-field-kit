@@ -17,6 +17,9 @@ concurrency:
 jobs:
   # NOTE: pr-labels.yml and pr-labels-ci.yml find this workflow by its name
   # ("CI") and file (ci.yml). If either is renamed, update them too.
+  # This job's name ("encrypted-credential-handoff") is a required check in
+  # main's ruleset: if it is renamed, update the ruleset, or every PR waits
+  # on a check that never comes.
   encrypted-credential-handoff:
     runs-on: ubuntu-latest
     timeout-minutes: 10
