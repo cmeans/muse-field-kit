@@ -33,7 +33,7 @@ Anything not on this list — fixing a typo in a message, recording setup notes 
 
 ## Steps
 
-1. **Check prerequisites** on your own machine: `openssl` (3.x) available; Python 3 for `consume.py`; a directory for the private key (default `~/.config/handoff/`, created mode `0700` by the setup script). The private key file itself must end up mode `0600`, owned by your account, readable by no one else.
+1. **Check prerequisites** on your own machine: `openssl` available, OpenSSL 3 or 4 (LibreSSL isn't supported); Python 3.7 or later for `consume.py`; a directory for the private key (default `~/.config/handoff/`, created mode `0700` by the setup script). The private key file itself must end up mode `0600`, owned by your account, readable by no one else.
    Two environment variables set the key's location; leave both unset to use the default:
    - `HANDOFF_KEY_DIR` — where `agent-setup.sh` generates a **new** key (`$HANDOFF_KEY_DIR/handoff-priv.pem`).
    - `HANDOFF_PRIVKEY` — the full path of the **existing** key that `consume.py` decrypts with and `agent-setup.sh --fingerprint` reads.
