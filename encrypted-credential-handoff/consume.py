@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Consume-side template for the encrypted credential handoff.
 
 Fetches nothing itself: the caller (a per-service wrapper) fetches the
@@ -12,9 +12,9 @@ verifies the payload's purpose binding, and either:
   run mode    replaces itself (exec) with a command, the credential values
               injected into its environment; the command's stdin, stdout
               and stderr are the helper's own, untouched, or
-  --check     prints field names and value lengths ONLY. For the SETUP
-              DUMMY round-trip only: lengths are output too, so never
-              run --check on a real credential.
+  --check     prints the svc match, then field names and value lengths
+              ONLY. For the SETUP DUMMY round-trip only: lengths are output
+              too, so never run --check on a real credential.
 
 This helper never writes the plaintext to disk and never prints it, in
 any mode, on success or on error. Nothing derived from the payload — not a
@@ -33,7 +33,15 @@ the command it was set up with (SETUP.md, hard rules).
 
 Per-service variable names differ; map them per invocation instead of
 editing this file:  --env username=APP_USER --env password=APP_PASS
-Only the fields above can be mapped, each at most once.
+Only the fields above can be mapped, each at most once. Every credential
+variable the command sees comes from this payload: the default names and
+the mapped ones are all removed from the inherited environment first, along
+with $HANDOFF_BLOB and $HANDOFF_PRIVKEY.
+
+Exactly one blob source (--blob, --blob-file or $HANDOFF_BLOB), and
+--label, --blob, --blob-file and --check at most once each: a wrapper's
+caller can't relabel it by appending options. An empty credential value
+is refused.
 A target must be a plain variable name, never one that changes how the
 command starts (PATH, LD_*, PYTHON*, GIT_*, BASH_ENV, ...; a partial list),
 and two fields can't share one target, the default mappings included.
@@ -56,20 +64,22 @@ Usage:
     consume.py --label example --blob-file blob.txt -- my-tool --serve
     consume.py --label test --check --blob-file blob.txt
 """
+# The shebang runs Python isolated (-I): the caller's PYTHON* variables and
+# user site-packages don't reach the helper itself.
 import base64
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
 
-# Unset or empty means the default, as in agent-setup.sh --fingerprint. A
-# leading ~ is expanded, since an MCP client's JSON env passes it literally.
-PRIVKEY = os.path.expanduser(
-    os.environ.get("HANDOFF_PRIVKEY") or "~/.config/handoff/handoff-priv.pem"
-)
+DEFAULT_PRIVKEY = "~/.config/handoff/handoff-priv.pem"
+PRIVKEY_ENV = "HANDOFF_PRIVKEY"
 BLOB_ENV = "HANDOFF_BLOB"
+CIPHERTEXT_BYTES = 256  # RSA-2048: every reference blob decodes to exactly this
+MAX_BLOB_FILE = 8192    # characters; a reference blob is 344
 
 DEFAULT_ENV_MAP = {
     "username": "SERVICE_USERNAME",
@@ -88,43 +98,97 @@ DEFAULT_ENV_MAP = {
 # SETUP.md's hard rule, which pins each label to its recorded command and
 # mappings, is the control.
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-REFUSED_ENV_NAMES = {
+# Compared case-insensitively (curl and others read http_proxy as well as
+# HTTP_PROXY). Two kinds: variables that change what code runs, and ones that
+# change where the command connects or whom it trusts, which would let the
+# payload's writer choose where the credential goes.
+REFUSED_ENV_NAMES = {n.upper() for n in (
+    # what runs, and how it starts
     "PATH", "HOME", "IFS", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "PS4",
-    "NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB",
-    "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "GCONV_PATH",
-    "GLIBC_TUNABLES", "LUA_INIT", "PERL5DB", "PAGER", "EDITOR", "VISUAL",
-    "ZDOTDIR", BLOB_ENV, "HANDOFF_PRIVKEY",
-}
-REFUSED_ENV_PREFIXES = ("LD_", "DYLD_", "PYTHON", "BASH_FUNC_", "GIT_", "LUA_INIT_")
+    "PROMPT_COMMAND", "NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB",
+    "PERLLIB", "PERL5DB", "RUBYOPT", "RUBYLIB", "JAVA_TOOL_OPTIONS",
+    "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "CLASSPATH", "GCONV_PATH",
+    "GLIBC_TUNABLES", "LUA_INIT", "PAGER", "EDITOR", "VISUAL", "ZDOTDIR",
+    "SSH_ASKPASS", "SSH_AUTH_SOCK", BLOB_ENV, PRIVKEY_ENV,
+    # where it connects, and whom it trusts
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "NO_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS", "SSLKEYLOGFILE",
+)}
+REFUSED_ENV_PREFIXES = (
+    "LD_", "DYLD_", "PYTHON", "BASH_FUNC_", "GIT_", "LUA_INIT_", "OPENSSL_",
+)
 
 
 def fail(msg: str) -> "SystemExit":
     return SystemExit(f"consume.py: {msg}")
 
 
+def expand_home(path: str, what: str) -> str:
+    """Expand a leading ~/ (an MCP client's JSON env passes it literally).
+
+    Only ~/ itself: ~user is refused rather than guessed at, and
+    agent-setup.sh follows the same rule, so the two never disagree.
+    """
+    if path == "~" or path.startswith("~/"):
+        home = os.environ.get("HOME")
+        if not home:
+            raise fail(f"{what} starts with ~ but HOME is not set")
+        return home + path[1:]
+    if path.startswith("~"):
+        raise fail(f"{what} {path!r}: only ~/ is expanded, not ~user; use an absolute path")
+    return path
+
+
+def privkey_path() -> str:
+    # Unset or empty means the default, as in agent-setup.sh --fingerprint.
+    return expand_home(os.environ.get(PRIVKEY_ENV) or DEFAULT_PRIVKEY, PRIVKEY_ENV)
+
+
+def check_openssl() -> None:
+    # The same gate as handoff.sh: LibreSSL's pkeyutl OAEP behavior is
+    # unverified for this protocol.
+    try:
+        out = subprocess.run(["openssl", "version"], capture_output=True, text=True)
+    except FileNotFoundError:
+        raise fail("openssl not found") from None
+    version = out.stdout.strip()
+    if not (version.startswith("OpenSSL 3.") or version.startswith("OpenSSL 4.")):
+        raise fail(f"requires OpenSSL 3 or 4; found: {version or 'no version output'}")
+
+
 def decrypt(blob_b64: str) -> dict:
-    if not os.path.isfile(PRIVKEY):
-        raise fail(f"cannot read private key at {PRIVKEY}")
-    st = os.stat(PRIVKEY)
+    privkey = privkey_path()
+    if not os.path.isfile(privkey):
+        raise fail(f"cannot read private key at {privkey}")
+    st = os.stat(privkey)
     mode = stat.S_IMODE(st.st_mode)
     if mode & 0o077:
         raise fail(
-            f"private key at {PRIVKEY} is mode {mode:03o}; "
+            f"private key at {privkey} is mode {mode:03o}; "
             "it must be owner-only (0600). Refusing."
         )
     if st.st_uid != os.geteuid():
-        raise fail(f"private key at {PRIVKEY} is not owned by this user. Refusing.")
+        raise fail(f"private key at {privkey} is not owned by this user. Refusing.")
     # Tolerate line wrapping from a paste: strip ALL whitespace.
     compact = "".join(blob_b64.split())
+    if not compact:
+        raise fail("the blob is empty")
     try:
         cipher = base64.b64decode(compact, validate=True)
     except Exception:
         raise fail("input is not valid base64")
+    if len(cipher) != CIPHERTEXT_BYTES:
+        raise fail(
+            f"the blob decodes to {len(cipher)} bytes, not {CIPHERTEXT_BYTES}: "
+            "truncated, padded, or not a blob for an RSA-2048 key"
+        )
+    check_openssl()
     try:
         proc = subprocess.run(
             [
                 "openssl", "pkeyutl", "-decrypt",
-                "-inkey", PRIVKEY,
+                "-inkey", privkey,
                 "-pkeyopt", "rsa_padding_mode:oaep",
                 "-pkeyopt", "rsa_oaep_md:sha256",
                 "-pkeyopt", "rsa_mgf1_md:sha256",
@@ -174,6 +238,10 @@ def check_payload(payload: dict, label: str, env_map: dict) -> dict:
             raise fail("a credential field is not valid UTF-8 text; refusing") from None
         if "\0" in value:
             raise fail("a credential field contains a NUL byte; refusing")
+        if not value:
+            # An empty value would start the command with the variable set
+            # but no credential in it.
+            raise fail("a credential field is empty; refusing")
         creds[name] = value
     if unknown:
         print(f"consume.py: ignoring {unknown} unknown field(s)", file=sys.stderr)
@@ -185,7 +253,8 @@ def check_payload(payload: dict, label: str, env_map: dict) -> dict:
 def check_env_name(name: str) -> None:
     if not ENV_NAME_RE.fullmatch(name):
         raise fail(f"--env target {name!r} is not a valid variable name")
-    if name in REFUSED_ENV_NAMES or name.startswith(REFUSED_ENV_PREFIXES):
+    upper = name.upper()
+    if upper in REFUSED_ENV_NAMES or upper.startswith(REFUSED_ENV_PREFIXES):
         raise fail(
             f"--env target {name!r} would change how the command starts; refusing"
         )
@@ -198,6 +267,7 @@ def parse_args(argv):
     blob_file = None
     env_map = dict(DEFAULT_ENV_MAP)
     remapped = set()
+    seen = set()
     cmd = []
     i = 0
     while i < len(argv):
@@ -205,6 +275,12 @@ def parse_args(argv):
         if a == "--":
             cmd = argv[i + 1:]
             break
+        if a in ("--label", "--blob", "--blob-file", "--check"):
+            # Each at most once: a wrapper shaped `consume.py --label A "$@"`
+            # must not be relabeled by whatever its caller appends.
+            if a in seen:
+                raise fail(f"{a} given twice")
+            seen.add(a)
         if a in ("--label", "--blob", "--blob-file", "--env"):
             i += 1
             if i >= len(argv):
@@ -249,12 +325,22 @@ def parse_args(argv):
         raise fail("--check takes no command; it only inspects the payload")
     if not check and (not cmd or not cmd[0]):
         raise fail("no command given after -- (or use --check)")
-    if blob is None and blob_file is not None:
+    sources = [s for s, given in (
+        ("--blob", blob is not None),
+        ("--blob-file", blob_file is not None),
+        (f"${BLOB_ENV}", BLOB_ENV in os.environ),
+    ) if given]
+    if len(sources) > 1:
+        raise fail(f"more than one blob source ({', '.join(sources)}); give exactly one")
+    if blob_file is not None:
+        path = expand_home(blob_file, "--blob-file")
         try:
-            with open(blob_file, "r", encoding="utf-8") as fh:
-                blob = fh.read()
+            with open(path, "r", encoding="utf-8") as fh:
+                blob = fh.read(MAX_BLOB_FILE + 1)
         except (OSError, UnicodeError):
             raise fail(f"cannot read blob file at {blob_file} as text") from None
+        if len(blob) > MAX_BLOB_FILE:
+            raise fail(f"blob file at {blob_file} is over {MAX_BLOB_FILE} characters; not a blob")
     if blob is None:
         blob = os.environ.get(BLOB_ENV)
     if blob is None:
@@ -272,12 +358,16 @@ def main() -> int:
             print(f"{name}: {len(creds[name].encode('utf-8'))} bytes")
         return 0
     env = dict(os.environ)
-    env.pop(BLOB_ENV, None)  # the command needs the credentials, not the blob
-    # Every mapped variable comes from this payload or not at all: a value
-    # already in the caller's environment for a field the payload leaves out
-    # would otherwise reach the command beside the payload's values (a
-    # planted blob with only a username would run with the real password).
-    for target in env_map.values():
+    # The command needs the credentials, not the blob or the key's path.
+    env.pop(BLOB_ENV, None)
+    env.pop(PRIVKEY_ENV, None)
+    # Every credential variable comes from this payload or not at all: a
+    # value already in the caller's environment would otherwise reach the
+    # command beside the payload's values (a planted blob with only a
+    # username would run with the real password, and a nested wrapper would
+    # hand service A's SERVICE_PASSWORD to service B). That covers the
+    # current targets and the default names, remapped or not.
+    for target in set(env_map.values()) | set(DEFAULT_ENV_MAP.values()):
         env.pop(target, None)
     for field, value in creds.items():
         env[env_map[field]] = value
@@ -288,6 +378,12 @@ def main() -> int:
     # exit and leave a credentialed child running. It also means this
     # process holds no copy of the plaintext after the hand-over. stdin,
     # stdout and stderr are inherited untouched: they are the command's.
+    # Python ignores SIGPIPE and SIGXFSZ at startup, and an ignored signal
+    # stays ignored across exec: give the command the defaults it would have
+    # had if launched directly.
+    for name in ("SIGPIPE", "SIGXFSZ"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), signal.SIG_DFL)
     sys.stdout.flush()
     sys.stderr.flush()
     try:
@@ -297,11 +393,6 @@ def main() -> int:
         code = 127 if isinstance(e, FileNotFoundError) else 126
         print(f"consume.py: cannot run {cmd[0]!r}: {e.strerror}", file=sys.stderr)
         return code
-    except ValueError:
-        # An embedded NUL in the command (credential values were checked
-        # above).
-        print("consume.py: the command contains a NUL byte; refusing", file=sys.stderr)
-        return 126
     return 0  # not reached: execvpe only returns by raising
 
 

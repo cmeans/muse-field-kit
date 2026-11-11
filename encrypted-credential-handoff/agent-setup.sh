@@ -22,7 +22,25 @@
 set -euo pipefail
 umask 077
 
-KEY_DIR="${HANDOFF_KEY_DIR:-$HOME/.config/handoff}"
+[ -n "${HOME-}" ] || { echo "agent-setup.sh: HOME is not set" >&2; exit 1; }
+
+# The one default, the same as consume.py's.
+DEFAULT_DIR="$HOME/.config/handoff"
+DEFAULT_PRIV="$DEFAULT_DIR/handoff-priv.pem"
+
+# Expand a leading ~/ (an MCP client's JSON env passes it literally) and
+# refuse ~user, exactly as consume.py does, so the two never disagree.
+expand_home() {  # PATH WHAT
+  # shellcheck disable=SC2088  # matching a literal ~ is the point
+  case "$1" in
+    "~"|"~/"*) printf '%s\n' "$HOME${1#\~}" ;;
+    "~"*) echo "agent-setup.sh: $2 '$1': only ~/ is expanded, not ~user; use an absolute path" >&2
+          return 1 ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+KEY_DIR=$(expand_home "${HANDOFF_KEY_DIR:-$DEFAULT_DIR}" HANDOFF_KEY_DIR) || exit 1
 PRIV="$KEY_DIR/handoff-priv.pem"
 
 command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
@@ -50,8 +68,8 @@ case "${1-}" in
     if [ $# -eq 2 ] && [ -z "$2" ]; then
       echo "agent-setup.sh: --fingerprint was given an empty KEY" >&2; exit 2
     fi
-    key="${2:-${HANDOFF_PRIVKEY:-$HOME/.config/handoff/handoff-priv.pem}}"
-    key="${key/#\~/$HOME}"   # as consume.py does: a JSON env passes ~ literally
+    what=HANDOFF_PRIVKEY; [ $# -lt 2 ] || what=KEY
+    key=$(expand_home "${2:-${HANDOFF_PRIVKEY:-$DEFAULT_PRIV}}" "$what") || exit 1
     [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     fp=$(fingerprint_of "$key") || { echo "could not read key at $key" >&2; exit 1; }
     echo "key file: $key" >&2
@@ -112,6 +130,6 @@ echo
 echo "consume side: the decrypt helper reads \$HANDOFF_PRIVKEY"
 echo "(default ~/.config/handoff/handoff-priv.pem)."
 echo "this key lives at: $PRIV"
-if [ "$PRIV" != "$HOME/.config/handoff/handoff-priv.pem" ]; then
+if [ "$PRIV" != "$DEFAULT_PRIV" ]; then
   echo "non-default location: set HANDOFF_PRIVKEY=$PRIV wherever the helper runs"
 fi
