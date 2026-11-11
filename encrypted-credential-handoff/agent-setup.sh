@@ -15,9 +15,10 @@
 # Environment:
 #   HANDOFF_KEY_DIR  where a NEW key is generated (default ~/.config/handoff);
 #                    rotation points this at a fresh directory.
-#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint reads, the same variable
-#                    consume.py decrypts with (default: the key in
-#                    $HANDOFF_KEY_DIR). A KEY argument overrides both.
+#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint reads: the same variable,
+#                    with the same default (~/.config/handoff/handoff-priv.pem),
+#                    that consume.py decrypts with. HANDOFF_KEY_DIR doesn't
+#                    change it. A KEY argument overrides it.
 set -euo pipefail
 umask 077
 
@@ -29,8 +30,11 @@ command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 # openssl's stderr stays visible: when the key can't be read, the cause
 # (permissions, a passphrase, a damaged file) is what the human needs.
 fingerprint_of() {
-  openssl pkey -in "$1" -pubout \
-    | openssl pkey -pubin -outform DER \
+  local pub
+  # First stage on its own: if the file isn't a readable private key, its
+  # error is the one that matters, without a second one from the next stage.
+  pub=$(openssl pkey -in "$1" -pubout) || return 1
+  printf '%s\n' "$pub" | openssl pkey -pubin -outform DER \
     | openssl dgst -sha256 -binary | openssl base64
 }
 
@@ -43,7 +47,10 @@ fingerprint_of() {
 case "${1-}" in
   --fingerprint)
     [ $# -le 2 ] || { echo "usage: agent-setup.sh --fingerprint [KEY]" >&2; exit 2; }
-    key="${2:-${HANDOFF_PRIVKEY:-$PRIV}}"
+    if [ $# -eq 2 ] && [ -z "$2" ]; then
+      echo "agent-setup.sh: --fingerprint was given an empty KEY" >&2; exit 2
+    fi
+    key="${2:-${HANDOFF_PRIVKEY:-$HOME/.config/handoff/handoff-priv.pem}}"
     [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     fp=$(fingerprint_of "$key") || { echo "could not read key at $key" >&2; exit 1; }
     echo "key file: $key" >&2

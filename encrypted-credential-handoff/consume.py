@@ -34,8 +34,10 @@ the command it was set up with (SETUP.md, hard rules).
 Per-service variable names differ; map them per invocation instead of
 editing this file:  --env username=APP_USER --env password=APP_PASS
 A target must be a plain variable name, never one that changes how the
-command starts (PATH, LD_*, PYTHON*, BASH_ENV, ...), and two fields can't
-share one target.
+command starts (PATH, LD_*, PYTHON*, GIT_*, BASH_ENV, ...; a partial list),
+and two fields can't share one target, the default mappings included.
+Mapped variables come from the payload only: one the payload leaves out is
+removed from the command's environment, not inherited from the caller's.
 
 Every payload must carry "svc", and it must equal the --label the blob
 was fetched under; otherwise this helper refuses. A payload with unknown
@@ -75,18 +77,22 @@ DEFAULT_ENV_MAP = {
     "token_secret": "SERVICE_TOKEN_SECRET",
 }
 
-# --env target names: a plain identifier, and never one that changes which
-# program runs or how it starts. Mapping a payload field onto PATH, for
-# example, would let whoever wrote the payload choose the binary. This list
-# is a backstop, not the control: SETUP.md's hard rule pins each label to its
-# recorded command and mappings.
+# --env target names: a plain identifier, and never one of the well-known
+# variables that change which program runs or how it starts. Mapping a
+# payload field onto PATH or GIT_SSH_COMMAND, for example, would let whoever
+# wrote the payload choose what runs. This list is a partial backstop, not
+# the control: no list can name every variable every program reads.
+# SETUP.md's hard rule, which pins each label to its recorded command and
+# mappings, is the control.
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 REFUSED_ENV_NAMES = {
     "PATH", "HOME", "IFS", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "PS4",
     "NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB",
-    "JAVA_TOOL_OPTIONS", BLOB_ENV, "HANDOFF_PRIVKEY",
+    "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "GCONV_PATH",
+    "GLIBC_TUNABLES", "LUA_INIT", "PERL5DB", "PAGER", "EDITOR", "VISUAL",
+    "ZDOTDIR", BLOB_ENV, "HANDOFF_PRIVKEY",
 }
-REFUSED_ENV_PREFIXES = ("LD_", "DYLD_", "PYTHON", "BASH_FUNC_")
+REFUSED_ENV_PREFIXES = ("LD_", "DYLD_", "PYTHON", "BASH_FUNC_", "GIT_", "LUA_INIT_")
 
 
 def fail(msg: str) -> "SystemExit":
@@ -154,6 +160,14 @@ def check_payload(payload: dict, label: str, env_map: dict) -> dict:
             continue
         if not isinstance(value, str):
             raise fail("a credential field is not a string; refusing")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            # A lone surrogate from a \ud800-style escape. Say nothing about
+            # it: the exception's own text would quote the character.
+            raise fail("a credential field is not valid UTF-8 text; refusing") from None
+        if "\0" in value:
+            raise fail("a credential field contains a NUL byte; refusing")
         creds[name] = value
     if unknown:
         print(f"consume.py: ignoring {unknown} unknown field(s)", file=sys.stderr)
@@ -208,6 +222,8 @@ def parse_args(argv):
         else:
             raise fail(f"unrecognized argument: {a}")
         i += 1
+    # Counted over the whole map, the default mappings included: a payload
+    # may carry any known field, so no two may ever share a target.
     targets = list(env_map.values())
     if len(set(targets)) != len(targets):
         raise fail("two fields map to the same environment variable; refusing")
@@ -215,7 +231,7 @@ def parse_args(argv):
         raise fail("--label is required (the service label the blob was fetched under)")
     if check and cmd:
         raise fail("--check takes no command; it only inspects the payload")
-    if not check and not cmd:
+    if not check and (not cmd or not cmd[0]):
         raise fail("no command given after -- (or use --check)")
     if blob is None and blob_file is not None:
         try:
@@ -241,6 +257,12 @@ def main() -> int:
         return 0
     env = dict(os.environ)
     env.pop(BLOB_ENV, None)  # the child needs the credentials, not the blob
+    # Every mapped variable comes from this payload or not at all: a value
+    # already in the caller's environment for a field the payload leaves out
+    # would otherwise reach the command beside the payload's values (a
+    # planted blob with only a username would run with the real password).
+    for target in env_map.values():
+        env.pop(target, None)
     for field, value in creds.items():
         env[env_map[field]] = value
     # Deliberately no logging of env or creds here — that is the whole point.
@@ -260,10 +282,9 @@ def main() -> int:
         print(f"consume.py: cannot run {cmd[0]!r}: {e.strerror}", file=sys.stderr)
         return code
     except ValueError:
-        # An embedded NUL, in the command or in a credential value. Say
-        # neither which nor where: the value may be the payload's.
-        print("consume.py: the command or a credential contains a NUL byte; refusing",
-              file=sys.stderr)
+        # An embedded NUL in the command (credential values were checked
+        # above).
+        print("consume.py: the command contains a NUL byte; refusing", file=sys.stderr)
         return 126
     return 0  # not reached: execvpe only returns by raising
 
