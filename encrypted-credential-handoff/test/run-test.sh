@@ -90,6 +90,14 @@ open(sys.argv[2], "w").write(src.replace(block, pub + "\n"))
 PYEOF
 }
 
+# Encrypt the JSON text in $1 to the dummy public key, straight through
+# openssl (no validation), for payloads handoff.sh would never produce.
+enc() {
+  printf '%s' "$1" | openssl pkeyutl -encrypt -pubin -inkey test-dummy-pub.pem \
+    -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
+    -pkeyopt rsa_mgf1_md:sha256 | openssl base64 -A
+}
+
 echo "== 1a. reference decrypt, --check output =="
 consume --label example --check --blob-file blob.txt >"$S/out" 2>"$S/err"
 diff "$S/out" expected-check.txt || fail "--check output differs from expected-check.txt"
@@ -119,6 +127,17 @@ print(os.environ["SERVICE_PASSWORD"] == os.environ.get("CUSTOM_USER"))
 [ "$out" = "$U
 False
 False" ] || fail "--env mapping not applied as expected"
+echo "ok"
+
+echo "== 1d. mapped variables come from the payload only =="
+# A payload without a password must not run with one inherited from the
+# caller's environment.
+out=$(SERVICE_PASSWORD=inherited CUSTOM_PASS=inherited consume --label example \
+  --blob "$(enc '{"svc":"example","username":"only-user"}')" --env password=CUSTOM_PASS -- python3 -c '
+import os
+print(os.environ["SERVICE_USERNAME"], os.environ.get("CUSTOM_PASS"), os.environ.get("SERVICE_PASSWORD"))
+')
+[ "$out" = "only-user None inherited" ] || fail "an inherited mapped variable reached the command: $out"
 echo "ok"
 
 echo "== 2a. child stdin passes through untouched =="
@@ -190,6 +209,14 @@ got=$(HANDOFF_KEY_DIR="$S/no-such-dir" bash ../agent-setup.sh --fingerprint 2>"$
 grep -qxF "key file: $TMPKEY" "$S/err" || fail "--fingerprint did not name the key file it read"
 got=$(env -u HANDOFF_PRIVKEY bash ../agent-setup.sh --fingerprint "$TMPKEY" 2>/dev/null)
 [ "$got" = "$want" ] || fail "agent-setup.sh --fingerprint KEY gave $got"
+# With HANDOFF_PRIVKEY unset, it falls back to consume.py's default, not to
+# $HANDOFF_KEY_DIR: the two must name the same key.
+mkdir -p "$S/home/.config/handoff"
+cp "$TMPKEY" "$S/home/.config/handoff/handoff-priv.pem"
+got=$(env -u HANDOFF_PRIVKEY HOME="$S/home" HANDOFF_KEY_DIR="$S/no-such-dir" bash ../agent-setup.sh --fingerprint 2>"$S/err")
+if [ "$got" != "$want" ] || ! grep -qxF "key file: $S/home/.config/handoff/handoff-priv.pem" "$S/err"; then
+  fail "--fingerprint's default is not consume.py's default ($got; $(cat "$S/err"))"
+fi
 echo "ok"
 
 echo "== 4b. a freshly generated key: setup output, --fingerprint and handoff.sh agree =="
@@ -241,12 +268,30 @@ expect_refusal "--env PYTHONSTARTUP" 1 "would change how the command starts" \
   consume --label example --blob-file blob.txt --env password=PYTHONSTARTUP -- true
 expect_refusal "--env BASH_ENV" 1 "would change how the command starts" \
   consume --label example --blob-file blob.txt --env password=BASH_ENV -- true
+for name in GIT_SSH_COMMAND JDK_JAVA_OPTIONS _JAVA_OPTIONS DYLD_INSERT_LIBRARIES HOME IFS ENV GCONV_PATH HANDOFF_PRIVKEY HANDOFF_BLOB; do
+  expect_refusal "--env $name" 1 "would change how the command starts" \
+    consume --label example --blob-file blob.txt --env "password=$name" -- true
+done
 expect_refusal "--env not a variable name" 1 "not a valid variable name" \
   consume --label example --blob-file blob.txt --env 'password=A B' -- true
 expect_refusal "--env two fields, one target" 1 "same environment variable" \
   consume --label example --blob-file blob.txt --env username=SERVICE_PASSWORD -- true
 expect_refusal "command not found" 127 "cannot run" \
   consume --label example --blob-file blob.txt -- "$S/no-such-command"
+printf '#!/bin/sh\n' > "$S/not-executable"; chmod 644 "$S/not-executable"
+expect_refusal "command not executable" 126 "cannot run" \
+  consume --label example --blob-file blob.txt -- "$S/not-executable"
+expect_refusal "empty command" 1 "no command given" \
+  consume --label example --blob-file blob.txt -- ""
+expect_refusal "NUL in a credential (run mode)" 1 "contains a NUL byte" \
+  consume --label example --blob "$(enc '{"svc":"example","password":"a\u0000b"}')" -- true
+expect_refusal "NUL in a credential (--check)" 1 "contains a NUL byte" \
+  consume --label example --check --blob "$(enc '{"svc":"example","password":"a\u0000b"}')"
+expect_refusal "lone surrogate in a credential (run mode)" 1 "not valid UTF-8" \
+  consume --label example --blob "$(enc '{"svc":"example","password":"a\ud800b"}')" -- true
+expect_refusal "lone surrogate in a credential (--check)" 1 "not valid UTF-8" \
+  consume --label example --check --blob "$(enc '{"svc":"example","password":"a\ud800b"}')"
+! grep -q 'ud800\|position' "$S/err" || fail "the surrogate refusal quoted the payload"
 expect_refusal "agent-setup.sh re-run over an existing key" 1 "refusing to overwrite existing key" \
   env HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh
 expect_refusal "agent-setup.sh unknown argument" 2 "usage: agent-setup.sh" \
@@ -254,6 +299,13 @@ expect_refusal "agent-setup.sh unknown argument" 2 "usage: agent-setup.sh" \
 [ ! -e "$S/typo" ] || fail "agent-setup.sh created a key directory for an unknown argument"
 expect_refusal "agent-setup.sh --fingerprint, no key" 1 "no key file at" \
   env HANDOFF_PRIVKEY="$S/no-such-key.pem" bash ../agent-setup.sh --fingerprint
+expect_refusal "agent-setup.sh --fingerprint, two keys" 2 "usage: agent-setup.sh --fingerprint" \
+  bash ../agent-setup.sh --fingerprint "$TMPKEY" "$TMPKEY"
+expect_refusal "agent-setup.sh --fingerprint, empty KEY" 2 "empty KEY" \
+  bash ../agent-setup.sh --fingerprint ""
+expect_refusal "agent-setup.sh --fingerprint, a public key" 1 "could not read key" \
+  bash ../agent-setup.sh --fingerprint test-dummy-pub.pem
+[ "$(grep -c . "$S/err")" -le 3 ] || fail "--fingerprint on a public key printed more than one openssl error"
 long=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "x" * 160}, separators=(",", ":")), end="")')
 [ "${#long}" = 191 ] || fail "test setup: oversize payload is ${#long} bytes, not 191"
 expect_refusal "handoff.sh 191-byte payload" 1 "payload is 191 bytes" \
