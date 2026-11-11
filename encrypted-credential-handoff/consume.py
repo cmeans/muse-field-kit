@@ -1,9 +1,9 @@
 #!/bin/sh
 """":
-exec python3 -I "$0" "$@"
-(Lines 1-3 are for sh: run as ./consume.py, this file re-runs itself as
-`python3 -I`, with no `env -S`, which BusyBox and older coreutils lack.
-To Python they are the start of this docstring.)
+exec python3 -I "$0" "$@" || exit 127
+(Lines 1-3 are for sh: run as ./consume.py or sh consume.py, this file
+re-runs itself as python3 -I, with no env -S, which BusyBox and older
+coreutils lack. To Python they are the start of this docstring.)
 
 Consume-side template for the encrypted credential handoff.
 
@@ -39,10 +39,16 @@ the command it was set up with (SETUP.md, hard rules).
 
 Per-service variable names differ; map them per invocation instead of
 editing this file:  --env username=APP_USER --env password=APP_PASS
-Only the fields above can be mapped, each at most once. Every credential
-variable the command sees comes from this payload: the default names and
-the mapped ones are all removed from the inherited environment first, along
-with $HANDOFF_BLOB and $HANDOFF_PRIVKEY.
+Only the fields above can be mapped, each at most once. The default names
+(SERVICE_*) and this call's mapped names are removed from the inherited
+environment before the payload's values go in, along with $HANDOFF_BLOB
+and $HANDOFF_PRIVKEY. Other variables pass through as inherited, including
+a credential an outer wrapper mapped under a name this call doesn't use:
+don't nest wrappers, or start the inner one with a clean environment.
+
+A blob file must be a regular file. A pipe, a FIFO, a tty, /dev/stdin and
+a process substitution (--blob-file <(fetch)) are refused: give the blob
+with --blob "$(fetch)" or $HANDOFF_BLOB instead.
 
 Exactly one blob source (--blob, --blob-file or $HANDOFF_BLOB), and
 --label, --blob, --blob-file and --check at most once each: a wrapper's
@@ -121,10 +127,12 @@ REFUSED_ENV_NAMES = {n.upper() for n in (
     # where it connects, and whom it trusts
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "NO_PROXY",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-    "NODE_EXTRA_CA_CERTS", "SSLKEYLOGFILE",
+    "NODE_EXTRA_CA_CERTS", "SSLKEYLOGFILE", "HOSTALIASES", "CURL_HOME",
+    "WGETRC", "DOCKER_HOST", "KUBECONFIG", "XDG_CONFIG_HOME",
 )}
 REFUSED_ENV_PREFIXES = (
     "LD_", "DYLD_", "PYTHON", "BASH_FUNC_", "GIT_", "LUA_INIT_", "OPENSSL_",
+    "NPM_CONFIG_", "PIP_",
 )
 
 
@@ -161,7 +169,9 @@ def check_openssl() -> None:
     # The same gate as handoff.sh: LibreSSL's pkeyutl OAEP behavior is
     # unverified for this protocol.
     try:
-        out = subprocess.run(["openssl", "version"], capture_output=True, text=True)
+        out = subprocess.run(
+            ["openssl", "version"], capture_output=True, text=True, errors="replace"
+        )
     except FileNotFoundError:
         raise fail("openssl not found") from None
     version = out.stdout.strip()
@@ -353,13 +363,19 @@ def parse_args(argv):
     if blob_file is not None:
         path = expand_home(blob_file, "--blob-file")
         try:
+            # Opened non-blocking, so a FIFO with no writer can't hang the
+            # open before the check. A regular file only: /dev/stdin, a pipe
+            # or a tty would take the command's stdin. (A redirect from a
+            # file, < blob.txt, is a regular file and isn't caught here.)
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                os.close(fd)
+                raise fail(
+                    f"blob file at {blob_file} is not a regular file; "
+                    "use --blob or $HANDOFF_BLOB for a pipe"
+                )
             # utf-8-sig: some editors save a byte-order mark first.
-            with open(path, "r", encoding="utf-8-sig") as fh:
-                # A regular file only: --blob-file /dev/stdin (or a pipe, a
-                # tty) would take the command's stdin. A redirect from a
-                # file (< blob.txt) is a regular file and isn't caught here.
-                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                    raise fail(f"blob file at {blob_file} is not a regular file")
+            with os.fdopen(fd, "r", encoding="utf-8-sig") as fh:
                 blob = fh.read(MAX_BLOB_FILE + 1)
         except OSError as e:
             # strerror comes from the OS, never from the file's contents.
@@ -376,6 +392,10 @@ def parse_args(argv):
 
 
 def main() -> int:
+    if sys.version_info < (3, 7):
+        # capture_output and text= need 3.7; say so instead of a traceback.
+        print("consume.py: requires Python 3.7 or later", file=sys.stderr)
+        return 1
     label, check, blob, env_map, cmd = parse_args(sys.argv[1:])
     payload = decrypt(blob)
     creds = check_payload(payload, label, env_map)
@@ -388,12 +408,12 @@ def main() -> int:
     # The command needs the credentials, not the blob or the key's path.
     env.pop(BLOB_ENV, None)
     env.pop(PRIVKEY_ENV, None)
-    # Every credential variable comes from this payload or not at all: a
-    # value already in the caller's environment would otherwise reach the
-    # command beside the payload's values (a planted blob with only a
-    # username would run with the real password, and a nested wrapper would
-    # hand service A's SERVICE_PASSWORD to service B). That covers the
-    # current targets and the default names, remapped or not.
+    # The default names and this call's targets come from this payload or
+    # not at all: a value already in the caller's environment would otherwise
+    # reach the command beside the payload's values (a planted blob with only
+    # a username would run with the real password, and a nested wrapper would
+    # hand service A's SERVICE_PASSWORD to service B). Other names pass
+    # through (see the docstring on nesting).
     for target in set(env_map.values()) | set(DEFAULT_ENV_MAP.values()):
         env.pop(target, None)
     for field, value in creds.items():
