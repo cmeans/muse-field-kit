@@ -1,5 +1,17 @@
 # Changelog — encrypted-credential-handoff
 
+## Unreleased — QA round 5 revision (2026-11-11)
+
+QA's round 5 on PR #1 (13 Low, 2 Nit, mostly from a cross-platform pass). Fixed:
+
+- **The launcher:** `exec python3 -I "$0" "$@" || exit 127`, so a failed exec can't fall through into the docstring as shell, and test 2b now runs through the launcher too (`sh consume.py`), checking the command takes the helper's PID. `.gitattributes` keeps the scripts and vectors LF (a CRLF checkout broke the launcher and put `\r` on the last argument), and CI fails on a CR in them.
+- **Blob files:** opened non-blocking, so a FIFO with no writer is refused instead of hanging; pipes, FIFOs and process substitutions are refused (use `--blob` or `$HANDOFF_BLOB`), as the docstring now says.
+- **Wording that was broader than the code:** the helper removes the default names and its own mappings from the inherited environment, not an outer wrapper's mappings under other names. The docstring and SETUP say so, and SETUP adds that a wrapper passes `"$@"` only after `--`, and that wrappers shouldn't nest.
+- **More `--env` names refused:** `HOSTALIASES`, `CURL_HOME`, `WGETRC`, `DOCKER_HOST`, `KUBECONFIG`, `XDG_CONFIG_HOME`, and the `NPM_CONFIG_` and `PIP_` prefixes. The test now checks every listed name in both cases and every prefix, from its own copy of the list.
+- **Tests:** the leak marker is now in every crafted value (`1d`, the 190/191-byte payloads, `handoff.sh`'s refusal inputs); `handoff.sh`'s OpenSSL gate is tested with a fake LibreSSL, for `--fingerprint` and for encrypting; the ERR trap reports a failure once.
+- **Counts:** 73 refusal checks plus one over 107 `--env` targets; a mutation run of 94 mutants (QA's round-5 survivors included), checked against a passing unmutated suite first, kills all 94. macOS portability of the test itself is issue #3.
+- **Smaller:** `check_openssl` decodes openssl's output with `errors="replace"`; Python older than 3.7 gets a message, not a traceback; `on-unlabel` re-reads the head and doesn't promote for a commit that's no longer the head; SETUP notes macOS's LibreSSL and a GUI client's minimal `PATH`.
+
 ## Unreleased — QA round 4 revision (2026-11-11)
 
 QA's round 4 on PR #1 (1 Medium, 16 Low, 2 Nit). Fixed:
