@@ -1,3 +1,3 @@
 svc: matches label 'example'
-password: 4 bytes
-username: 4 bytes
+password: 16 bytes
+username: 14 bytes
