@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only token for every job: nothing here writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # NOTE: pr-labels.yml and pr-labels-ci.yml find this workflow by its name
+  # ("CI") and file (ci.yml). If either is renamed, update them too.
+  encrypted-credential-handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tool versions
+        run: |
+          openssl version
+          python3 --version
+          bash --version | head -1
+          jq --version
+          shellcheck --version | sed -n 2p
+      - name: Execute bits are committed
+        # A fresh clone must be able to run ./handoff.sh and friends.
+        run: |
+          bad=$(git ls-files -s encrypted-credential-handoff \
+            | awk '$1 != "100755" && $4 ~ /(\.sh|\.py)$/ { print $4 }')
+          if [ -n "$bad" ]; then
+            echo "not executable in git: $bad"
+            exit 1
+          fi
+      - name: shellcheck
+        run: shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*.sh
+      - name: ruff
+        run: pipx run ruff==0.15.7 check encrypted-credential-handoff/
+      - name: Interop and refusal tests
+        run: ./encrypted-credential-handoff/test/run-test.sh
