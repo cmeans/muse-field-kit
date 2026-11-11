@@ -26,13 +26,19 @@
 #
 # The scripts are run through python3 / bash explicitly, so the test
 # doesn't depend on their execute bits surviving a download.
-set -euo pipefail
+set -Eeuo pipefail
+# A failing command substitution (got=$(...)) stops the script under set -e
+# before its own check can say why: name the line instead.
+trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 cd "$(dirname "$0")"
 
 # The dummy values in expected.json / blob.txt. Distinct on purpose: a test
 # that can't tell the username from the password can't catch a swap.
 U=dummy-user-Qx7
 P=dummy-pass-K3z9w
+# Every value the test crafts itself (enc, unknown.json) carries this marker,
+# so the leak check covers them too.
+MK=mk-Zq9
 
 # consume.py refuses group/other-readable keys on principle; the repo copy
 # of the dummy key is world-readable by design (it's a published vector),
@@ -54,7 +60,7 @@ consume() { python3 ../consume.py "$@"; }
 no_dummy_in() {
   local f
   for f in "$@"; do
-    if grep -qF -e "$U" -e "$P" "$f"; then
+    if grep -qF -e "$U" -e "$P" -e "$MK" "$f"; then
       fail "a dummy credential value appeared in the helper's own output ($(basename "$f"))"
     fi
   done
@@ -118,7 +124,8 @@ $P" ] || fail "unexpected env values"
 echo "ok"
 
 echo "== 1c. per-invocation --env mapping =="
-out=$(consume --label example --blob-file blob.txt --env username=CUSTOM_USER -- python3 -c '
+# An inherited SERVICE_USERNAME must not survive the remapping either.
+out=$(SERVICE_USERNAME=inherited consume --label example --blob-file blob.txt --env username=CUSTOM_USER -- python3 -c '
 import os
 print(os.environ["CUSTOM_USER"])
 print("SERVICE_USERNAME" in os.environ)
@@ -132,12 +139,15 @@ echo "ok"
 echo "== 1d. mapped variables come from the payload only =="
 # A payload without a password must not run with one inherited from the
 # caller's environment.
+# Nor one under a remapped default name (SERVICE_PASSWORD, with password
+# mapped to CUSTOM_PASS): a nested wrapper's parent may have set it for
+# another service.
 out=$(SERVICE_PASSWORD=inherited CUSTOM_PASS=inherited consume --label example \
   --blob "$(enc '{"svc":"example","username":"only-user"}')" --env password=CUSTOM_PASS -- python3 -c '
 import os
 print(os.environ["SERVICE_USERNAME"], os.environ.get("CUSTOM_PASS"), os.environ.get("SERVICE_PASSWORD"))
 ')
-[ "$out" = "only-user None inherited" ] || fail "an inherited mapped variable reached the command: $out"
+[ "$out" = "only-user None None" ] || fail "an inherited credential variable reached the command: $out"
 echo "ok"
 
 echo "== 2a. the command's stdin passes through untouched =="
@@ -186,9 +196,19 @@ print(os.environ["SERVICE_PASSWORD"])
 $P" ] || fail "handoff.sh blob did not round-trip"
 out=$(HANDOFF_BLOB="$(cat "$S/blob2")" consume --label example -- python3 -c '
 import os
-print("HANDOFF_BLOB" in os.environ)
+print("HANDOFF_BLOB" in os.environ, "HANDOFF_PRIVKEY" in os.environ)
 ')
-[ "$out" = "False" ] || fail "the blob was passed on to the command's environment"
+[ "$out" = "False False" ] || fail "the blob or the key's path was passed on to the command's environment: $out"
+# The command gets SIGPIPE and SIGXFSZ at their defaults (Python ignores
+# both at startup, and an ignored signal stays ignored across exec).
+if [ -r /proc/self/status ]; then
+  ign=$(HANDOFF_BLOB="$(cat "$S/blob2")" consume --label example -- sh -c 'grep "^SigIgn:" /proc/self/status' | awk '{print $2}')
+  mask=$((16#$ign))
+  [ $(( (mask >> 12) & 1 )) = 0 ] && [ $(( (mask >> 24) & 1 )) = 0 ] \
+    || fail "the command inherited SIGPIPE or SIGXFSZ ignored (SigIgn $ign)"
+else
+  echo "skip: no /proc, signal dispositions not checked"
+fi
 # 190 bytes is the RSA-2048/OAEP-SHA256 ceiling: exactly that must work.
 max=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "y" * 159}, separators=(",", ":")), end="")')
 [ "${#max}" = 190 ] || fail "test setup: maximum payload is ${#max} bytes, not 190"
@@ -299,7 +319,9 @@ expect_refusal "--env PYTHONSTARTUP" 1 "would change how the command starts" \
   consume --label example --blob-file blob.txt --env password=PYTHONSTARTUP -- true
 expect_refusal "--env BASH_ENV" 1 "would change how the command starts" \
   consume --label example --blob-file blob.txt --env password=BASH_ENV -- true
-for name in GIT_SSH_COMMAND JDK_JAVA_OPTIONS _JAVA_OPTIONS DYLD_INSERT_LIBRARIES HOME IFS ENV GCONV_PATH HANDOFF_PRIVKEY HANDOFF_BLOB; do
+# https_proxy in lower case: the names are compared case-insensitively.
+for name in GIT_SSH_COMMAND JDK_JAVA_OPTIONS _JAVA_OPTIONS DYLD_INSERT_LIBRARIES HOME IFS ENV GCONV_PATH HANDOFF_PRIVKEY HANDOFF_BLOB \
+    OPENSSL_CONF https_proxy ALL_PROXY SSL_CERT_FILE REQUESTS_CA_BUNDLE CLASSPATH PROMPT_COMMAND; do
   expect_refusal "--env $name" 1 "would change how the command starts" \
     consume --label example --blob-file blob.txt --env "password=$name" -- true
 done
@@ -321,14 +343,66 @@ expect_refusal "command not executable" 126 "cannot run" \
 expect_refusal "empty command" 1 "no command given" \
   consume --label example --blob-file blob.txt -- ""
 expect_refusal "NUL in a credential (run mode)" 1 "contains a NUL byte" \
-  consume --label example --blob "$(enc '{"svc":"example","password":"a\u0000b"}')" -- true
+  consume --label example --blob "$(enc '{"svc":"example","password":"mk-Zq9\u0000b"}')" -- true
 expect_refusal "NUL in a credential (--check)" 1 "contains a NUL byte" \
-  consume --label example --check --blob "$(enc '{"svc":"example","password":"a\u0000b"}')"
+  consume --label example --check --blob "$(enc '{"svc":"example","password":"mk-Zq9\u0000b"}')"
 expect_refusal "lone surrogate in a credential (run mode)" 1 "not valid UTF-8" \
-  consume --label example --blob "$(enc '{"svc":"example","password":"a\ud800b"}')" -- true
+  consume --label example --blob "$(enc '{"svc":"example","password":"mk-Zq9\ud800b"}')" -- true
 expect_refusal "lone surrogate in a credential (--check)" 1 "not valid UTF-8" \
-  consume --label example --check --blob "$(enc '{"svc":"example","password":"a\ud800b"}')"
+  consume --label example --check --blob "$(enc '{"svc":"example","password":"mk-Zq9\ud800b"}')"
 ! grep -q 'ud800\|position' "$S/err" || fail "the surrogate refusal quoted the payload"
+expect_refusal "payload without svc" 1 "no 'svc' field" \
+  consume --label example --check --blob "$(enc '{"username":"mk-Zq9-user"}')"
+expect_refusal "payload not JSON" 1 "not valid JSON" \
+  consume --label example --check --blob "$(enc 'mk-Zq9 not json')"
+expect_refusal "payload not a JSON object" 1 "not a JSON object" \
+  consume --label example --check --blob "$(enc '["mk-Zq9"]')"
+expect_refusal "credential not a string" 1 "not a string" \
+  consume --label example --check --blob "$(enc '{"svc":"example","password":9817263}')"
+! grep -q 9817263 "$S/err" || fail "the non-string refusal echoed the value"
+expect_refusal "empty credential" 1 "is empty" \
+  consume --label example --blob "$(enc '{"svc":"example","username":"mk-Zq9-user","password":""}')" -- true
+expect_refusal "empty blob" 1 "the blob is empty" \
+  consume --label example --check --blob ''
+expect_refusal "short blob" 1 "decodes to 10 bytes, not 256" \
+  consume --label example --check --blob "$(head -c 10 /dev/zero | base64)"
+python3 -c 'print("A" * 9000)' > "$S/big-blob.txt"
+expect_refusal "oversized blob file" 1 "over 8192 characters" \
+  consume --label example --check --blob-file "$S/big-blob.txt"
+expect_refusal "no blob supplied" 1 "no blob supplied" \
+  consume --label example --check
+expect_refusal "two blob sources" 1 "more than one blob source" \
+  consume --label example --check --blob "$(cat blob.txt)" --blob-file blob.txt
+expect_refusal "blob option and \$HANDOFF_BLOB" 1 "more than one blob source" \
+  env HANDOFF_BLOB="$(cat blob.txt)" python3 ../consume.py --label example --check --blob-file blob.txt
+expect_refusal "--label twice" 1 "--label given twice" \
+  consume --label other --label example --check --blob-file blob.txt
+expect_refusal "--env without =" 1 "--env takes field=NAME" \
+  consume --label example --blob-file blob.txt --env password -- true
+expect_refusal "option without its value" 1 "--label needs a value" \
+  consume --label
+expect_refusal "unrecognized argument" 1 "unrecognized argument" \
+  consume --label example --check --blob-file blob.txt --verbose
+mkdir -p "$S/fake-ssl"; ln -sf "$(command -v python3)" "$S/fake-ssl/python3"
+printf '#!/bin/sh\necho "LibreSSL 3.8.2"\n' > "$S/fake-ssl/openssl"; chmod 755 "$S/fake-ssl/openssl"
+expect_refusal "not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
+  env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
+# ~/ is expanded, ~user is refused, and both scripts agree on each.
+mkdir -p "$S/home2"; cp blob.txt "$S/home2/b.txt"
+# shellcheck disable=SC2088
+HOME="$S/home2" consume --label example --check --blob-file '~/b.txt' >"$S/out" \
+  || fail "--blob-file did not expand ~/"
+# shellcheck disable=SC2088
+expect_refusal "~user in HANDOFF_PRIVKEY (consume.py)" 1 "only ~/ is expanded" \
+  env HANDOFF_PRIVKEY='~root/k.pem' python3 ../consume.py --label example --check --blob-file blob.txt
+# shellcheck disable=SC2088
+expect_refusal "~user in HANDOFF_PRIVKEY (agent-setup.sh)" 1 "only ~/ is expanded" \
+  env HANDOFF_PRIVKEY='~root/k.pem' bash ../agent-setup.sh --fingerprint
+# shellcheck disable=SC2088
+expect_refusal "~user in HANDOFF_KEY_DIR" 1 "only ~/ is expanded" \
+  env HANDOFF_KEY_DIR='~root/kd' bash ../agent-setup.sh
+expect_refusal "agent-setup.sh without HOME" 1 "HOME is not set" \
+  env -u HOME bash ../agent-setup.sh --fingerprint
 expect_refusal "agent-setup.sh re-run over an existing key" 1 "refusing to overwrite existing key" \
   env HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh
 expect_refusal "agent-setup.sh unknown argument" 2 "usage: agent-setup.sh" \
@@ -342,7 +416,9 @@ expect_refusal "agent-setup.sh --fingerprint, empty KEY" 2 "empty KEY" \
   bash ../agent-setup.sh --fingerprint ""
 expect_refusal "agent-setup.sh --fingerprint, a public key" 1 "could not read key" \
   bash ../agent-setup.sh --fingerprint test-dummy-pub.pem
-[ "$(grep -c . "$S/err")" -le 3 ] || fail "--fingerprint on a public key printed more than one openssl error"
+# At most 3 lines: the first openssl stage's error (one or two lines) and
+# "could not read key". More means the next stage's error came through too.
+[ "$(grep -c . "$S/err")" -le 3 ] || fail "--fingerprint on a public key printed the second openssl stage's error too"
 long=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "x" * 160}, separators=(",", ":")), end="")')
 [ "${#long}" = 191 ] || fail "test setup: oversize payload is ${#long} bytes, not 191"
 expect_refusal "handoff.sh 191-byte payload" 1 "payload is 191 bytes" \
