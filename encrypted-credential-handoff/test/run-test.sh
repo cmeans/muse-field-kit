@@ -774,6 +774,9 @@ expect_refusal "openssl version failing" 1 "openssl version failed: openssl: err
   env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "agent-setup.sh re-run over an existing key" 1 "refusing to overwrite existing key" \
   env HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh
+# Its hint names the key to rotate: HANDOFF_KEY_DIR doesn't apply to --rotate.
+grep -qF "run HANDOFF_PRIVKEY=$S/agent/handoff-priv.pem agent-setup.sh --rotate" "$S/err" \
+  || fail "the overwrite refusal's hint doesn't name the key to rotate"
 expect_refusal "agent-setup.sh unknown argument" 2 "usage: agent-setup.sh" \
   env HANDOFF_KEY_DIR="$S/typo" bash ../agent-setup.sh --fingerprnt
 [ ! -e "$S/typo" ] || fail "agent-setup.sh created a key directory for an unknown argument"
@@ -899,10 +902,31 @@ printf '#!/bin/sh\nfor a; do [ "$a" = -encrypt ] && { cat >/dev/null; head -c 25
 chmod 755 "$S/badenc/openssl"
 expect_refusal "--rewrap whose new blob doesn't open" 1 "the new blob doesn't open with the current key" \
   rk env PATH="$S/badenc:/usr/bin:/bin" python3 ../consume.py --label example --rewrap --blob-file blob.txt
-# One rotation at a time.
-expect_refusal "--rotate during a rotation" 1 "a rotation is under way" \
-  rk bash ../agent-setup.sh --rotate
+# The self-check compares payloads, not just that the new blob opens: an
+# openssl whose -encrypt encrypts another valid payload is caught too.
+mkdir -p "$S/swapenc"; ln -sf "$PY" "$S/swapenc/python3"
+# shellcheck disable=SC2016  # $a and $@ belong to the generated script
+printf '#!/bin/sh\nfor a; do [ "$a" = -encrypt ] && { cat >/dev/null; printf %%s %s | %s "$@"; exit $?; }; done\nexec %s "$@"\n' \
+  "'{\"svc\":\"example\",\"password\":\"mk-Zq9-other\"}'" "$(command -v openssl)" "$(command -v openssl)" > "$S/swapenc/openssl"
+chmod 755 "$S/swapenc/openssl"
+expect_refusal "--rewrap whose new blob opens to another payload" 1 "to the same payload" \
+  rk env PATH="$S/swapenc:/usr/bin:/bin" python3 ../consume.py --label example --rewrap --blob-file blob.txt
+# One rotation at a time: during one, --rotate rotates nothing, exits 1, and
+# shows the current (new) key's public key and fingerprint again.
+rc=0; rk bash ../agent-setup.sh --rotate >"$R/out" 2>"$R/err" || rc=$?
+[ "$rc" = 1 ] || fail "--rotate during a rotation: exit $rc, expected 1"
+grep -qF "a rotation is under way" "$R/err" || fail "--rotate during a rotation didn't say so"
+grep -qxF "current (new) public key fingerprint: $new_fp" "$R/out" || fail "--rotate during a rotation didn't show the new key's fingerprint"
+grep -qF -- "-----BEGIN PUBLIC KEY-----" "$R/out" || fail "--rotate during a rotation didn't show the new public key"
 [ "$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$new_fp" ] || fail "a refused --rotate changed the key"
+# A symlinked key path is refused by --rotate and --retire.
+ln -s "$R/k.pem" "$R/link.pem"
+expect_refusal "--rotate through a symlink" 1 "is a symlink" \
+  env HANDOFF_PRIVKEY="$R/link.pem" bash ../agent-setup.sh --rotate
+expect_refusal "--retire through a symlink" 1 "is a symlink" \
+  env HANDOFF_PRIVKEY="$R/link.pem" bash ../agent-setup.sh --retire
+[ -e "$R/k.pem.previous" ] || fail "a refused --retire deleted the previous key"
+rm "$R/link.pem"
 # --retire deletes the previous key; old blobs stop opening, new ones don't.
 rk bash ../agent-setup.sh --retire >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--retire failed"; }
 [ ! -e "$R/k.pem.previous" ] || fail "--retire left the previous key"
