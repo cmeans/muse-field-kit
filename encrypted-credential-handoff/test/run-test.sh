@@ -335,6 +335,35 @@ expect_refusal "an encrypted key, passphrase on stdin" 1 "cannot load the privat
 # shellcheck disable=SC2016  # $1 is the inner shell's argument
 expect_refusal "agent-setup.sh --fingerprint, an encrypted key" 1 "could not read key" \
   bash -c 'echo mk-Zq9-pass | bash ../agent-setup.sh --fingerprint "$1"' _ "$S/enc-key.pem"
+# Only RSA-2048 keys: an Ed25519 or P-256 key loads but isn't this protocol's.
+openssl genpkey -algorithm ED25519 -out "$S/ed25519.pem" 2>/dev/null
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$S/p256.pem" 2>/dev/null
+chmod 600 "$S/ed25519.pem" "$S/p256.pem"
+for k in ed25519 p256; do
+  expect_refusal "a $k key (consume.py)" 1 "is not an RSA-2048 key" \
+    env HANDOFF_PRIVKEY="$S/$k.pem" python3 ../consume.py --label example --check --blob-file blob.txt
+  expect_refusal "a $k key (agent-setup.sh --fingerprint)" 1 "is not an RSA-2048 key" \
+    bash ../agent-setup.sh --fingerprint "$S/$k.pem"
+done
+# A key file over 16384 bytes is refused before openssl sees it (its decoder
+# is very slow on large junk).
+head -c 20000 /dev/zero | tr '\0' 'A' > "$S/big-key.pem"; chmod 600 "$S/big-key.pem"
+expect_refusal "an oversized key file (consume.py)" 1 "over 16384" \
+  timeout 20 env HANDOFF_PRIVKEY="$S/big-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
+expect_refusal "an oversized key file (agent-setup.sh --fingerprint)" 1 "over 16384 bytes" \
+  timeout 20 bash ../agent-setup.sh --fingerprint "$S/big-key.pem"
+# Under a terminal (a pseudo-terminal from script), an encrypted key still
+# isn't prompted for: no "Enter pass phrase", and no hang.
+if command -v script >/dev/null; then
+  out=$(HANDOFF_PRIVKEY="$S/enc-key.pem" timeout 20 script -qec "python3 ../consume.py --label example --check --blob-file blob.txt" /dev/null 2>&1) || true
+  case "$out" in
+    *"Enter pass phrase"*) fail "the helper prompted for a key passphrase on a terminal" ;;
+    *"cannot load the private key"*) echo "ok (refused: an encrypted key under a terminal, no prompt)" ;;
+    *) fail "an encrypted key under a terminal: unexpected output: $out" ;;
+  esac
+else
+  echo "skip: script(1) missing, the terminal prompt check didn't run"
+fi
 expect_refusal "missing key" 1 "cannot read private key" \
   env HANDOFF_PRIVKEY="$S/no-such-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "--env PATH" 1 "is on the refused list" \
@@ -532,6 +561,21 @@ expect_refusal "handoff.sh, empty openssl version" 1 "found: no version output" 
   env PATH="$S/empty-ssl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
 expect_refusal "consume.py, empty openssl version" 1 "found: no version output" \
   env PATH="$S/empty-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
+# openssl's error text: silent (no reason, no traceback), the readable line
+# picked over openssl's hex-prefixed internal lines, the first of two
+# readable lines, and a long line cut short.
+mkdir -p "$S/reason-ssl"; ln -sf "$PY" "$S/reason-ssl/python3"
+printf '#!/bin/sh\nexit 1\n' > "$S/reason-ssl/openssl"; chmod 755 "$S/reason-ssl/openssl"
+expect_refusal "consume.py, openssl version fails silently" 1 "openssl version failed" \
+  env PATH="$S/reason-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
+grep -qx "consume.py: openssl version failed" "$S/err" || fail "a silent openssl failure got a reason: $(cat "$S/err")"
+printf '#!/bin/sh\nprintf "00AB12CD:error:0A000086:SSL routines::internal\\nfirst readable reason\\nsecond readable reason\\n" >&2\nexit 1\n' > "$S/reason-ssl/openssl"
+expect_refusal "consume.py, openssl's readable line" 1 "openssl version failed: first readable reason" \
+  env PATH="$S/reason-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
+printf '#!/bin/sh\nhead -c 5000 /dev/zero | tr "\\0" x >&2\nexit 1\n' > "$S/reason-ssl/openssl"
+expect_refusal "consume.py, a long openssl error" 1 "openssl version failed: xxx" \
+  env PATH="$S/reason-ssl:/usr/bin:/bin" python3 ../consume.py --label example --check --blob-file blob.txt
+[ "$(wc -c < "$S/err")" -lt 400 ] || fail "a long openssl error came back whole ($(wc -c < "$S/err") bytes)"
 # On macOS the hint names Homebrew's openssl@3: OSTYPE (which bash takes
 # from the environment) and sys.platform are faked to say darwin.
 ln -sf "$PY" "$S/libressl/python3"
