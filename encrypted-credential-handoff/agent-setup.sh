@@ -65,7 +65,7 @@ expand_home() {  # PATH WHAT
 need_openssl() {
   command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
   local v
-  v=$(openssl version)
+  v=$(openssl version) || { echo "openssl version failed" >&2; exit 1; }
   case "$v" in
     "OpenSSL 3."*|"OpenSSL 4."*) ;;
     *) echo "requires OpenSSL 3 or 4; found: ${v:-no version output}. Put one first in the PATH this runs with (in a wrapper, its PATH= line)$(case "${OSTYPE-}" in darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;

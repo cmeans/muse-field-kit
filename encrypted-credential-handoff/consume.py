@@ -254,7 +254,12 @@ def decrypt(blob_b64: str) -> dict:
     if proc.returncode != 0:
         # openssl's stderr names algorithms and key problems, never secrets.
         detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
-        raise fail("decryption failed" + (f": {detail[-1]}" if detail else ""))
+        raise fail(
+            "decryption failed"
+            + (f": {detail[-1]}" if detail else "")
+            + " (a blob made for another key, or a damaged one: check that"
+            " HANDOFF_PRIVKEY names the key this blob was made for)"
+        )
     try:
         payload = json.loads(proc.stdout.decode("utf-8"))
     except Exception:

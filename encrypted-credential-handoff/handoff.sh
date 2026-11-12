@@ -36,12 +36,13 @@ done
 
 command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 
-# Fail closed on the wrong crypto tool: LibreSSL's pkeyutl OAEP behavior
-# differs and is unverified for this protocol.
-ssl_version=$(openssl version)
+# Fail closed on the wrong crypto tool, the same gate as agent-setup.sh and
+# consume.py: LibreSSL's pkeyutl OAEP behavior differs and is unverified for
+# this protocol. (The hint leaves out wrappers: this runs in the user's shell.)
+ssl_version=$(openssl version) || { echo "openssl version failed" >&2; exit 1; }
 case "$ssl_version" in
   "OpenSSL 3."*|"OpenSSL 4."*) ;;
-  *) echo "requires OpenSSL 3 or 4; found: ${ssl_version:-no version output}. Put one first in the PATH this runs with (in a wrapper, its PATH= line)$(case "${OSTYPE-}" in darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
+  *) echo "requires OpenSSL 3 or 4; found: ${ssl_version:-no version output}. Put one first on your PATH$(case "${OSTYPE-}" in darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
 esac
 
 # The agent's long-lived handoff public key (encryption only — safe to share).
