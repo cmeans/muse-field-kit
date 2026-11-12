@@ -913,6 +913,17 @@ printf '#!/bin/sh\nfor a; do [ "$a" = -encrypt ] && { cat >/dev/null; printf %%s
 chmod 755 "$S/swapenc/openssl"
 expect_refusal "--rewrap whose new blob opens to another payload" 1 "to the same payload" \
   rk env PATH="$S/swapenc:/usr/bin:/bin" python3 ../consume.py --label example --rewrap --blob-file blob.txt
+# A new blob that can't be written is a refusal, not a "rewrapped" line.
+if [ -w /dev/full ]; then
+  rc=0; rk python3 ../consume.py --label example --rewrap --blob-file blob.txt >/dev/full 2>"$R/err" || rc=$?
+  [ "$rc" = 1 ] || { cat "$R/err" >&2; fail "--rewrap to a full disk: exit $rc, expected 1"; }
+  grep -qF "could not write the new blob" "$R/err" || fail "--rewrap to a full disk didn't say so"
+  ! grep -qF "rewrapped" "$R/err" || fail "--rewrap reported success to a full disk"
+  ! grep -q Traceback "$R/err" || fail "--rewrap to a full disk: traceback"
+  echo "ok (refused: --rewrap to a full disk)"
+else
+  echo "skip: no writable /dev/full, the rewrap write failure wasn't tested"
+fi
 # One rotation at a time: during one, --rotate rotates nothing, exits 1, and
 # shows the current (new) key's public key and fingerprint again.
 rc=0; rk bash ../agent-setup.sh --rotate >"$R/out" 2>"$R/err" || rc=$?
