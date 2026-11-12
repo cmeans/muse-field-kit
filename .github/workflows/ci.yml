@@ -56,5 +56,19 @@ jobs:
         run: shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*.sh
       - name: ruff
         run: pipx run ruff==0.15.7 check encrypted-credential-handoff/
+      - name: A key file owned by another user, for the key-owner refusal
+        # Ubuntu's /etc/shadow is group-readable, so run-test.sh finds no
+        # owner-only file of another user's: give it a root-owned 0600 copy
+        # of the dummy key, which is a published test vector.
+        run: |
+          sudo install -o root -g root -m 600 \
+            encrypted-credential-handoff/test/test-dummy-priv.pem "$RUNNER_TEMP/root-owned-key.pem"
+          echo "HANDOFF_TEST_OTHER_OWNER_KEY=$RUNNER_TEMP/root-owned-key.pem" >> "$GITHUB_ENV"
       - name: Interop and refusal tests
-        run: ./encrypted-credential-handoff/test/run-test.sh
+        # In CI, every check must run: a skip line fails the step.
+        run: |
+          ./encrypted-credential-handoff/test/run-test.sh | tee "$RUNNER_TEMP/run-test.log"
+          if grep '^skip:' "$RUNNER_TEMP/run-test.log"; then
+            echo "a check was skipped in CI"
+            exit 1
+          fi
