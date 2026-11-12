@@ -58,6 +58,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 consume() { python3 ../consume.py "$@"; }
 
+# The real interpreter, for the restricted-PATH tests: `command -v python3`
+# can be a pyenv/asdf shim (#!/usr/bin/env bash) that can't run there.
+PY=$(python3 -c 'import sys; print(sys.executable)')
+
 # Neither the username nor the password may appear in the given files.
 no_dummy_in() {
   local f
@@ -306,12 +310,12 @@ expect_refusal "no --label" 1 "--label is required" \
 printf '\377\376' > "$S/not-text.txt"
 expect_refusal "blob file not text" 1 "as text" \
   consume --label example --check --blob-file "$S/not-text.txt"
-mkdir -p "$S/py-only"; ln -sf "$(command -v python3)" "$S/py-only/python3"
+mkdir -p "$S/py-only"; ln -sf "$PY" "$S/py-only/python3"
 expect_refusal "openssl not installed" 1 "openssl not found" \
   env PATH="$S/py-only" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "input not base64" 1 "not valid base64" \
   consume --label example --check --blob '!!not base64!!'
-expect_refusal "damaged blob" 1 "decryption failed" \
+expect_refusal "damaged blob" 1 "check that HANDOFF_PRIVKEY names the key this blob was made for" \
   consume --label example --check --blob "$(cat "$S/blob2" | tr 'A-Za-z' 'B-ZAb-za')"
 cp test-dummy-priv.pem "$S/loose.pem"; chmod 644 "$S/loose.pem"
 expect_refusal "group/other-readable key" 1 "must be owner-only" \
@@ -409,7 +413,7 @@ expect_refusal "option without its value" 1 "--label needs a value" \
   consume --label
 expect_refusal "unrecognized argument" 1 "unrecognized argument" \
   consume --label example --check --blob-file blob.txt --verbose
-mkdir -p "$S/fake-ssl"; ln -sf "$(command -v python3)" "$S/fake-ssl/python3"
+mkdir -p "$S/fake-ssl"; ln -sf "$PY" "$S/fake-ssl/python3"
 printf '#!/bin/sh\necho "LibreSSL 3.8.2"\n' > "$S/fake-ssl/openssl"; chmod 755 "$S/fake-ssl/openssl"
 expect_refusal "not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
@@ -454,7 +458,7 @@ expect_refusal "blob file missing" 1 "No such file or directory" \
 printf '\357\273\277' > "$S/bom.txt"; cat blob.txt >> "$S/bom.txt"
 consume --label example --check --blob-file "$S/bom.txt" >/dev/null || fail "a blob file with a BOM was refused"
 # OpenSSL 4 passes the gate (a wrapper that reports 4.0.0 and passes the rest on).
-mkdir -p "$S/ssl4"; ln -sf "$(command -v python3)" "$S/ssl4/python3"
+mkdir -p "$S/ssl4"; ln -sf "$PY" "$S/ssl4/python3"
 # shellcheck disable=SC2016  # $1 and $@ belong to the generated script
 printf '#!/bin/sh\nif [ "$1" = version ]; then echo "OpenSSL 4.0.0 1 Jan 2027"; else exec %s "$@"; fi\n' "$(command -v openssl)" > "$S/ssl4/openssl"
 chmod 755 "$S/ssl4/openssl"
@@ -492,9 +496,20 @@ expect_refusal "handoff.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
 expect_refusal "handoff.sh encrypting, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" <<<'{"svc":"example","password":"mk-Zq9"}'
 [ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
+# An openssl version that fails silently is reported, not a bare exit.
+mkdir -p "$S/silent-ssl"; ln -sf "$PY" "$S/silent-ssl/python3"
+printf '#!/bin/sh\nexit 1\n' > "$S/silent-ssl/openssl"; chmod 755 "$S/silent-ssl/openssl"
+expect_refusal "agent-setup.sh, openssl version fails silently" 1 "openssl version failed" \
+  env PATH="$S/silent-ssl:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
+expect_refusal "handoff.sh, openssl version fails silently" 1 "openssl version failed" \
+  env PATH="$S/silent-ssl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
+# handoff.sh runs in the user's shell, so its hint doesn't mention wrappers.
+expect_refusal "handoff.sh hint off wrappers" 1 "Put one first on your PATH" \
+  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
+! grep -q "wrapper" "$S/err" || fail "handoff.sh's hint mentions wrappers"
 # On macOS the hint names Homebrew's openssl@3: OSTYPE (which bash takes
 # from the environment) and sys.platform are faked to say darwin.
-ln -sf "$(command -v python3)" "$S/libressl/python3"
+ln -sf "$PY" "$S/libressl/python3"
 expect_refusal "agent-setup.sh hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
   env PATH="$S/libressl:/usr/bin:/bin" OSTYPE=darwin23 bash ../agent-setup.sh --fingerprint
 expect_refusal "handoff.sh hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
@@ -548,7 +563,7 @@ OPENSSL_CONF="$S/evil.cnf" consume --label example --check --blob-file blob.txt 
   || fail "a caller's OPENSSL_CONF reached the helper's openssl: $(cat "$S/err")"
 # No OPENSSL_* variable, in any case, reaches the helper's openssl: a fake
 # openssl first on PATH fails if it sees one, and passes the rest on.
-mkdir -p "$S/ssl-env"; ln -sf "$(command -v python3)" "$S/ssl-env/python3"
+mkdir -p "$S/ssl-env"; ln -sf "$PY" "$S/ssl-env/python3"
 # Absolute paths inside the fake: it runs with only $S/ssl-env on PATH.
 printf '#!/bin/sh\nif %s | %s -qi "^openssl_"; then echo "OPENSSL_ variable reached openssl" >&2; exit 9; fi\nexec %s "$@"\n' \
   "$(command -v env)" "$(command -v grep)" "$(command -v openssl)" > "$S/ssl-env/openssl"
