@@ -158,6 +158,11 @@ no_symlinks() {
   done
 }
 
+# The public key of a key file (already checked by key_fingerprint), in PEM.
+pub_of() {  # FILE
+  openssl pkey -in "$1" -passin pass: -pubout
+}
+
 # The fingerprint of FILE, or nothing (and the reason on stderr) if it isn't
 # a usable key: key_fingerprint in a subshell, so its exit doesn't end this one.
 fingerprint_or_fail() {  # FILE
@@ -268,7 +273,7 @@ case "$mode" in
       if [ "$prev_fp" != "$fp" ]; then
         # The new key is in place: show its public half again, since an
         # interruption may have come before the user got it (SETUP step 3).
-        PUB=$(openssl pkey -in "$key" -passin pass: -pubout) \
+        PUB=$(pub_of "$key") \
           || { echo "could not derive the public key" >&2; exit 1; }
         echo "agent-setup.sh: a rotation is under way ($prev is the old key), and the new key is in place: nothing rotated." >&2
         echo "If the user hasn't embedded this key in handoff.sh and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4." >&2
@@ -290,10 +295,17 @@ case "$mode" in
     new_fp=$(fingerprint_or_fail "$new") \
       || { echo "the new key didn't check out (a full disk?); the old key is unchanged" >&2; exit 1; }
     mv -f -- "$new" "$key"
+    if [ -d "$key" ]; then
+      # KEY became a directory meanwhile, and mv put the new key inside it.
+      rm -f -- "$key/${new##*/}"
+      new=""
+      echo "agent-setup.sh: $key is now a directory; the new key was removed, and the old key is $prev. Report it to the user." >&2
+      exit 1
+    fi
     new=""
     fp=$new_fp
-    PUB=$(openssl pkey -in "$key" -pubout) \
-      || { echo "could not derive the public key" >&2; exit 1; }
+    PUB=$(pub_of "$key") \
+      || { printf "the new key was written to %s, but its public key couldn't be derived; show it with: agent-setup.sh --public-key %q\n" "$key" "$key" >&2; exit 1; }
     echo "new key written to $key (mode 600); the old key is now $prev"
     echo
     echo "new public key fingerprint: SHA256:$fp"
@@ -325,6 +337,14 @@ case "$mode" in
       echo "agent-setup.sh: $prev holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
       exit 1
     fi
+    # A killed setup or --rotate can leave a temporary file that is a hard
+    # link to the old key: removing only $prev would leave its data on disk.
+    for f in "$(dirname -- "$key")"/.handoff-setup.* "$(dirname -- "$key")"/.handoff-new.*; do
+      if [ -f "$f" ] && [ ! -L "$f" ] && [ "$f" -ef "$prev" ]; then
+        rm -f -- "$f"
+        echo "note: removed $f, another link to the previous key" >&2
+      fi
+    done
     rm -f -- "$prev"
     echo "deleted the previous key $prev; the current key is $key (SHA256:$fp)"
     exit 0
@@ -334,7 +354,7 @@ case "$mode" in
     # or rotation needs it for the user; the public key isn't a secret),
     # from a key that passes the same checks as --fingerprint.
     key_fingerprint "$key"
-    PUB=$(openssl pkey -in "$key" -passin pass: -pubout) \
+    PUB=$(pub_of "$key") \
       || { echo "could not derive the public key from $key" >&2; exit 1; }
     echo "key file: $key" >&2
     echo "public key fingerprint: SHA256:$fp"
@@ -354,7 +374,7 @@ PRIV="$KEY_DIR/handoff-priv.pem"
 
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
-  printf 'to rotate it, run HANDOFF_PRIVKEY=%q agent-setup.sh --rotate (SETUP.md, Rotation)\n' "$PRIV" >&2
+  printf 'if a setup was cut short, this is its key: agent-setup.sh --public-key %q shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
   exit 1
 fi
 
@@ -407,7 +427,7 @@ if [ ! "$PRIV" -ef "$new" ]; then
   exit 1
 fi
 
-PUB=$(openssl pkey -in "$PRIV" -pubout) \
+PUB=$(pub_of "$PRIV") \
   || { printf "the key was written to %s, but its public key couldn't be derived; show it with: agent-setup.sh --public-key %q\n" "$PRIV" "$PRIV" >&2; exit 1; }
 
 echo "private key written to $PRIV (mode 600) — never copy it off this machine"

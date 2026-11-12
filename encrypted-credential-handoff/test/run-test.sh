@@ -809,9 +809,11 @@ expect_refusal "openssl version failing" 1 "openssl version failed: openssl: err
   env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "agent-setup.sh re-run over an existing key" 1 "refusing to overwrite existing key" \
   env HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh
-# Its hint names the key to rotate: HANDOFF_KEY_DIR doesn't apply to --rotate.
-grep -qF "run HANDOFF_PRIVKEY=$S/agent/handoff-priv.pem agent-setup.sh --rotate" "$S/err" \
-  || fail "the overwrite refusal's hint doesn't name the key to rotate"
+# Its hint says a cut-short setup's key is shown with --public-key, and
+# doesn't tell the agent to rotate.
+grep -qF "agent-setup.sh --public-key $S/agent/handoff-priv.pem shows it" "$S/err" \
+  || fail "the overwrite refusal's hint doesn't point to --public-key"
+! grep -q "run .*--rotate" "$S/err" || fail "the overwrite refusal tells the agent to rotate"
 expect_refusal "agent-setup.sh unknown argument" 2 "usage: agent-setup.sh" \
   env HANDOFF_KEY_DIR="$S/typo" bash ../agent-setup.sh --fingerprnt
 [ ! -e "$S/typo" ] || fail "agent-setup.sh created a key directory for an unknown argument"
@@ -1253,6 +1255,39 @@ HANDOFF_KEY_DIR="$S/stale-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" ||
 grep -qF "removed a temporary key a killed (or concurrent) setup left behind" "$S/err" && [ ! -e "$S/stale-setup/.handoff-setup.Leftov" ] \
   || fail "the leftover temporary key wasn't removed"
 [ -L "$S/stale-setup/.handoff-setup.Link" ] || fail "the stale cleanup removed a symlink, which no setup makes"
+# --rotate under POSIX option parsing (as BSD chmod parses): chmod -- MODE.
+rk env POSIXLY_CORRECT=1 bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" \
+  || fail "--rotate failed with POSIX option parsing (BSD chmod): $(cat "$R/err")"
+[ "$(stat -c %a "$R/k.pem")" = 600 ] && [ -f "$R/k.pem.previous" ] || fail "--rotate under POSIX option parsing left the wrong state"
+# --retire also removes a temporary file that is another link to the old key
+# (a setup killed between its ln and its cleanup): its data doesn't survive.
+ln "$R/k.pem.previous" "$R/.handoff-setup.Linked"
+rk bash ../agent-setup.sh --retire >/dev/null 2>"$R/err" || fail "--retire with a linked leftover failed: $(cat "$R/err")"
+[ ! -e "$R/.handoff-setup.Linked" ] || fail "--retire left another link to the old key"
+grep -qF "another link to the previous key" "$R/err" || fail "--retire didn't report the link it removed"
+# KEY turning into a directory during --rotate: refused, the new key removed,
+# the old key kept as .previous.
+mkdir -p "$S/dirrot"; ln -sf "$PY" "$S/dirrot/python3"
+# shellcheck disable=SC2016  # $1, $a and $@ belong to the generated script
+printf '#!/bin/sh\nif [ "$1" = genpkey ]; then rm -f "$TARGET" && mkdir "$TARGET"; fi\nexec %s "$@"\n' "$(command -v openssl)" > "$S/dirrot/openssl"
+chmod 755 "$S/dirrot/openssl"
+mkdir -p "$S/dr"; cp "$TMPKEY" "$S/dr/k.pem"
+expect_refusal "--rotate when the key path becomes a directory" 1 "is now a directory; the new key was removed" \
+  env HANDOFF_PRIVKEY="$S/dr/k.pem" TARGET="$S/dr/k.pem" PATH="$S/dirrot:/usr/bin:/bin" bash ../agent-setup.sh --rotate
+! compgen -G "$S/dr/k.pem/.handoff-*" >/dev/null || fail "a new key was left inside the directory at the key path"
+[ -f "$S/dr/k.pem.previous" ] || fail "the old key wasn't kept as .previous"
+# The --rewrap hint: not for a command's own --rewrap after --, not for a
+# --blob-file that isn't the output, and with no doubled period.
+: > "$R/e1.txt"
+rc=0; rk python3 ../consume.py --label other --blob-file blob.txt -- mytool --rewrap >"$R/e1.txt" 2>"$R/err" || rc=$?
+! grep -qF "The output file is empty" "$R/err" || fail "a command's own --rewrap after -- set the rewrap hint"
+: > "$R/e2.txt"
+rc=0; rk python3 ../consume.py --label other --rewrap --blob-file blob.txt >"$R/e2.txt" 2>"$R/err" || rc=$?
+! grep -qF "Restore it from the store" "$R/err" || fail "an intact --blob-file got the restore advice"
+: > "$R/e3.txt"
+rc=0; bash -c 'HANDOFF_PRIVKEY="$1" HANDOFF_BLOB=$(cat blob.txt) python3 ../consume.py --label other --rewrap >"$2"' _ "$R/k.pem" "$R/e3.txt" 2>"$R/err" || rc=$?
+grep -qF "The output file is empty" "$R/err" || fail "the rewrap hint is missing for an empty output file"
+! grep -qF ".." "$R/err" || fail "the rewrap hint doubled a period: $(cat "$R/err")"
 # --help prints the usage and exits 0.
 consume --help >"$S/out" 2>&1 || fail "consume.py --help failed"
 grep -qF -- "--rewrap" "$S/out" || fail "consume.py --help doesn't show the usage"

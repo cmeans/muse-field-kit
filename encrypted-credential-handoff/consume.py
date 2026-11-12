@@ -183,7 +183,9 @@ REWRAP_EMPTY_OUT_HINT = ""
 
 
 def fail(msg: str) -> "SystemExit":
-    return SystemExit(f"consume.py: {msg}{REWRAP_EMPTY_OUT_HINT}")
+    if REWRAP_EMPTY_OUT_HINT:
+        msg = msg.rstrip(".") + ". " + REWRAP_EMPTY_OUT_HINT
+    return SystemExit(f"consume.py: {msg}")
 
 
 def expand_home(path: str, what: str) -> str:
@@ -638,7 +640,10 @@ def main() -> int:
             "command it started), and wrappers never nest (SETUP.md step 7). Refusing. "
             "Don't unset it to get past this: report it to the user."
         )
-    if "--rewrap" in sys.argv[1:]:
+    # Only this helper's own options (before --), and only for a blob that
+    # didn't come from --blob-file: there, parse_args compares the files.
+    own = sys.argv[1:sys.argv.index("--")] if "--" in sys.argv[1:] else sys.argv[1:]
+    if "--rewrap" in own and "--blob-file" not in own:
         try:
             out = os.fstat(1)
         except OSError:
@@ -646,7 +651,7 @@ def main() -> int:
         if out and stat.S_ISREG(out.st_mode) and out.st_size == 0:
             global REWRAP_EMPTY_OUT_HINT
             REWRAP_EMPTY_OUT_HINT = (
-                ". The output file is empty: if it's where the blob came from, the "
+                "The output file is empty: if it's where the blob came from, the "
                 "redirect emptied it first. Restore it from the store, and write the "
                 "output to a new file (SETUP.md, Rotation step 4)."
             )
