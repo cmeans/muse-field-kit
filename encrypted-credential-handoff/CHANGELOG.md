@@ -29,7 +29,7 @@ Before its first commit, the folder had a structural review and a line-level scr
 **`agent-setup.sh`** (the agent's side)
 
 - Generates the keypair (mode 600, a 700 directory it creates; it refuses to overwrite a key or to treat an unknown argument as "generate"). `--fingerprint [KEY]` reads `KEY`, else `$HANDOFF_PRIVKEY`, else the same default key `consume.py` uses, and names the file it read; it refuses an encrypted key, a key that isn't RSA-2048, and a file over 16384 bytes.
-- `--rotate [KEY]` keeps the key as `KEY.previous` (a hard link, so it's never replaced) and renames a new key over `KEY`, printing the new public key and fingerprint; it refuses while a rotation is under way, and a re-run after an interruption finishes it. A failed key generation leaves the old key in place. `--retire [KEY]` deletes `KEY.previous`, refusing when there's none or the rotation didn't finish.
+- `--rotate [KEY]` keeps the key as `KEY.previous` (a hard link, so it's never replaced) and renames a new key over `KEY`, printing the new public key and fingerprint; while a rotation is under way it rotates nothing and shows the new key's public key and fingerprint again, and a re-run after an interruption finishes it. A failed key generation leaves the old key in place. `--retire [KEY]` deletes `KEY.previous`, refusing when there's none or the rotation didn't finish. Both refuse a symlinked key path.
 - One `~/` rule shared with `consume.py` (`~user` refused), `HOME` needed only for the defaults and `~`, the same OpenSSL 3/4 gate, and `OPENSSL_*` dropped.
 
 **`consume.py`** (the consume helper)
