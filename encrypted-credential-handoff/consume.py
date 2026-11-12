@@ -23,7 +23,16 @@ verifies the payload's purpose binding, and either:
               and stderr are the helper's own, untouched, or
   --check     prints the svc match, then field names and value lengths
               ONLY. For the SETUP DUMMY round-trip only: lengths are output
-              too, so never run --check on a real credential.
+              too, so never run --check on a real credential, or
+  --rewrap    prints a new blob: the same payload, byte for byte, encrypted
+              to the current key (SETUP.md, Rotation). Only during a
+              rotation (refused with no <key path>.previous). Ciphertext
+              only; its stderr line names the key file the old blob was for.
+
+During a rotation the old key stays beside the current one as
+<key path>.previous (agent-setup.sh --rotate makes it, --retire deletes
+it). A blob the current key can't open is tried with the previous key;
+in run mode, that prints a note to rewrap the label.
 
 This helper never writes the plaintext to disk and never prints it, in
 any mode, on success or on error. Nothing derived from the payload — not a
@@ -62,7 +71,7 @@ or $HANDOFF_BLOB instead (the fetch must not read stdin, which belongs
 to the command).
 
 Exactly one blob source (--blob, --blob-file or $HANDOFF_BLOB), and
---label, --blob, --blob-file and --check at most once each. That is a
+--label, --blob, --blob-file, --check and --rewrap at most once each. That is a
 backstop for a wrongly written wrapper, not a license for one: a wrapper
 passes no caller arguments at all (SETUP.md step 7), since a caller's
 own --env or -- would otherwise pick where the credential goes. An empty
@@ -89,6 +98,9 @@ Usage:
     HANDOFF_BLOB=$(cat blob.txt) consume.py --label example -- my-tool --serve
     consume.py --label example --blob-file blob.txt -- my-tool --serve
     consume.py --label test --check --blob-file blob.txt
+    new=$(consume.py --label example --rewrap --blob-file blob.txt)
+    (during a rotation only; store "$new" in the store, never in a file on
+    the key's disk: SETUP.md, Rotation step 4)
 """
 # Run as ./consume.py, the helper is isolated (python3 -I, see the top of
 # the docstring): the caller's PYTHON* variables and user site-packages don't
@@ -317,11 +329,12 @@ def check_key(privkey: str) -> None:
 
 
 def pkeyutl(op: str, privkey: str, data: bytes) -> "subprocess.CompletedProcess":
-    """openssl pkeyutl -decrypt with the reference suite."""
+    """openssl pkeyutl -decrypt or -encrypt with the reference suite."""
     try:
         return subprocess.run(
             [
                 "openssl", "pkeyutl", op,
+                # -encrypt with a private key file uses its public half.
                 "-inkey", privkey, "-passin", "pass:",
                 "-pkeyopt", "rsa_padding_mode:oaep",
                 "-pkeyopt", "rsa_oaep_md:sha256",
@@ -335,21 +348,45 @@ def pkeyutl(op: str, privkey: str, data: bytes) -> "subprocess.CompletedProcess"
         raise fail("openssl not found") from None
 
 
-def decrypt(blob_b64: str, privkey: str) -> bytes:
-    """The plaintext bytes of the blob, decrypted with the key at privkey."""
+def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
+    """Decrypt with the current key, else the previous one.
+
+    Returns the plaintext bytes and which key opened it ("current" or
+    "previous"). The previous key is <current key path>.previous, which
+    exists only during a rotation (agent-setup.sh --rotate makes it,
+    --retire deletes it); it is checked like the current key, and tried
+    only when the current key can't decrypt the blob.
+    """
     cipher = decode_blob(blob_b64)
     check_openssl()
-    check_key(privkey)
-    proc = pkeyutl("-decrypt", privkey, cipher)
+    check_key(current)
+    proc = pkeyutl("-decrypt", current, cipher)
     if proc.returncode == 0:
-        return proc.stdout
-    # One fixed message, however it failed, without openssl's reason: a decrypt that says more than "no" is an oracle (RFC 8017,
+        return proc.stdout, "current"
+    tried = "decryption failed"
+    if os.path.lexists(previous):
+        check_key(previous)
+        proc = pkeyutl("-decrypt", previous, cipher)
+        if proc.returncode == 0:
+            return proc.stdout, "previous"
+        tried = "decryption failed with the current key and with the previous key"
+    # One fixed message, whichever key failed and however, without openssl's
+    # reason: a decrypt that says more than "no" is an oracle (RFC 8017,
     # section 7.1.2). It's a stop condition: retrying with another
     # HANDOFF_PRIVKEY is the "variation" SETUP.md forbids.
     raise fail(
-        "decryption failed (a blob made for another key, or a damaged one): stop and "
+        tried + " (a blob made for another key, or a damaged one): stop and "
         "report it to the user (SETUP.md, stop conditions)"
     )
+
+
+def same_key_file(a: str, b: str) -> bool:
+    """Whether two key files are one file, or byte-for-byte copies."""
+    if os.path.samefile(a, b):
+        return True
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        # Both have passed check_key (owner-only, under the size cap) first.
+        return fa.read(MAX_KEY_FILE + 1) == fb.read(MAX_KEY_FILE + 1)
 
 
 def parse_payload(plaintext: bytes) -> dict:
@@ -360,6 +397,24 @@ def parse_payload(plaintext: bytes) -> dict:
     if not isinstance(payload, dict):
         raise fail("decrypted payload is not a JSON object")
     return payload
+
+
+def rewrap(plaintext: bytes, current: str) -> str:
+    """The same payload, byte for byte, encrypted to the current key.
+
+    Checked before it's returned: the new blob must open with the current
+    key to exactly this payload, since it replaces the old blob in the store
+    with no copy kept (SETUP.md, Rotation).
+    """
+    proc = pkeyutl("-encrypt", current, plaintext)
+    if proc.returncode != 0 or len(proc.stdout) != CIPHERTEXT_BYTES:
+        raise fail("re-encrypting to the current key failed"
+                   + openssl_reason(proc.stderr.decode("utf-8", "replace")))
+    back = pkeyutl("-decrypt", current, proc.stdout)
+    if back.returncode != 0 or back.stdout != plaintext:
+        raise fail("the new blob doesn't open with the current key to the same "
+                   "payload; keep the old blob, and report this")
+    return base64.b64encode(proc.stdout).decode("ascii")
 
 
 def check_payload(payload: dict, label: str, env_map: dict) -> dict:
@@ -415,6 +470,7 @@ def check_env_name(name: str) -> None:
 def parse_args(argv):
     label = None
     check = False
+    do_rewrap = False
     blob = None
     blob_file = None
     env_map = dict(DEFAULT_ENV_MAP)
@@ -427,7 +483,7 @@ def parse_args(argv):
         if a == "--":
             cmd = argv[i + 1:]
             break
-        if a in ("--label", "--blob", "--blob-file", "--check"):
+        if a in ("--label", "--blob", "--blob-file", "--check", "--rewrap"):
             # Each at most once: a backstop if a wrapper wrongly passes its
             # caller's arguments (SETUP.md says it never does), so at least
             # the label can't be overridden.
@@ -464,6 +520,8 @@ def parse_args(argv):
                 env_map[field] = name
         elif a == "--check":
             check = True
+        elif a == "--rewrap":
+            do_rewrap = True
         else:
             raise fail(f"unrecognized argument: {a}")
         i += 1
@@ -474,10 +532,16 @@ def parse_args(argv):
         raise fail("two fields map to the same environment variable; refusing")
     if not label:
         raise fail("--label is required (the service label the blob was fetched under)")
+    if check and do_rewrap:
+        raise fail("--check and --rewrap can't be combined")
     if check and cmd:
         raise fail("--check takes no command; it only inspects the payload")
-    if not check and (not cmd or not cmd[0]):
-        raise fail("no command given after -- (or use --check)")
+    if do_rewrap and cmd:
+        raise fail("--rewrap takes no command; it prints the new blob")
+    if do_rewrap and remapped:
+        raise fail("--rewrap takes no --env; it re-encrypts the payload as it is")
+    if not (check or do_rewrap) and (not cmd or not cmd[0]):
+        raise fail("no command given after -- (or use --check or --rewrap)")
     sources = [s for s, given in (
         ("--blob", blob is not None),
         ("--blob-file", blob_file is not None),
@@ -506,9 +570,25 @@ def parse_args(argv):
             if not stat.S_ISREG(os.stat(path).st_mode):
                 raise fail(not_regular)
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0))
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
                 os.close(fd)
                 raise fail(not_regular)
+            try:
+                out = os.fstat(1)
+            except OSError:
+                out = None
+            if do_rewrap and out and (out.st_dev, out.st_ino) == (st.st_dev, st.st_ino):
+                # `--rewrap --blob-file X > X` (the shell emptied X first) or
+                # `>> X` (it would append a second blob).
+                os.close(fd)
+                raise fail(
+                    f"--rewrap's output is redirected to its own --blob-file {blob_file}"
+                    + (": the shell emptied that file before this ran, so its blob is "
+                       "gone from it. Restore it from the store, and"
+                       if st.st_size == 0 else ";")
+                    + " write the output to a new file (SETUP.md, Rotation step 4)."
+                )
             # utf-8-sig: some editors save a byte-order mark first.
             with os.fdopen(fd, "r", encoding="utf-8-sig") as fh:
                 blob = fh.read(MAX_BLOB_FILE + 1)
@@ -523,7 +603,7 @@ def parse_args(argv):
         blob = os.environ.get(BLOB_ENV)
     if blob is None:
         raise fail(f"no blob supplied: use --blob, --blob-file, or ${BLOB_ENV}")
-    return label, check, blob, env_map, cmd
+    return label, check, do_rewrap, blob, env_map, cmd
 
 
 def main() -> int:
@@ -543,14 +623,72 @@ def main() -> int:
     if sys.argv[1:] in (["-h"], ["--help"]):
         print(__doc__[__doc__.index("Usage:"):].rstrip())
         return 0
-    label, check, blob, env_map, cmd = parse_args(sys.argv[1:])
-    plaintext = decrypt(blob, privkey_path())
+    label, check, do_rewrap, blob, env_map, cmd = parse_args(sys.argv[1:])
+    current = privkey_path()
+    previous = current + ".previous"
+    if do_rewrap and not blob.strip():
+        # `HANDOFF_BLOB=$(cat X) consume.py --rewrap > X` empties X before the
+        # $(...) reads it in zsh: say what probably happened.
+        try:
+            out = os.fstat(1)
+        except OSError:
+            out = None
+        if out and stat.S_ISREG(out.st_mode) and out.st_size == 0:
+            raise fail(
+                "--rewrap was given an empty blob, and its output is an empty file: "
+                "if that file is where the blob came from, the redirect emptied it "
+                "first. Restore it from the store, and write the output to a new "
+                "file (SETUP.md, Rotation step 4)."
+            )
+    if do_rewrap and not os.path.lexists(previous):
+        # "For the current key" means the label is done only during a
+        # rotation, and only for the key the wrappers use: with no previous
+        # key beside this one, HANDOFF_PRIVKEY names the wrong key, or there's
+        # no rotation to rewrap for.
+        raise fail(
+            f"--rewrap: no rotation under way at {current} (no {previous}). "
+            "Run it with HANDOFF_PRIVKEY as the label's wrappers set it, during "
+            "a rotation (SETUP.md, Rotation); anything else, stop and report it."
+        )
+    if do_rewrap:
+        check_openssl()
+        check_key(current)
+        check_key(previous)
+    if do_rewrap and same_key_file(current, previous):
+        # Between agent-setup.sh --rotate's two steps both names hold the old
+        # key: a blob "for the current key" then is for the key being retired.
+        raise fail(
+            f"--rewrap: {previous} holds the same key as {current}: the rotation "
+            "didn't finish. Run agent-setup.sh --rotate again (SETUP.md, Rotation step 1)."
+        )
+    plaintext, slot = decrypt(blob, current, previous)
     creds = check_payload(parse_payload(plaintext), label, env_map)
     if check:
         print(f"svc: matches label {label!r}")
         for name in sorted(creds):
             print(f"{name}: {len(creds[name].encode('utf-8'))} bytes")
         return 0
+    if do_rewrap:
+        # The new blob is ciphertext: safe on stdout, and stored in place of
+        # the old one (SETUP.md, Rotation).
+        out = (rewrap(plaintext, current) + "\n").encode("ascii")
+        try:
+            # Written to fd 1 directly, before the success line: a full disk
+            # must not leave "rewrapped" on stderr with no blob behind it, and
+            # no Python buffer is left for a second failed flush at exit.
+            sys.stdout.flush()
+            while out:
+                out = out[os.write(1, out):]
+        except OSError as e:
+            raise fail(f"could not write the new blob: {e.strerror}") from None
+        print(f"consume.py: rewrapped to the current key {current}; "
+              f"the blob was for the {slot} key "
+              f"({current if slot == 'current' else previous})", file=sys.stderr)
+        return 0
+    if slot == "previous":
+        # Nothing from the payload: which key file opened it.
+        print(f"consume.py: label {label!r} decrypted with the previous key; "
+              "rewrap it (SETUP.md, Rotation)", file=sys.stderr)
     env = dict(os.environ)
     # The command needs the credentials, not the blob or the key's path.
     env.pop(BLOB_ENV, None)
