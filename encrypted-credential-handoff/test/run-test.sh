@@ -319,7 +319,7 @@ expect_refusal "damaged blob" 1 "stop and report it to the user (SETUP.md, stop 
   consume --label example --check --blob "$(cat "$S/blob2" | tr 'A-Za-z' 'B-ZAb-za')"
 # One fixed message: the key file it tried, no openssl reason, and no hint to
 # try another key. Also for a valid blob made for another key (4b's), which
-# is what a wrapper left on the old key meets during re-keying.
+# is what a wrapper meets with a blob made for another key and no rotation under way.
 for which in damaged other-key; do
   if [ "$which" = other-key ]; then
     expect_refusal "a blob made for another key" 1 "decryption failed with the key at $TMPKEY" \
@@ -1011,7 +1011,7 @@ rm "$R/k.pem.previous"
 expect_refusal "first setup whose genpkey writes a short file" 1 "nothing was written" \
   env PATH="$S/shortgen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/short-setup" bash ../agent-setup.sh
 [ ! -e "$S/short-setup/handoff-priv.pem" ] || fail "first setup left a short key file at the key path"
-! compgen -G "$S/short-setup/.handoff-new*" >/dev/null || fail "first setup left a temporary key file"
+! compgen -G "$S/short-setup/.handoff-*" >/dev/null || fail "first setup left a temporary key file"
 # A failing DER export is "could not read", not "another key type".
 mkdir -p "$S/noder"; ln -sf "$PY" "$S/noder/python3"
 # shellcheck disable=SC2016  # $a and $@ belong to the generated script
@@ -1062,6 +1062,7 @@ rmdir "$R/k.pem.previous"
 mkdir "$R/.handoff-lock"
 expect_refusal "--rotate while another holds the lock" 1 "another --rotate or --retire is running" \
   rk bash ../agent-setup.sh --rotate
+grep -qF "Stop and report it to the user" "$S/err" || fail "the lock refusal doesn't say to report it"
 [ ! -e "$R/k.pem.previous" ] || fail "a refused --rotate made a previous key"
 rmdir "$R/.handoff-lock"
 printf 'leftover\n' > "$R/.handoff-new.Leftov"
@@ -1104,8 +1105,13 @@ won=$(sed -n 's/^new public key fingerprint: //p' "$R/race-a")
 # --rewrap refuses a half-done rotation: both names holding one key (linked
 # or copied), a blob "for the current key" would be for the key being retired.
 rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire before the half-done checks failed"
-for how in ln cp; do
-  if [ "$how" = ln ]; then ln "$R/k.pem" "$R/k.pem.previous"; else cp -p "$R/k.pem" "$R/k.pem.previous"; fi
+for how in ln cp traditional; do
+  case "$how" in
+    ln) ln "$R/k.pem" "$R/k.pem.previous" ;;
+    cp) cp -p "$R/k.pem" "$R/k.pem.previous" ;;
+    # The same key in another encoding: compared by its public half.
+    traditional) openssl pkey -in "$R/k.pem" -traditional -out "$R/k.pem.previous" 2>/dev/null; chmod 600 "$R/k.pem.previous" ;;
+  esac
   expect_refusal "--rewrap in a half-done rotation ($how)" 1 "holds the same key as $R/k.pem: the rotation didn't finish" \
     rk python3 ../consume.py --label example --rewrap --blob "$cur_blob"
   rm "$R/k.pem.previous"
@@ -1174,8 +1180,36 @@ sleep 1
 kill -TERM "$gen"
 wait "$gen" 2>/dev/null || true
 sleep 3
-! compgen -G "$S/term-setup/.handoff-new*" >/dev/null || fail "a TERM during key generation left a temporary private key"
+! compgen -G "$S/term-setup/.handoff-*" >/dev/null || fail "a TERM during key generation left a temporary private key"
 [ ! -e "$S/term-setup/handoff-priv.pem" ] || fail "a TERM during key generation still wrote the key"
+# Any --rewrap refusal into an empty output file gets the redirect hint (bash
+# reads $(cat X) before '> X' truncates it, so the blob isn't empty there).
+printf '%s\n' "$cur_blob" > "$R/bash-order.txt"
+# shellcheck disable=SC2016  # $1 and $2 are the inner shell's arguments
+expect_refusal "--rewrap refused into its own emptied file (bash order)" 1 "the redirect emptied it first" \
+  bash -c 'HANDOFF_BLOB=$(cat "$2") HANDOFF_PRIVKEY="$1" python3 ../consume.py --label example --rewrap >"$2"' _ "$R/k.pem" "$R/bash-order.txt"
+grep -qF "no rotation under way" "$S/err" || fail "the bash-order refusal lost its own reason"
+# With stdout closed, the blob file's descriptor isn't taken for stdout.
+rc=0; rk python3 ../consume.py --label example --rewrap --blob-file "$R/new.txt" >&- 2>"$R/err" || rc=$?
+! grep -qF "redirected to its own --blob-file" "$R/err" || fail "a closed stdout was reported as a redirect onto the blob file"
+# A directory named like a temporary key stops --rotate's sweep with a report.
+mkdir "$R/.handoff-new.dir"
+expect_refusal "--rotate with a directory named like a temporary key" 1 "is not a temporary key file" \
+  rk bash ../agent-setup.sh --rotate
+rmdir "$R/.handoff-new.dir"
+# A TERM during --rotate's genpkey leaves no temporary key and the key as it was.
+before=$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)
+# Started directly (env execs bash), not through rk: a backgrounded function
+# is a subshell, and $! would be its PID.
+env HANDOFF_PRIVKEY="$R/k.pem" PATH="$S/slowgen3:/usr/bin:/bin" bash ../agent-setup.sh --rotate >/dev/null 2>&1 &
+rot=$!
+sleep 1
+kill -TERM "$rot"
+wait "$rot" 2>/dev/null || true
+sleep 3
+! compgen -G "$R/.handoff-*" >/dev/null || fail "a TERM during --rotate left a temporary key or the lock"
+[ "$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$before" ] || fail "a TERM during --rotate changed the key"
+rm -f "$R/k.pem.previous"
 # --help prints the usage and exits 0.
 consume --help >"$S/out" 2>&1 || fail "consume.py --help failed"
 grep -qF -- "--rewrap" "$S/out" || fail "consume.py --help doesn't show the usage"

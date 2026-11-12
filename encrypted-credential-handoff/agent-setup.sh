@@ -167,7 +167,7 @@ lock_dir() {  # DIR
   if ! err=$(mkdir -- "$l" 2>&1); then
     if [ -e "$l" ]; then
       echo "agent-setup.sh: another --rotate or --retire is running ($l exists)." >&2
-      echo "If none is (an earlier run was killed), remove that directory and run this again." >&2
+      echo "Stop and report it to the user: if no run is going (one was killed), they remove that directory." >&2
     else
       echo "agent-setup.sh: cannot create the lock in $1: $err" >&2
     fi
@@ -242,11 +242,17 @@ case "$mode" in
     # The lock first, then the state: a run that read the key before another
     # finished would otherwise take that run's new key for its own old one.
     trap cleanup EXIT
+    # A TERM, HUP or INT ends the run through cleanup, after the running
+    # openssl exits (see first-time generation below).
+    trap 'exit 1' INT TERM HUP
     lock_dir "$dir"
     key_fingerprint "$key"
     for f in "$dir"/.handoff-new.*; do
       # A temporary key a killed --rotate left (the lock says none is running).
-      [ -e "$f" ] || continue
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      if [ ! -f "$f" ] || [ -L "$f" ]; then
+        echo "agent-setup.sh: $f is not a temporary key file; report it to the user" >&2; exit 1
+      fi
       rm -f -- "$f"
       echo "note: removed a temporary key a killed --rotate left behind: $f" >&2
     done
@@ -356,7 +362,9 @@ trap 'rm -f -- "$new"' EXIT
 # openssl exits: without these, bash would die at once and the EXIT trap
 # would run before genpkey wrote its file, leaving a private key behind.
 trap 'exit 1' INT TERM HUP
-new=$(mktemp -- "$KEY_DIR/.handoff-new.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
+# Its own name (.handoff-setup.*): --rotate's sweep of .handoff-new.* never
+# takes a first setup's file.
+new=$(mktemp -- "$KEY_DIR/.handoff-setup.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
   || { echo "key generation failed" >&2; exit 1; }
 chmod 600 -- "$new"

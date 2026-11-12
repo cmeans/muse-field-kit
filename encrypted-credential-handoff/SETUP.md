@@ -90,6 +90,8 @@ Anything not on this list — fixing a typo in a message, recording setup notes 
 
 A rotation keeps the old key able to decrypt until every blob has been re-encrypted to the new one, as key-management services do. During it, the old key sits beside the current one as `<key path>.previous`, and `consume.py` tries it whenever the current key can't open a blob. The key keeps its path, so the wrappers don't change, and an interruption at any point leaves every label working: start the step again.
 
+Rotate only when there's a reason: the user asks, or a suspected compromise (below). Tell the user before step 2, since the key they encrypt to changes. An install re-keyed by hand with this folder's earlier manual procedure keeps its key at the path its notes record, not the default: use that as `HANDOFF_PRIVKEY` throughout. `--rotate` and `--retire` take a lock in the key directory; if one refuses because another run holds it, stop and report it: the user removes the lock (`.handoff-lock`) once they've confirmed no run is going.
+
 **Before the first rotation on an install set up earlier:** every label's wrappers must run a `consume.py` that tries `<key path>.previous`, as this folder's does. A label whose wrappers run an older copy, or a consumer of your own, stops working at step 2. Update that consumer first, as a mechanism change: a proposal, the user's approval, and a fresh dummy round-trip. The same goes for wrappers whose `HANDOFF_PRIVKEY` is a symlink: change it to name the key file itself first (`--rotate` refuses a symlink, and rotating the file behind it would put `.previous` where the wrappers' `consume.py` doesn't look).
 
 **Routine:**

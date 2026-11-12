@@ -174,8 +174,14 @@ REFUSED_ENV_PREFIXES = (
 )
 
 
+# Added to every refusal of a --rewrap whose output is an empty regular file
+# (main sets it): if that file is where the blob came from, a redirect
+# emptied it before this ran, in any shell.
+REWRAP_EMPTY_OUT_HINT = ""
+
+
 def fail(msg: str) -> "SystemExit":
-    return SystemExit(f"consume.py: {msg}")
+    return SystemExit(f"consume.py: {msg}{REWRAP_EMPTY_OUT_HINT}")
 
 
 def expand_home(path: str, what: str) -> str:
@@ -275,8 +281,12 @@ def decode_blob(blob_b64: str) -> bytes:
     return cipher
 
 
-def check_key(privkey: str) -> None:
-    """Refuse a key file that isn't an owner-only, unencrypted RSA-2048 key."""
+def check_key(privkey: str) -> bytes:
+    """Refuse a key file that isn't an owner-only, unencrypted RSA-2048 key.
+
+    Returns its public half (SPKI, DER), which identifies the key whatever
+    the file's encoding.
+    """
     if not os.path.isfile(privkey):
         raise fail(f"cannot read private key at {privkey}")
     st = os.stat(privkey)
@@ -326,6 +336,7 @@ def check_key(privkey: str) -> None:
             f"the private key at {privkey} is not an RSA-2048 key; "
             "this protocol uses RSA-2048 keys with e = 65537 (as agent-setup.sh makes)"
         )
+    return spki
 
 
 def pkeyutl(op: str, privkey: str, data: bytes) -> "subprocess.CompletedProcess":
@@ -380,15 +391,6 @@ def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
         tried + " (a blob made for another key, or a damaged one): stop and "
         "report it to the user (SETUP.md, stop conditions)"
     )
-
-
-def same_key_file(a: str, b: str) -> bool:
-    """Whether two key files are one file, or byte-for-byte copies."""
-    if os.path.samefile(a, b):
-        return True
-    with open(a, "rb") as fa, open(b, "rb") as fb:
-        # Both have passed check_key (owner-only, under the size cap) first.
-        return fa.read(MAX_KEY_FILE + 1) == fb.read(MAX_KEY_FILE + 1)
 
 
 def parse_payload(plaintext: bytes) -> dict:
@@ -571,18 +573,23 @@ def parse_args(argv):
             # isn't caught here.)
             if not stat.S_ISREG(os.stat(path).st_mode):
                 raise fail(not_regular)
+            # stdout before the open: with stdout closed (>&-), the open
+            # would get fd 1 itself, and fstat(1) would then see the blob.
+            try:
+                out = os.fstat(1)
+            except OSError:
+                out = None
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0))
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
                 os.close(fd)
                 raise fail(not_regular)
-            try:
-                out = os.fstat(1)
-            except OSError:
-                out = None
             if do_rewrap and out and (out.st_dev, out.st_ino) == (st.st_dev, st.st_ino):
                 # `--rewrap --blob-file X > X` (the shell emptied X first) or
-                # `>> X` (it would append a second blob).
+                # `>> X` (it would append a second blob). This message says
+                # it all: no second hint.
+                global REWRAP_EMPTY_OUT_HINT
+                REWRAP_EMPTY_OUT_HINT = ""
                 os.close(fd)
                 raise fail(
                     f"--rewrap's output is redirected to its own --blob-file {blob_file}"
@@ -625,23 +632,21 @@ def main() -> int:
     if sys.argv[1:] in (["-h"], ["--help"]):
         print(__doc__[__doc__.index("Usage:"):].rstrip())
         return 0
-    label, check, do_rewrap, blob, env_map, cmd = parse_args(sys.argv[1:])
-    current = privkey_path()
-    previous = current + ".previous"
-    if do_rewrap and not blob.strip():
-        # `HANDOFF_BLOB=$(cat X) consume.py --rewrap > X` empties X before the
-        # $(...) reads it in zsh: say what probably happened.
+    if "--rewrap" in sys.argv[1:]:
         try:
             out = os.fstat(1)
         except OSError:
             out = None
         if out and stat.S_ISREG(out.st_mode) and out.st_size == 0:
-            raise fail(
-                "--rewrap was given an empty blob, and its output is an empty file: "
-                "if that file is where the blob came from, the redirect emptied it "
-                "first. Restore it from the store, and write the output to a new "
-                "file (SETUP.md, Rotation step 4)."
+            global REWRAP_EMPTY_OUT_HINT
+            REWRAP_EMPTY_OUT_HINT = (
+                ". The output file is empty: if it's where the blob came from, the "
+                "redirect emptied it first. Restore it from the store, and write the "
+                "output to a new file (SETUP.md, Rotation step 4)."
             )
+    label, check, do_rewrap, blob, env_map, cmd = parse_args(sys.argv[1:])
+    current = privkey_path()
+    previous = current + ".previous"
     if do_rewrap and not os.path.lexists(previous):
         # "For the current key" means the label is done only during a
         # rotation, and only for the key the wrappers use: with no previous
@@ -654,9 +659,9 @@ def main() -> int:
         )
     if do_rewrap:
         check_openssl()
-        check_key(current)
-        check_key(previous)
-    if do_rewrap and same_key_file(current, previous):
+    # The same key, compared by its public half as agent-setup.sh compares
+    # fingerprints: a copy in another encoding (-traditional) is still it.
+    if do_rewrap and check_key(current) == check_key(previous):
         # Between agent-setup.sh --rotate's two steps both names hold the old
         # key: a blob "for the current key" then is for the key being retired.
         raise fail(

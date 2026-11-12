@@ -4,7 +4,7 @@
 
 The folder's first public version. Nothing here has been released before, so this entry describes what ships, not a sequence of changes. (Renamed before publication from "blind-RSA credential handoff": "blind RSA" names a different, standardized technique.)
 
-Before its first commit, the folder had a structural review and a line-level script review, with findings reproduced. PR #1 then went through a cold read and several QA review rounds, each with Dev's own pre-QA reviews. The PR body records each round's findings and what was fixed or declined. The reviewers were AI agent sessions in the author's setup, plus the author: peer review inside one shop, not a third-party audit.
+Before its first commit, the folder had a structural review and a line-level script review, with findings reproduced. PR #1 and PR #2 (the rotation tooling) then went through a cold read and several QA review rounds, each with Dev's own pre-QA reviews. The PR body records each round's findings and what was fixed or declined. The reviewers were AI agent sessions in the author's setup, plus the author: peer review inside one shop, not a third-party audit.
 
 ### Added
 
