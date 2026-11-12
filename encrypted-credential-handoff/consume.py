@@ -185,7 +185,8 @@ def openssl_env() -> dict:
 
 
 def check_openssl() -> None:
-    # The same gate, and the same hint, as handoff.sh and agent-setup.sh:
+    # The same gate as handoff.sh and agent-setup.sh, and the same hint as
+    # agent-setup.sh (handoff.sh's leaves out wrappers):
     # LibreSSL's pkeyutl OAEP behavior is
     # unverified for this protocol.
     try:
@@ -236,6 +237,23 @@ def decrypt(blob_b64: str) -> dict:
             "truncated, padded, or not a blob for an RSA-2048 key"
         )
     check_openssl()
+    # Load the key on its own first, so a key that can't be read (a public
+    # key, a damaged or passphrase-protected file) isn't reported as a bad
+    # blob. openssl's stderr names key problems, never secrets.
+    try:
+        loaded = subprocess.run(
+            ["openssl", "pkey", "-in", privkey, "-noout"],
+            capture_output=True, text=True, errors="replace", env=openssl_env(),
+            stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        raise fail("openssl not found") from None
+    if loaded.returncode != 0:
+        detail = loaded.stderr.strip().splitlines()
+        raise fail(
+            f"cannot load the private key at {privkey}"
+            + (f": {detail[-1]}" if detail else "")
+        )
     try:
         proc = subprocess.run(
             [

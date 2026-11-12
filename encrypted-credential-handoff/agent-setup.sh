@@ -60,7 +60,8 @@ expand_home() {  # PATH WHAT
   esac
 }
 
-# The same gate, and the same hint, as handoff.sh and consume.py: LibreSSL is
+# The same gate as handoff.sh and consume.py, and the same hint as consume.py
+# (handoff.sh's leaves out wrappers): LibreSSL is
 # unverified here.
 need_openssl() {
   command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
