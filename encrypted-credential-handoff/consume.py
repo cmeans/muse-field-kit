@@ -184,6 +184,20 @@ def openssl_env() -> dict:
     return {k: v for k, v in os.environ.items() if not k.upper().startswith("OPENSSL_")}
 
 
+def openssl_reason(stderr: str) -> str:
+    """': <reason>' from openssl's stderr, or '' if it said nothing.
+
+    The first line that isn't one of openssl's hex-prefixed internal error
+    lines ("00B1...:error:...:store_result.c:157:") is usually the readable
+    one; otherwise the last line.
+    """
+    lines = [ln for ln in stderr.strip().splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    readable = [ln for ln in lines if not re.match(r"^[0-9A-Fa-f]+:error:", ln)]
+    return ": " + (readable[0] if readable else lines[-1])
+
+
 def check_openssl() -> None:
     # The same gate as handoff.sh and agent-setup.sh, and the same hint as
     # agent-setup.sh (handoff.sh's leaves out wrappers):
@@ -200,8 +214,7 @@ def check_openssl() -> None:
     if out.returncode != 0:
         # openssl's own reason (a broken OPENSSL_CONF, a missing provider):
         # its stderr names configuration problems, never secrets.
-        detail = out.stderr.strip().splitlines()
-        raise fail("openssl version failed" + (f": {detail[-1]}" if detail else ""))
+        raise fail("openssl version failed" + openssl_reason(out.stderr))
     if not (version.startswith("OpenSSL 3.") or version.startswith("OpenSSL 4.")):
         raise fail(
             f"requires OpenSSL 3 or 4; found: {version or 'no version output'}. "
@@ -242,23 +255,25 @@ def decrypt(blob_b64: str) -> dict:
     # blob. openssl's stderr names key problems, never secrets.
     try:
         loaded = subprocess.run(
-            ["openssl", "pkey", "-in", privkey, "-noout"],
+            # -passin pass:, as in the decrypt below: an encrypted key fails
+            # here instead of prompting, and never reads a passphrase from
+            # stdin (the command's transport) or a terminal.
+            ["openssl", "pkey", "-in", privkey, "-passin", "pass:", "-noout"],
             capture_output=True, text=True, errors="replace", env=openssl_env(),
             stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         raise fail("openssl not found") from None
     if loaded.returncode != 0:
-        detail = loaded.stderr.strip().splitlines()
         raise fail(
-            f"cannot load the private key at {privkey}"
-            + (f": {detail[-1]}" if detail else "")
+            f"cannot load the private key at {privkey}" + openssl_reason(loaded.stderr)
+            + " (it must be an unencrypted RSA private key)"
         )
     try:
         proc = subprocess.run(
             [
                 "openssl", "pkeyutl", "-decrypt",
-                "-inkey", privkey,
+                "-inkey", privkey, "-passin", "pass:",
                 "-pkeyopt", "rsa_padding_mode:oaep",
                 "-pkeyopt", "rsa_oaep_md:sha256",
                 "-pkeyopt", "rsa_mgf1_md:sha256",
@@ -271,12 +286,12 @@ def decrypt(blob_b64: str) -> dict:
         raise fail("openssl not found") from None
     if proc.returncode != 0:
         # openssl's stderr names algorithms and key problems, never secrets.
-        detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
         raise fail(
             "decryption failed"
-            + (f": {detail[-1]}" if detail else "")
-            + " (a blob made for another key, or a damaged one: check that"
-            " HANDOFF_PRIVKEY names the key this blob was made for)"
+            + openssl_reason(proc.stderr.decode("utf-8", "replace"))
+            + " (a blob made for another key, a damaged one, or a key that"
+            " isn't RSA-2048: check that HANDOFF_PRIVKEY names the key this"
+            " blob was made for)"
         )
     try:
         payload = json.loads(proc.stdout.decode("utf-8"))

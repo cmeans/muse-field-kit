@@ -79,7 +79,8 @@ fingerprint_of() {
   local pub
   # First stage on its own: if the file isn't a readable private key, its
   # error is the one that matters, without a second one from the next stage.
-  pub=$(openssl pkey -in "$1" -pubout) || return 1
+  # -passin pass:: an encrypted key fails instead of prompting for a passphrase.
+  pub=$(openssl pkey -in "$1" -passin pass: -pubout) || return 1
   printf '%s\n' "$pub" | openssl pkey -pubin -outform DER \
     | openssl dgst -sha256 -binary | openssl base64
 }
