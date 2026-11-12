@@ -526,6 +526,34 @@ kill "$writer" 2>/dev/null || true; wait "$writer" 2>/dev/null || true
 printf 'openssl_conf = init\n[init]\nproviders = prov\n[prov]\nevil = evil\n[evil]\nmodule = %s/no-such-provider.so\nactivate = 1\n' "$S" > "$S/evil.cnf"
 OPENSSL_CONF="$S/evil.cnf" consume --label example --check --blob-file blob.txt >"$S/out" 2>"$S/err" \
   || fail "a caller's OPENSSL_CONF reached the helper's openssl: $(cat "$S/err")"
+# No OPENSSL_* variable, in any case, reaches the helper's openssl: a fake
+# openssl first on PATH fails if it sees one, and passes the rest on.
+mkdir -p "$S/ssl-env"; ln -sf "$(command -v python3)" "$S/ssl-env/python3"
+# Absolute paths inside the fake: it runs with only $S/ssl-env on PATH.
+printf '#!/bin/sh\nif %s | %s -qi "^openssl_"; then echo "OPENSSL_ variable reached openssl" >&2; exit 9; fi\nexec %s "$@"\n' \
+  "$(command -v env)" "$(command -v grep)" "$(command -v openssl)" > "$S/ssl-env/openssl"
+chmod 755 "$S/ssl-env/openssl"
+env PATH="$S/ssl-env" OPENSSL_MODULES="$S/nowhere" openssl_x=1 python3 ../consume.py --label example --check --blob-file blob.txt >/dev/null 2>"$S/err" \
+  || fail "an OPENSSL_* variable reached the helper's openssl: $(cat "$S/err")"
+# agent-setup.sh and handoff.sh drop a caller's OPENSSL_CONF as well.
+[ "$(OPENSSL_CONF="$S/evil.cnf" bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
+  || fail "a caller's OPENSSL_CONF reached agent-setup.sh's openssl"
+[ "$(OPENSSL_CONF="$S/evil.cnf" bash "$S/handoff-dummy.sh" --fingerprint)" = "$want" ] \
+  || fail "a caller's OPENSSL_CONF reached handoff.sh's openssl"
+# The fstat re-check: a path that passed the stat check but is a FIFO by the
+# time it's opened (os.stat patched to report a regular file) is still
+# refused, without hanging (O_NONBLOCK).
+mkfifo "$S/swap.fifo"
+expect_refusal "blob file swapped to a FIFO after the stat check" 1 "is not a regular file" \
+  timeout 20 python3 -I -c '
+import os, sys
+regular, fifo = sys.argv[1], sys.argv[2]
+real_stat = os.stat
+os.stat = lambda p, *a, **k: real_stat(regular if p == fifo else p, *a, **k)
+sys.argv = ["consume.py", "--label", "example", "--check", "--blob-file", fifo]
+src = open("../consume.py").read()
+exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
+' blob.txt "$S/swap.fifo"
 # A FIFO with no writer is refused, not waited on (timeout catches a hang).
 mkfifo "$S/blob.fifo"
 expect_refusal "blob file is a FIFO" 1 "is not a regular file" \
