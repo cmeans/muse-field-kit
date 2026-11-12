@@ -73,7 +73,7 @@ need_openssl() {
   v=$(openssl version) || { echo "openssl version failed" >&2; exit 1; }
   case "$v" in
     "OpenSSL 3."*|"OpenSSL 4."*) ;;
-    *) echo "requires OpenSSL 3 or 4; found: ${v:-no version output}. Put one first in the PATH this runs with (in a wrapper, its PATH= line)$(case "${OSTYPE-}" in darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
+    *) echo "requires OpenSSL 3 or 4; found: ${v:-no version output}. Put one first in the PATH this runs with (in a wrapper, its PATH= line)$(case "${OSTYPE-}" in (darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
   esac
 }
 
@@ -212,6 +212,10 @@ PRIV="$KEY_DIR/handoff-priv.pem"
 # short write), then linked into place: ln never replaces a key that
 # appeared meanwhile, and a failed run leaves no file at $PRIV.
 trap 'rm -f -- "$new"' EXIT
+# A TERM, HUP or INT ends the run through the EXIT trap, after the running
+# openssl exits: without these, bash would die at once and the EXIT trap
+# would run before genpkey wrote its file, leaving a private key behind.
+trap 'exit 1' INT TERM HUP
 new=$(mktemp -- "$KEY_DIR/.handoff-new.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
   || { echo "key generation failed" >&2; exit 1; }
