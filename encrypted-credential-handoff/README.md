@@ -114,7 +114,7 @@ RSA-2048 with OAEP-SHA256 encrypts at most **190 bytes** per blob (256 − 2×32
 
 The reference scripts are the reviewed **Linux** implementation (bash + OpenSSL), developed and tested on Linux on both sides.
 
-- **macOS:** expected to work with the same bash script once OpenSSL 3 is installed (e.g. Homebrew) — note that the stock `/usr/bin/openssl` on macOS is LibreSSL, whose `pkeyutl` OAEP behavior is unverified here. Treat macOS as *expected, not yet reviewed*: a reviewed macOS reference will be added once one has been run end-to-end; until then any macOS port is unreviewed, and the interop test is its minimum bar.
+- **macOS:** expected to work with the same bash script once OpenSSL 3 is installed and first on `PATH` (Homebrew's `openssl@3`; `SETUP.md` gives the exact lines) — note that the stock `/usr/bin/openssl` on macOS is LibreSSL, whose `pkeyutl` OAEP behavior is unverified here. Treat macOS as *expected, not yet reviewed*: a reviewed macOS reference will be added once one has been run end-to-end; until then any macOS port is unreviewed, and the interop test is its minimum bar.
 - **Windows:** no reference yet. The expected shape is a small PowerShell script using `Read-Host -AsSecureString` (not saved to PSReadLine history) and .NET `RSA.Encrypt` with `RSAEncryptionPadding.OaepSHA256` — to be verified against the interop test when written. Until a reviewed Windows reference ships in this folder, a Windows port written by an agent is *unreviewed by definition*, and `SETUP.md` says how it must be gated (user review plus the interop test) before it touches a real credential.
 
 In short: reviewed references where they exist; where they don't, the honest status is printed on the box.

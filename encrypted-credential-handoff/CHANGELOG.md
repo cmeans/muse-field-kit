@@ -1,16 +1,29 @@
 # Changelog — encrypted-credential-handoff
 
+## Unreleased — QA round 6 revision (2026-11-11)
+
+QA's round 6 on PR #1 (1 Medium, 7 Low, 2 Nit). Fixed:
+
+- **Wrappers pass no caller arguments (the Medium).** Round 5's SETUP line told wrappers to pass `"$@"` after `--`, to the command, and a caller's arguments there can change the tool's endpoint or make it print its config, against the recorded-command rule. SETUP step 7 now says a wrapper's whole command line is fixed and recorded, with no `"$@"` anywhere, and gives a complete wrapper script and its MCP `command` stanza. The `consume.py` docstring and comments call the once-only options a backstop for a wrong wrapper, not a supported shape.
+- **macOS instructions you can follow:** SETUP gives the exact `PATH` lines for the agent's shell, the user's shell and a wrapper (Homebrew's `openssl@3`, Apple Silicon and Intel paths), under the Platform rule's "if the user chooses to proceed". The OpenSSL refusal in all three scripts names the fix.
+- **A working clean-environment recipe** for an inner wrapper (`env -i PATH=… HANDOFF_PRIVKEY=… HANDOFF_BLOB=… /abs/path/consume.py …`).
+- **`./consume.py`** in SETUP's commands (a bare `consume.py` isn't on `PATH`).
+- **Blob files are checked before they're opened:** a device (a tty can become the controlling terminal on open) or an empty path is refused first, and the open adds `O_NOCTTY`.
+- **`on-unlabel`** reads the head and the labels in two calls, so a missing head can't be mis-split.
+- **Counts:** 74 refusal checks plus one over 107 `--env` targets. Of 97 mutants (against a passing baseline), 94 are killed. The 3 survivors are the blob-file layers that only matter in a race or for a device's side effects on open, which no test here can observe: the `fstat` re-check after the pre-open `stat`, `O_NONBLOCK`, and the pre-open `stat` itself (the `fstat` still refuses without it).
+- **Narrowed claims:** the Python version check helps only on 3.6 (older versions fail to compile the file first), and isn't tested, having no 3.6 to run on; `|| exit 127` on the launcher line is a backstop, since `sh` already exits 127 when `exec` fails.
+
 ## Unreleased — QA round 5 revision (2026-11-11)
 
 QA's round 5 on PR #1 (13 Low, 2 Nit, mostly from a cross-platform pass). Fixed:
 
-- **The launcher:** `exec python3 -I "$0" "$@" || exit 127`, so a failed exec can't fall through into the docstring as shell, and test 2b now runs through the launcher too (`sh consume.py`), checking the command takes the helper's PID. `.gitattributes` keeps the scripts and vectors LF (a CRLF checkout broke the launcher and put `\r` on the last argument), and CI fails on a CR in them.
+- **The launcher:** `exec python3 -I "$0" "$@" || exit 127` (a backstop: `sh` already exits 127 when `exec` fails), and test 2b now runs through the launcher too (`sh consume.py`), checking the command takes the helper's PID. `.gitattributes` keeps the scripts and vectors LF (a CRLF checkout broke the launcher and put `\r` on the last argument), and CI fails on a CR in them.
 - **Blob files:** opened non-blocking, so a FIFO with no writer is refused instead of hanging; pipes, FIFOs and process substitutions are refused (use `--blob` or `$HANDOFF_BLOB`), as the docstring now says.
 - **Wording that was broader than the code:** the helper removes the default names and its own mappings from the inherited environment, not an outer wrapper's mappings under other names. The docstring and SETUP say so, and SETUP adds that a wrapper passes `"$@"` only after `--`, and that wrappers shouldn't nest.
 - **More `--env` names refused:** `HOSTALIASES`, `CURL_HOME`, `WGETRC`, `DOCKER_HOST`, `KUBECONFIG`, `XDG_CONFIG_HOME`, and the `NPM_CONFIG_` and `PIP_` prefixes. The test now checks every listed name in both cases and every prefix, from its own copy of the list.
 - **Tests:** the leak marker is now in every crafted value (`1d`, the 190/191-byte payloads, `handoff.sh`'s refusal inputs); `handoff.sh`'s OpenSSL gate is tested with a fake LibreSSL, for `--fingerprint` and for encrypting; the ERR trap reports a failure once.
 - **Counts:** 72 refusal checks plus one over 107 `--env` targets; a mutation run of 95 mutants (QA's round-5 survivors and a formatter's rewrite of the launcher line included), checked against a passing unmutated suite first, kills all 95. macOS portability of the test itself is issue #3.
-- **Smaller:** `check_openssl` decodes openssl's output with `errors="replace"`; Python older than 3.7 gets a message, not a traceback; `on-unlabel` re-reads the head and doesn't promote for a commit that's no longer the head; SETUP notes macOS's LibreSSL and a GUI client's minimal `PATH`.
+- **Smaller:** `check_openssl` decodes openssl's output with `errors="replace"`; Python 3.6 gets a message, not a traceback (untested; older versions fail to compile first); `on-unlabel` re-reads the head and doesn't promote for a commit that's no longer the head; SETUP notes macOS's LibreSSL and a GUI client's minimal `PATH`.
 
 ## Unreleased — QA round 4 revision (2026-11-11)
 
