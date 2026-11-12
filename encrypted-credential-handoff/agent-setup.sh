@@ -27,8 +27,8 @@
 #   HANDOFF_PRIVKEY  which EXISTING key --fingerprint, --public-key, --rotate
 #                    and --retire use: the same variable, with the same default
 #                    (~/.config/handoff/handoff-priv.pem), that consume.py
-#                    decrypts with. HANDOFF_KEY_DIR doesn't change it. A KEY
-#                    argument overrides it.
+#                    decrypts with. A KEY argument overrides it. These modes
+#                    refuse HANDOFF_KEY_DIR without HANDOFF_PRIVKEY (exit 2).
 set -euo pipefail
 umask 077
 # cd must never search the caller's CDPATH for a relative key directory.
@@ -270,7 +270,9 @@ case "$mode" in
       [ -e "$f" ] || [ -L "$f" ] || continue
       # Never the key itself, whatever it's named (by its two names only: a
       # temporary key hard-linked to the old key is still a temporary file).
-      if [ "$f" = "$key" ] || [ "$f" = "$prev" ]; then continue; fi
+      # Compared as the glob spells them ($dir/name): a relative or doubled-
+      # slash KEY must still match.
+      if [ "$f" = "$dir/${key##*/}" ] || [ "$f" = "$dir/${prev##*/}" ]; then continue; fi
       if [ ! -f "$f" ] || [ -L "$f" ]; then
         echo "agent-setup.sh: $f is not a temporary key file; report it to the user" >&2; exit 1
       fi
@@ -349,8 +351,10 @@ case "$mode" in
     fi
     # A killed setup or --rotate can leave a temporary file that is a hard
     # link to the old key: removing only $prev would leave its data on disk.
-    for f in "$(dirname -- "$key")"/.handoff-setup.* "$(dirname -- "$key")"/.handoff-new.*; do
-      if [ "$f" = "$prev" ] || [ "$f" = "$key" ]; then continue; fi
+    kdir=$(dirname -- "$key")
+    for f in "$kdir"/.handoff-setup.* "$kdir"/.handoff-new.*; do
+      # As the glob spells them, so a relative or doubled-slash KEY matches.
+      if [ "$f" = "$kdir/${prev##*/}" ] || [ "$f" = "$kdir/${key##*/}" ]; then continue; fi
       if [ -f "$f" ] && [ ! -L "$f" ] && [ "$f" -ef "$prev" ]; then
         rm -f -- "$f"
         echo "note: removed $f, another link to the previous key" >&2
@@ -358,7 +362,11 @@ case "$mode" in
     done
     # Another name for the old key (a backup copy made with ln) would keep it
     # on disk after this: refuse, so the user can find and remove it first.
-    if [ -n "$(find "$prev" -links +1 2>/dev/null)" ]; then
+    # find reads a path starting with - as a predicate: ./ in front. And a
+    # find that fails is a refusal, not a pass.
+    case "$prev" in /*) q=$prev ;; *) q=./$prev ;; esac
+    links=$(find "$q" -links +1) || { echo "agent-setup.sh: couldn't check $prev's links; report it to the user" >&2; exit 1; }
+    if [ -n "$links" ]; then
       echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; report it to the user, who finds and removes the other name first" >&2
       exit 1
     fi

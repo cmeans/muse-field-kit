@@ -275,11 +275,6 @@ def decode_blob(blob_b64: str) -> bytes:
         if "=" in compact.rstrip("="):
             raise fail("input is not valid base64: " + several)
         raise fail("input is not valid base64")
-    if len(cipher) > CIPHERTEXT_BYTES and len(cipher) % CIPHERTEXT_BYTES == 0:
-        raise fail(
-            f"the blob decodes to {len(cipher)} bytes, {len(cipher) // CIPHERTEXT_BYTES} "
-            "blobs' worth: " + several
-        )
     if len(cipher) != CIPHERTEXT_BYTES:
         raise fail(
             f"the blob decodes to {len(cipher)} bytes, not {CIPHERTEXT_BYTES}: "
@@ -703,6 +698,19 @@ def main() -> int:
             f"--rewrap: {previous} holds the same key as {current}: the rotation "
             "didn't finish. Run agent-setup.sh --rotate again (SETUP.md, Rotation step 1)."
         )
+    if do_rewrap:
+        # Never over a key: --out in the key's own directory would let a
+        # mistyped or injected path replace the current or previous key, and
+        # put a blob on the key's disk (invariant 5).
+        out_dir = os.path.dirname(os.path.abspath(out_file))
+        key_dir = os.path.dirname(os.path.abspath(current))
+        try:
+            same_dir = os.path.samefile(out_dir, key_dir)
+        except OSError:
+            same_dir = False
+        if same_dir:
+            raise fail(f"--out {out_file} is in the key's directory ({key_dir}); "
+                       "the blob belongs in the store, not beside the key")
     plaintext, slot = decrypt(blob, current, previous)
     creds = check_payload(parse_payload(plaintext), label, env_map)
     if check:
