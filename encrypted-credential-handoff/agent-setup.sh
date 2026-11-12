@@ -367,9 +367,17 @@ case "$mode" in
     case "$prev" in /*) q=$prev ;; *) q=./$prev ;; esac
     links=$(find "$q" -links +1) || { echo "agent-setup.sh: couldn't check $prev's links; report it to the user" >&2; exit 1; }
     if [ -n "$links" ]; then
-      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; report it to the user, who finds and removes the other name first" >&2
+      # Where to look: the mount point of the old key's disk (df's last
+      # field; a mount point with a space in it reads short, hence the
+      # fallback wording).
+      mnt=$(df -P -- "$q" 2>/dev/null | awk 'NR == 2 { print $NF }')
+      [ -d "$mnt" ] || mnt="<the mount point of $prev's disk>"
+      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; nothing was deleted. Report it to the user, who finds the other name with: find '$mnt' -xdev -samefile '$prev' (as root to see every directory), and removes it first (SETUP.md, Rotation step 5)" >&2
       exit 1
     fi
+    # Not atomic with the check above: an ln made in between (the lock is
+    # advisory) keeps the old key on disk. That takes a deliberate actor with
+    # the key directory's write access, which can copy the key anyway.
     rm -f -- "$prev"
     echo "deleted the previous key $prev; the current key is $key (SHA256:$fp)"
     exit 0
