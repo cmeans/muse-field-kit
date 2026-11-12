@@ -38,7 +38,7 @@ command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 ssl_version=$(openssl version)
 case "$ssl_version" in
   "OpenSSL 3."*|"OpenSSL 4."*) ;;
-  *) echo "requires OpenSSL 3 or 4; found: $ssl_version. Put one first on your PATH$( [ "$(uname -s)" = Darwin ] && printf '%s' "; on macOS, Homebrew's openssl@3")" >&2; exit 1 ;;
+  *) echo "requires OpenSSL 3 or 4; found: $ssl_version. Put one first on your PATH$(case "${OSTYPE-}" in darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
 esac
 
 # The agent's long-lived handoff public key (encryption only — safe to share).

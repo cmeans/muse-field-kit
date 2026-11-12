@@ -64,7 +64,7 @@ need_openssl() {
   v=$(openssl version)
   case "$v" in
     "OpenSSL 3."*|"OpenSSL 4."*) ;;
-    *) echo "requires OpenSSL 3 or 4; found: $v. Put one first in the PATH this runs with$( [ "$(uname -s)" = Darwin ] && printf '%s' "; on macOS, Homebrew's openssl@3")" >&2; exit 1 ;;
+    *) echo "requires OpenSSL 3 or 4; found: $v. Put one first in the PATH this runs with$(case "${OSTYPE-}" in darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
   esac
 }
 

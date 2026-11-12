@@ -47,7 +47,7 @@ Only the fields above can be mapped, each at most once. The default names
 environment before the payload's values go in, along with $HANDOFF_BLOB
 and $HANDOFF_PRIVKEY. Other variables pass through as inherited, including
 a credential an outer wrapper mapped under a name this call doesn't use:
-don't nest wrappers, or start the inner one with a clean environment.
+never nest wrappers (SETUP.md step 7).
 
 A blob file must be a regular file. A pipe, a FIFO, a tty or a device
 (so /dev/stdin on a pipe) and a process substitution (--blob-file
