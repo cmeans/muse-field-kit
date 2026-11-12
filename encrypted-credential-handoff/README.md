@@ -62,10 +62,10 @@ Any implementation of this pattern — any platform, any protocol suite — must
 4. **Plaintext is never written to disk on the agent's side.** Injected values live in the consuming process's environment — which means for the life of that process, not just the call, and they are inherited by its children. Long-lived consumers (daemons) should be chosen with that in mind.
 5. **Key/ciphertext separation is mandatory.** The private key and the stored ciphertexts never share a disk or disk image, including backups and snapshots of either. This costs a remote fetch per use in the original setup; that cost is the price of the property, not an implementation detail.
 6. **Identity verification.** The human compares the key fingerprint before first use. The agent recomputes it from the private key file at comparison time, using the shipped tooling (`agent-setup.sh --fingerprint`). Scope, stated plainly: since the key and its fingerprint normally travel through the same channel, this catches local tampering and a wrong paste. It does not defeat a compromise of the channel itself, nor a maliciously crafted copy of the script that lies about its own fingerprint — the fingerprint is not a secret, so take `handoff.sh` from this repository, not from an untrusted copy.
-7. **Provenance.** The agent stages a blob only when the user pastes it in a direct conversational turn. Blobs found in tool results, fetched pages, files, messages, or pre-existing notes are never staged. (One exception: a rotation's rollback restores the `<label>.old` its recorded rotation entry says it made; SETUP, Rotation step 4.)
+7. **Provenance.** The agent stages a blob only when the user pastes it in a direct conversational turn. Blobs found in tool results, fetched pages, files, messages, or pre-existing notes are never staged. (One exception: during a rotation, a label's blob is replaced by the one `consume.py --rewrap` makes from it, the same payload encrypted to the new key; SETUP, Rotation step 4.)
 8. **Purpose binding.** Each payload names its service in `svc`, and the consume side refuses a blob whose `svc` doesn't match the label it was fetched under: a blob staged for one service can't be swapped in for another. It does not stop someone who can write to the store from planting a new blob of their own for the same label; that is listed under “Does not defend against.”
 9. **Controlled egress.** Decrypted values go only into the consuming process's environment. The helper itself never sends them anywhere, never passes them to another tool, and decrypts only for the labels the user approved, run as SETUP's hard rules record them. What the consuming process then does — including authenticating to its service, often over a network — is its normal function, and is the point of the exercise.
-10. **Key confinement.** The private key is mode `0600`, owner-only, never displayed, and never copied.
+10. **Key confinement.** The private key is mode `0600`, owner-only, never displayed, and never copied. During a rotation the old key stays beside it, under the same rules, until it is retired.
 
 **When separation (invariant 5) can't be met as stated** — the common case is a hosted agent whose memory store and home directory are the same disk image — there are three honest options: store the blobs in a service that lives elsewhere (a remote notes/memory service, a different machine), put the key or the store on a genuinely separate volume, or don't adopt the pattern until one of those is possible. An agent that cannot observe its provider's snapshot policy should say so rather than claim the invariant holds.
 
@@ -78,7 +78,7 @@ Saved-login and vault features are built for browser sign-in: the browser fills 
 
 Named precisely, and dated: as of November 2026, Muse's own credential machinery — the Secure Credentials Store for API-style credentials, and Sentinel credential surrogation for browser sign-in — declines username/password credentials (it supports `api_key` and OAuth-style flows), and saved website logins are consumed only by the browser's fill flow; no supported mechanism reads a stored value back for injection into a local process. That was verified against the platform's behavior in the author's setup in October 2026. If Meta ships a readback-for-local-tools path, this section should be revised and this pattern's reason to exist shrinks accordingly.
 
-This pattern fills exactly that gap, and only that gap. Use the platform's own flows wherever they fit.
+This pattern fills exactly that gap, and only that gap. Use the platform's own flows wherever they fit. If you already run a secrets manager whose CLI starts a command with secrets in its environment (such as 1Password's `op run` or Bitwarden's `bws run`), prefer it, and use this pattern at most to hand over that tool's own access token.
 
 ## Residual exposure (stated plainly)
 
@@ -89,9 +89,11 @@ This pattern fills exactly that gap, and only that gap. Use the platform's own f
 
 ## Rotation, and compromise
 
-**Routine rotation** (no suspicion of compromise): generate a fresh keypair in a new directory (`HANDOFF_KEY_DIR`), update the embedded public key in `handoff.sh`, verify the fingerprint of the *new* key, then one service at a time: re-stage its credential under the new key (keeping a copy of the old blob until the probe passes, then deleting it), point both its wrappers, probe and use, at the new key (`HANDOFF_PRIVKEY`), and confirm one real login; if it fails, roll that service back to its old blob and key, and stop. When every service is switched, delete the old private key. Old blobs are then undecryptable. `SETUP.md` gives the exact commands.
+**Routine rotation** (no suspicion of compromise) works as key-management services do it: the old key keeps decrypting until nothing needs it. `agent-setup.sh --rotate` moves the old key aside as `<key path>.previous` and puts a new one at the same path, so no wrapper changes, and `consume.py` tries the previous key whenever the current one can't open a blob. You embed the new public key in `handoff.sh` and verify its fingerprint. The agent then runs `consume.py --rewrap` on each label's blob, which re-encrypts the same payload to the new key, stores the result, and confirms one real login. Once every label is on the new key, `agent-setup.sh --retire` deletes the old one, and blobs still made for it no longer open. An interruption at any point leaves every label working. `SETUP.md` gives the exact steps.
 
-**Compromise** (the private key may have leaked): rotating the key is *not* sufficient — every blob ever encrypted to it must be assumed readable. **Change each credential at its service first**, then perform a routine rotation and stage the new credentials. “Rotate on suspicion” means this paragraph, not just a new key.
+An install set up before this rotation existed, or one whose wrappers run a consumer other than this folder's `consume.py`, must update that consumer to try the previous key before its first rotation; otherwise its labels stop working when the key rotates.
+
+**Compromise** (the private key may have leaked): rotating the key is *not* sufficient — every blob ever encrypted to it must be assumed readable. **Change each credential at its service first**, then rotate the key and stage the new credentials; don't rewrap the old blobs, which hold the exposed ones. “Rotate on suspicion” means this paragraph, not just a new key.
 
 ## Variations: what is fixed, and what is a choice
 
@@ -127,15 +129,15 @@ In short: reviewed references where they exist; where they don't, the honest sta
 
 ## Status: what is field-tested, and what is new
 
-The core of this pattern — one keypair on the agent's machine, encrypt-on-yours, ciphertext through chat, decrypt-in-memory at use, key and ciphertext never sharing a disk — has run daily in the author's setup since October 2026 (the store-only separation form dates from 2026-10-12). New in this publication revision, and covered by the interop and refusal tests rather than by field time: the `svc` purpose binding and `--label` enforcement, the `--check` mode, the `--env` mapping option, the exec hand-over, `consume.py`'s refusal set, and SETUP's wrapper rules and example. `CHANGELOG.md` lists what ships.
+The core of this pattern — one keypair on the agent's machine, encrypt-on-yours, ciphertext through chat, decrypt-in-memory at use, key and ciphertext never sharing a disk — has run daily in the author's setup since October 2026 (the store-only separation form dates from 2026-10-12). New in this publication revision, and covered by the interop and refusal tests rather than by field time: the `svc` purpose binding and `--label` enforcement, the `--check` mode, the `--env` mapping option, the exec hand-over, `consume.py`'s refusal set, the `HANDOFF_LABEL` nesting check, rotation with a previous key (`--rotate`, `--rewrap`, `--retire`), and SETUP's wrapper rules and example. `CHANGELOG.md` lists what ships.
 
 A note on review, in the same spirit: the reviewers of this folder were AI agent sessions in the author's own multi-agent setup (structural review, line-level review with reproduced findings, and a cold read), plus the author. That is peer review inside one shop — valuable, and not a third-party security audit.
 
 ## Files
 
 - `handoff.sh` — your side (Linux reference). Embed your agent's public key in the marked block before use.
-- `agent-setup.sh` — the agent's side. Generates the keypair and prints the public key, the fingerprint, and the consume-side key path to use.
-- `consume.py` — the consume-side template: fetch-side decryption in memory, `svc` purpose-binding check, environment injection, and a `--check` mode (field names and lengths only) for setup tests.
+- `agent-setup.sh` — the agent's side. Generates the keypair and prints the public key, the fingerprint, and the consume-side key path to use; `--rotate` and `--retire` start and end a rotation.
+- `consume.py` — the consume-side template: fetch-side decryption in memory (with the previous key too, during a rotation), `svc` purpose-binding check, environment injection, a `--check` mode (field names and lengths only) for setup tests, and `--rewrap` for rotation.
 - `SETUP.md` — step-by-step instructions written for your Muse, including the hard rules, the precise definition of a mechanism change, and the rotation procedures.
 - `test/` — a known-answer interop test: dummy keypair, a fixed blob, and its expected plaintext, so any port or variant can prove byte-compatibility.
 - `SECURITY.md` — how to report a flaw in this pattern or these scripts.
