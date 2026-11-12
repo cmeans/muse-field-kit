@@ -101,10 +101,17 @@ PRIVKEY_ENV = "HANDOFF_PRIVKEY"
 BLOB_ENV = "HANDOFF_BLOB"
 CIPHERTEXT_BYTES = 256  # RSA-2048: every reference blob decodes to exactly this
 MAX_KEY_FILE = 16384    # bytes; an RSA-2048 PEM key is about 1.7 KB
-# An RSA-2048 public key in DER SubjectPublicKeyInfo form: always 294 bytes,
-# starting with the rsaEncryption algorithm identifier.
+# An RSA-2048 public key (e = 65537, as agent-setup.sh generates) in DER
+# SubjectPublicKeyInfo form: 294 bytes, a fixed 33-byte header (the
+# rsaEncryption identifier, then a 257-byte modulus field whose leading 00
+# means the top bit is set, so exactly 2048 bits), and the exponent 65537.
+# The three overlap: each alone rejects every other key type and size.
 RSA2048_SPKI_LEN = 294
-RSA2048_SPKI_PREFIX = bytes.fromhex("30820122300d06092a864886f70d0101010500")
+RSA2048_SPKI_HEAD = bytes.fromhex(
+    "30820122300d06092a864886f70d0101010500"  # SPKI, rsaEncryption
+    "0382010f003082010a0282010100"           # key bits, modulus field
+)
+RSA2048_SPKI_TAIL = bytes.fromhex("0203010001")  # exponent 65537
 MAX_REASON = 300        # characters of openssl's error text shown
 MAX_BLOB_FILE = 8192    # characters; a reference blob is 344
 
@@ -288,10 +295,14 @@ def decrypt(blob_b64: str) -> dict:
             + " (it must be an unencrypted RSA-2048 private key)"
         )
     spki = loaded.stdout
-    if len(spki) != RSA2048_SPKI_LEN or not spki.startswith(RSA2048_SPKI_PREFIX):
+    if (
+        len(spki) != RSA2048_SPKI_LEN
+        or not spki.startswith(RSA2048_SPKI_HEAD)
+        or not spki.endswith(RSA2048_SPKI_TAIL)
+    ):
         raise fail(
             f"the private key at {privkey} is not an RSA-2048 key; "
-            "this protocol uses RSA-2048 only"
+            "this protocol uses RSA-2048 keys with e = 65537 (as agent-setup.sh makes)"
         )
     try:
         proc = subprocess.run(
@@ -313,9 +324,8 @@ def decrypt(blob_b64: str) -> dict:
         raise fail(
             "decryption failed"
             + openssl_reason(proc.stderr.decode("utf-8", "replace"))
-            + " (a blob made for another key, a damaged one, or a key that"
-            " isn't RSA-2048: check that HANDOFF_PRIVKEY names the key this"
-            " blob was made for)"
+            + " (a blob made for another key, or a damaged one: check that"
+            " HANDOFF_PRIVKEY names the key this blob was made for)"
         )
     try:
         payload = json.loads(proc.stdout.decode("utf-8"))

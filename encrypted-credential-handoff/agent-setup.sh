@@ -81,14 +81,19 @@ fingerprint_of() {
   # error is the one that matters, without a second one from the next stage.
   # -passin pass:: an encrypted key fails instead of prompting for a passphrase.
   pub=$(openssl pkey -in "$1" -passin pass: -pubout) || return 1
-  # RSA-2048 only, as consume.py checks: its public key in DER is 294 bytes,
-  # starting with the rsaEncryption algorithm identifier.
-  local der_len der_head
-  der_len=$(printf '%s\n' "$pub" | openssl pkey -pubin -outform DER | wc -c)
-  der_head=$(printf '%s\n' "$pub" | openssl pkey -pubin -outform DER | od -An -tx1 -N19 | tr -d ' \n')
-  if [ "$der_len" -ne 294 ] || [ "$der_head" != 30820122300d06092a864886f70d0101010500 ]; then
-    echo "agent-setup.sh: the key at $1 is not an RSA-2048 key; this protocol uses RSA-2048 only" >&2
-    return 1
+  # RSA-2048 with e = 65537 only, as consume.py checks: its public key in DER
+  # is 294 bytes, a fixed 33-byte header (its modulus field's leading 00 means
+  # exactly 2048 bits), and the exponent 65537 at the end. Returns 2 for a key
+  # of another type.
+  local der
+  der=$(printf '%s\n' "$pub" | openssl pkey -pubin -outform DER | od -An -tx1 -v | tr -d ' \n')
+  case "$der" in
+    30820122300d06092a864886f70d01010105000382010f003082010a0282010100*0203010001) ;;
+    *) der=bad ;;
+  esac
+  if [ "${#der}" -ne 588 ]; then
+    echo "agent-setup.sh: the key at $1 is not an RSA-2048 key; this protocol uses RSA-2048 keys with e = 65537 (as this script makes)" >&2
+    return 2
   fi
   printf '%s\n' "$pub" | openssl pkey -pubin -outform DER \
     | openssl dgst -sha256 -binary | openssl base64
@@ -116,8 +121,14 @@ case "${1-}" in
     fi
     [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     # A large non-key file makes openssl's decoder very slow: refuse it.
-    [ "$(wc -c < "$key")" -le 16384 ] || { echo "key file at $key is over 16384 bytes; not an RSA-2048 key file" >&2; exit 1; }
-    fp=$(fingerprint_of "$key") || { echo "could not read key at $key" >&2; exit 1; }
+    size=$( { wc -c < "$key"; } 2>/dev/null ) || { echo "cannot read key file at $key" >&2; exit 1; }
+    [ "$size" -le 16384 ] || { echo "key file at $key is over 16384 bytes; not an RSA-2048 key file" >&2; exit 1; }
+    rc=0; fp=$(fingerprint_of "$key") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      # 2: read, but not an RSA-2048 key (already said); else unreadable.
+      [ "$rc" -eq 2 ] || echo "could not read key at $key" >&2
+      exit 1
+    fi
     echo "key file: $key" >&2
     echo "SHA256:$fp"
     exit 0
