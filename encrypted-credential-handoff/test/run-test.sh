@@ -492,6 +492,21 @@ expect_refusal "handoff.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
 expect_refusal "handoff.sh encrypting, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" <<<'{"svc":"example","password":"mk-Zq9"}'
 [ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
+# On macOS the hint names Homebrew's openssl@3: OSTYPE (which bash takes
+# from the environment) and sys.platform are faked to say darwin.
+ln -sf "$(command -v python3)" "$S/libressl/python3"
+expect_refusal "agent-setup.sh hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
+  env PATH="$S/libressl:/usr/bin:/bin" OSTYPE=darwin23 bash ../agent-setup.sh --fingerprint
+expect_refusal "handoff.sh hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
+  env PATH="$S/libressl:/usr/bin:/bin" OSTYPE=darwin23 bash "$S/handoff-dummy.sh" --fingerprint
+expect_refusal "consume.py hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
+  env PATH="$S/libressl" python3 -I -c '
+import sys
+sys.platform = "darwin"
+sys.argv = ["consume.py", "--label", "example", "--check", "--blob-file", "blob.txt"]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+'
+
 # shellcheck disable=SC2088
 expect_refusal "agent-setup.sh, ~ without HOME" 1 "a ~ in HANDOFF_KEY_DIR needs it" \
   env -u HOME HANDOFF_KEY_DIR='~/kd' bash ../agent-setup.sh
@@ -560,8 +575,24 @@ expect_refusal "blob file swapped to a FIFO after the stat check" 1 "is not a re
 import os, sys
 regular, fifo = sys.argv[1], sys.argv[2]
 real_stat = os.stat
-os.stat = lambda p, *a, **k: real_stat(regular if p == fifo else p, *a, **k)
+hits = {"stat": 0, "open": 0}
+def fake_stat(p, *a, **k):
+    if p == fifo:
+        hits["stat"] += 1
+        return real_stat(regular, *a, **k)
+    return real_stat(p, *a, **k)
+os.stat = fake_stat
+real_open = os.open
+def counting_open(p, *a, **k):
+    if p == fifo:
+        hits["open"] += 1
+    return real_open(p, *a, **k)
+os.open = counting_open
 sys.argv = ["consume.py", "--label", "example", "--check", "--blob-file", fifo]
+import atexit
+# The patch must have been hit and the FIFO opened, or the test proves
+# nothing about the fstat re-check (a refactor to lstat, say).
+atexit.register(lambda: hits["stat"] and hits["open"] or os._exit(7))
 src = open("../consume.py").read()
 exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
 ' blob.txt "$S/swap.fifo"
