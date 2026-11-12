@@ -504,11 +504,28 @@ done
 # command's stdin: refused.
 expect_refusal "blob file on a pipe" 1 "is not a regular file" \
   bash -c 'cat blob.txt | python3 ../consume.py --label example --check --blob-file /dev/stdin'
-# Devices and an empty path are refused before anything is opened.
+# Devices and an empty path are refused (the FIFO test below checks the
+# refusal comes before any open).
 expect_refusal "blob file is a device" 1 "is not a regular file" \
   consume --label example --check --blob-file /dev/null
 expect_refusal "empty --blob-file" 1 "--blob-file is empty" \
   consume --label example --check --blob-file ''
+# ...and refused without being opened: a writer blocked opening a FIFO is
+# released only if the helper opens the read end.
+mkfifo "$S/probe.fifo"
+( exec 3>"$S/probe.fifo"; touch "$S/fifo-released" ) &
+writer=$!
+expect_refusal "blob file is a FIFO with a writer waiting" 1 "is not a regular file" \
+  timeout 20 python3 ../consume.py --label example --check --blob-file "$S/probe.fifo"
+sleep 0.3
+released=no; [ ! -e "$S/fifo-released" ] || released=yes
+kill "$writer" 2>/dev/null || true; wait "$writer" 2>/dev/null || true
+[ "$released" = no ] || fail "the helper opened the FIFO before refusing it"
+# A caller's OPENSSL_CONF doesn't reach the helper's own openssl (it could
+# load a provider module into the process that reads the private key).
+printf 'openssl_conf = init\n[init]\nproviders = prov\n[prov]\nevil = evil\n[evil]\nmodule = %s/no-such-provider.so\nactivate = 1\n' "$S" > "$S/evil.cnf"
+OPENSSL_CONF="$S/evil.cnf" consume --label example --check --blob-file blob.txt >"$S/out" 2>"$S/err" \
+  || fail "a caller's OPENSSL_CONF reached the helper's openssl: $(cat "$S/err")"
 # A FIFO with no writer is refused, not waited on (timeout catches a hang).
 mkfifo "$S/blob.fifo"
 expect_refusal "blob file is a FIFO" 1 "is not a regular file" \
