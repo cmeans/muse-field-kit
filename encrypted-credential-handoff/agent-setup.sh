@@ -177,7 +177,7 @@ lock_dir() {  # DIR
   if ! err=$(mkdir -- "$l" 2>&1); then
     if [ -e "$l" ]; then
       echo "agent-setup.sh: another --rotate or --retire is running ($l exists)." >&2
-      echo "Stop and report it to the user: if no run is going (one was killed), they remove that directory." >&2
+      echo "Stop and report it to the user: if no run is going (one was killed), they remove it with: rmdir $l" >&2
     else
       echo "agent-setup.sh: cannot create the lock in $1: $err" >&2
     fi
@@ -214,6 +214,13 @@ case "${1-}" in
     [ $# -le 2 ] || { echo "usage: agent-setup.sh $mode [KEY]" >&2; exit 2; }
     if [ $# -eq 2 ] && [ -z "$2" ]; then
       echo "agent-setup.sh: $mode was given an empty KEY" >&2; exit 2
+    fi
+    case "${2-}" in
+      (--*) echo "usage: agent-setup.sh $mode [KEY] (one mode at a time; $2 isn't a KEY)" >&2; exit 2 ;;
+    esac
+    if [ $# -eq 1 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
+      echo "agent-setup.sh: HANDOFF_KEY_DIR applies only to generating a key; for $mode, set HANDOFF_PRIVKEY=<dir>/handoff-priv.pem as the wrappers do" >&2
+      exit 2
     fi
     need_openssl
     shift
@@ -255,12 +262,15 @@ case "$mode" in
     trap cleanup EXIT
     # A TERM, HUP or INT ends the run through cleanup, after the running
     # openssl exits (see first-time generation below).
-    trap 'exit 1' INT TERM HUP
+    trap 'echo "agent-setup.sh: interrupted; run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1' INT TERM HUP
     lock_dir "$dir"
     key_fingerprint "$key"
     for f in "$dir"/.handoff-new.*; do
       # A temporary key a killed --rotate left (the lock says none is running).
       [ -e "$f" ] || [ -L "$f" ] || continue
+      # Never the key itself, whatever it's named (by its two names only: a
+      # temporary key hard-linked to the old key is still a temporary file).
+      if [ "$f" = "$key" ] || [ "$f" = "$prev" ]; then continue; fi
       if [ ! -f "$f" ] || [ -L "$f" ]; then
         echo "agent-setup.sh: $f is not a temporary key file; report it to the user" >&2; exit 1
       fi
@@ -284,16 +294,16 @@ case "$mode" in
       fi
       echo "note: resuming an interrupted rotation ($prev holds the current key)" >&2
     else
-      ln -- "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $prev" >&2; exit 1; }
+      ln -- "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $prev (the key directory needs hard links, SETUP.md step 1); nothing changed" >&2; exit 1; }
     fi
     new=$(mktemp -- "$dir/.handoff-new.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
-      || { echo "key generation failed; the old key is unchanged" >&2; exit 1; }
+      || { echo "key generation failed; the old key is unchanged, and $prev holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
     chmod -- 600 "$new"
     # Checked before it replaces anything: genpkey can exit 0 after a short
     # write (a full disk).
     new_fp=$(fingerprint_or_fail "$new") \
-      || { echo "the new key didn't check out (a full disk?); the old key is unchanged" >&2; exit 1; }
+      || { echo "the new key didn't check out (a full disk?); the old key is unchanged, and $prev holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
     mv -f -- "$new" "$key"
     if [ -d "$key" ]; then
       # KEY became a directory meanwhile, and mv put the new key inside it.
@@ -340,11 +350,18 @@ case "$mode" in
     # A killed setup or --rotate can leave a temporary file that is a hard
     # link to the old key: removing only $prev would leave its data on disk.
     for f in "$(dirname -- "$key")"/.handoff-setup.* "$(dirname -- "$key")"/.handoff-new.*; do
+      if [ "$f" = "$prev" ] || [ "$f" = "$key" ]; then continue; fi
       if [ -f "$f" ] && [ ! -L "$f" ] && [ "$f" -ef "$prev" ]; then
         rm -f -- "$f"
         echo "note: removed $f, another link to the previous key" >&2
       fi
     done
+    # Another name for the old key (a backup copy made with ln) would keep it
+    # on disk after this: refuse, so the user can find and remove it first.
+    if [ -n "$(find "$prev" -links +1 2>/dev/null)" ]; then
+      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; report it to the user, who finds and removes the other name first" >&2
+      exit 1
+    fi
     rm -f -- "$prev"
     echo "deleted the previous key $prev; the current key is $key (SHA256:$fp)"
     exit 0
@@ -403,7 +420,7 @@ trap 'rm -f -- "$new"' EXIT
 # A TERM, HUP or INT ends the run through the EXIT trap, after the running
 # openssl exits: without these, bash would die at once and the EXIT trap
 # would run before genpkey wrote its file, leaving a private key behind.
-trap 'exit 1' INT TERM HUP
+trap 'echo "agent-setup.sh: interrupted; run it again (if it then refuses, the key was written: --public-key shows it)" >&2; exit 1' INT TERM HUP
 for f in "$KEY_DIR"/.handoff-setup.*; do
   # A temporary key a killed (SIGKILL) setup left behind: never a live key.
   [ -f "$f" ] && [ ! -L "$f" ] || continue
