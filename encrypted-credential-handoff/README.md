@@ -89,7 +89,7 @@ This pattern fills exactly that gap, and only that gap. Use the platform's own f
 
 ## Rotation, and compromise
 
-**Routine rotation** (no suspicion of compromise): generate a fresh keypair in a new directory (`HANDOFF_KEY_DIR`), update the embedded public key in `handoff.sh`, verify the fingerprint of the *new* key, then one service at a time: re-stage its credential under the new key, point both its wrappers, probe and use, at the new key (`HANDOFF_PRIVKEY`), and confirm one real login. When every service is switched, delete the old private key. Old blobs are then undecryptable. `SETUP.md` gives the exact commands.
+**Routine rotation** (no suspicion of compromise): generate a fresh keypair in a new directory (`HANDOFF_KEY_DIR`), update the embedded public key in `handoff.sh`, verify the fingerprint of the *new* key, then one service at a time: re-stage its credential under the new key (keeping the old blob until the probe passes), point both its wrappers, probe and use, at the new key (`HANDOFF_PRIVKEY`), and confirm one real login; if it fails, roll that service back to its old blob and key, and stop. When every service is switched, delete the old private key. Old blobs are then undecryptable. `SETUP.md` gives the exact commands.
 
 **Compromise** (the private key may have leaked): rotating the key is *not* sufficient — every blob ever encrypted to it must be assumed readable. **Change each credential at its service first**, then perform a routine rotation and stage the new credentials. “Rotate on suspicion” means this paragraph, not just a new key.
 
