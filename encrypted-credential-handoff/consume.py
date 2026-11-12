@@ -348,7 +348,7 @@ def pkeyutl(op: str, privkey: str, data: bytes) -> "subprocess.CompletedProcess"
         raise fail("openssl not found") from None
 
 
-def decrypt(blob_b64: str) -> "tuple[bytes, str]":
+def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
     """Decrypt with the current key, else the previous one.
 
     Returns the plaintext bytes and which key opened it ("current" or
@@ -359,8 +359,6 @@ def decrypt(blob_b64: str) -> "tuple[bytes, str]":
     """
     cipher = decode_blob(blob_b64)
     check_openssl()
-    current = privkey_path()
-    previous = current + ".previous"
     check_key(current)
     proc = pkeyutl("-decrypt", current, cipher)
     if proc.returncode == 0:
@@ -382,6 +380,15 @@ def decrypt(blob_b64: str) -> "tuple[bytes, str]":
     )
 
 
+def same_key_file(a: str, b: str) -> bool:
+    """Whether two key files are one file, or byte-for-byte copies."""
+    if os.path.samefile(a, b):
+        return True
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        # Both have passed check_key (owner-only, under the size cap) first.
+        return fa.read(MAX_KEY_FILE + 1) == fb.read(MAX_KEY_FILE + 1)
+
+
 def parse_payload(plaintext: bytes) -> dict:
     try:
         payload = json.loads(plaintext.decode("utf-8"))
@@ -392,14 +399,13 @@ def parse_payload(plaintext: bytes) -> dict:
     return payload
 
 
-def rewrap(plaintext: bytes) -> str:
+def rewrap(plaintext: bytes, current: str) -> str:
     """The same payload, byte for byte, encrypted to the current key.
 
     Checked before it's returned: the new blob must open with the current
     key to exactly this payload, since it replaces the old blob in the store
     with no copy kept (SETUP.md, Rotation).
     """
-    current = privkey_path()
     proc = pkeyutl("-encrypt", current, plaintext)
     if proc.returncode != 0 or len(proc.stdout) != CIPHERTEXT_BYTES:
         raise fail("re-encrypting to the current key failed"
@@ -573,12 +579,15 @@ def parse_args(argv):
             except OSError:
                 out = None
             if do_rewrap and out and (out.st_dev, out.st_ino) == (st.st_dev, st.st_ino):
-                # `--rewrap --blob-file X > X`: the shell emptied X first.
+                # `--rewrap --blob-file X > X` (the shell emptied X first) or
+                # `>> X` (it would append a second blob).
                 os.close(fd)
                 raise fail(
-                    f"--rewrap's output is redirected to its own --blob-file {blob_file}: "
-                    "the shell emptied that file before this ran, so its blob is gone "
-                    "from it. Restore it from the store, and write the output to a new file."
+                    f"--rewrap's output is redirected to its own --blob-file {blob_file}"
+                    + (": the shell emptied that file before this ran, so its blob is "
+                       "gone from it. Restore it from the store, and"
+                       if st.st_size == 0 else ";")
+                    + " write the output to a new file (SETUP.md, Rotation step 4)."
                 )
             # utf-8-sig: some editors save a byte-order mark first.
             with os.fdopen(fd, "r", encoding="utf-8-sig") as fh:
@@ -617,6 +626,20 @@ def main() -> int:
     label, check, do_rewrap, blob, env_map, cmd = parse_args(sys.argv[1:])
     current = privkey_path()
     previous = current + ".previous"
+    if do_rewrap and not blob.strip():
+        # `HANDOFF_BLOB=$(cat X) consume.py --rewrap > X` empties X before the
+        # $(...) reads it in zsh: say what probably happened.
+        try:
+            out = os.fstat(1)
+        except OSError:
+            out = None
+        if out and stat.S_ISREG(out.st_mode) and out.st_size == 0:
+            raise fail(
+                "--rewrap was given an empty blob, and its output is an empty file: "
+                "if that file is where the blob came from, the redirect emptied it "
+                "first. Restore it from the store, and write the output to a new "
+                "file (SETUP.md, Rotation step 4)."
+            )
     if do_rewrap and not os.path.lexists(previous):
         # "For the current key" means the label is done only during a
         # rotation, and only for the key the wrappers use: with no previous
@@ -627,7 +650,18 @@ def main() -> int:
             "Run it with HANDOFF_PRIVKEY as the label's wrappers set it, during "
             "a rotation (SETUP.md, Rotation); anything else, stop and report it."
         )
-    plaintext, slot = decrypt(blob)
+    if do_rewrap:
+        check_openssl()
+        check_key(current)
+        check_key(previous)
+    if do_rewrap and same_key_file(current, previous):
+        # Between agent-setup.sh --rotate's two steps both names hold the old
+        # key: a blob "for the current key" then is for the key being retired.
+        raise fail(
+            f"--rewrap: {previous} holds the same key as {current}: the rotation "
+            "didn't finish. Run agent-setup.sh --rotate again (SETUP.md, Rotation step 1)."
+        )
+    plaintext, slot = decrypt(blob, current, previous)
     creds = check_payload(parse_payload(plaintext), label, env_map)
     if check:
         print(f"svc: matches label {label!r}")
@@ -637,7 +671,7 @@ def main() -> int:
     if do_rewrap:
         # The new blob is ciphertext: safe on stdout, and stored in place of
         # the old one (SETUP.md, Rotation).
-        out = (rewrap(plaintext) + "\n").encode("ascii")
+        out = (rewrap(plaintext, current) + "\n").encode("ascii")
         try:
             # Written to fd 1 directly, before the success line: a full disk
             # must not leave "rewrapped" on stderr with no blob behind it, and

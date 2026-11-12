@@ -29,6 +29,9 @@
 #                    argument overrides it.
 set -euo pipefail
 umask 077
+# This run's temporary key and lock (cleanup removes them): never inherited.
+new=""
+lock=""
 
 # The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
 # dropped, in any case, as consume.py does: a stray or planted openssl config
@@ -52,7 +55,7 @@ need_home() {  # WHAT
 default_dir() {
   need_home "the default key directory"
   local h
-  h=$(cd "$HOME" 2>/dev/null && pwd) || h=$HOME
+  h=$(cd -- "$HOME" 2>/dev/null && pwd) || h=$HOME
   printf '%s\n' "$h/.config/handoff"
 }
 
@@ -160,15 +163,21 @@ fingerprint_or_fail() {  # FILE
 # (mkdir is atomic everywhere; flock isn't on macOS). An interrupted run
 # that couldn't remove it says so on the next run.
 lock_dir() {  # DIR
-  lock="$1/.handoff-lock"
-  if ! mkdir -- "$lock" 2>/dev/null; then
-    echo "agent-setup.sh: another --rotate or --retire is running ($lock exists)." >&2
-    echo "If none is (an earlier run was killed), remove that directory and run this again." >&2
+  local l="$1/.handoff-lock" err
+  if ! err=$(mkdir -- "$l" 2>&1); then
+    if [ -e "$l" ]; then
+      echo "agent-setup.sh: another --rotate or --retire is running ($l exists)." >&2
+      echo "If none is (an earlier run was killed), remove that directory and run this again." >&2
+    else
+      echo "agent-setup.sh: cannot create the lock in $1: $err" >&2
+    fi
     exit 1
   fi
+  lock=$l  # only once it's ours, so cleanup never removes another run's
 }
 
-# Run on any exit once the lock is held: removes the lock and a temporary key.
+# Run on any exit: removes this run's lock and temporary key. Both start
+# empty at the top of the script, so a caller's environment can't name them.
 cleanup() {
   [ -z "${new-}" ] || rm -f -- "$new"
   [ -z "${lock-}" ] || rmdir -- "$lock" 2>/dev/null || true
@@ -228,11 +237,13 @@ case "$mode" in
     # their inodes, so a copied .previous (a backup restore) reads the same.
     prev="$key.previous"
     no_symlinks
-    key_fingerprint "$key"
+    [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     dir=$(dirname -- "$key")
-    lock_dir "$dir"
-    new=""
+    # The lock first, then the state: a run that read the key before another
+    # finished would otherwise take that run's new key for its own old one.
     trap cleanup EXIT
+    lock_dir "$dir"
+    key_fingerprint "$key"
     for f in "$dir"/.handoff-new.*; do
       # A temporary key a killed --rotate left (the lock says none is running).
       [ -e "$f" ] || continue
@@ -258,10 +269,10 @@ case "$mode" in
     else
       ln -- "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $prev" >&2; exit 1; }
     fi
-    new=$(mktemp "$dir/.handoff-new.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
+    new=$(mktemp -- "$dir/.handoff-new.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
       || { echo "key generation failed; the old key is unchanged" >&2; exit 1; }
-    chmod 600 "$new"
+    chmod 600 -- "$new"
     # Checked before it replaces anything: genpkey can exit 0 after a short
     # write (a full disk).
     new_fp=$(fingerprint_or_fail "$new") \
@@ -293,9 +304,10 @@ case "$mode" in
       echo "agent-setup.sh: no $prev: no rotation to retire" >&2; exit 1
     fi
     [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
-    key_fingerprint "$key"
-    lock_dir "$(dirname -- "$key")"
+    [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     trap cleanup EXIT
+    lock_dir "$(dirname -- "$key")"
+    key_fingerprint "$key"
     prev_fp=$(fingerprint_or_fail "$prev") || exit 1
     if [ "$prev_fp" = "$fp" ]; then
       echo "agent-setup.sh: $prev holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
@@ -327,31 +339,29 @@ fi
 if [ -d "$KEY_DIR" ]; then
   echo "note: key directory $KEY_DIR already exists; its permissions were left unchanged (expected 0700)" >&2
 else
-  mkdir -p "$KEY_DIR"
-  chmod 700 "$KEY_DIR"
+  mkdir -p -- "$KEY_DIR"
+  chmod 700 -- "$KEY_DIR"
 fi
 # An absolute path from here on: the path printed below is what wrappers
 # set HANDOFF_PRIVKEY to, from whatever directory they run in.
-KEY_DIR=$(cd "$KEY_DIR" && pwd)
+KEY_DIR=$(cd -- "$KEY_DIR" && pwd)
 PRIV="$KEY_DIR/handoff-priv.pem"
 
 # No stderr suppression: if key generation fails, the human needs the cause.
 # Written to a temporary file and checked first (genpkey can exit 0 after a
 # short write), then linked into place: ln never replaces a key that
 # appeared meanwhile, and a failed run leaves no file at $PRIV.
-new=$(mktemp "$KEY_DIR/.handoff-new.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
 trap 'rm -f -- "$new"' EXIT
+new=$(mktemp -- "$KEY_DIR/.handoff-new.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
   || { echo "key generation failed" >&2; exit 1; }
-chmod 600 "$new"
-fingerprint_or_fail "$new" >/dev/null \
+chmod 600 -- "$new"
+FPR=$(fingerprint_or_fail "$new") \
   || { echo "the new key didn't check out (a full disk?); nothing was written" >&2; exit 1; }
 ln -- "$new" "$PRIV" || { echo "could not write the key to $PRIV" >&2; exit 1; }
 
 PUB=$(openssl pkey -in "$PRIV" -pubout) \
   || { echo "could not derive the public key" >&2; exit 1; }
-FPR=$(printf '%s\n' "$PUB" | openssl pkey -pubin -outform DER \
-  | openssl dgst -sha256 -binary | openssl base64)
 
 echo "private key written to $PRIV (mode 600) — never copy it off this machine"
 echo
