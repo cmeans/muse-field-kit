@@ -81,6 +81,15 @@ fingerprint_of() {
   # error is the one that matters, without a second one from the next stage.
   # -passin pass:: an encrypted key fails instead of prompting for a passphrase.
   pub=$(openssl pkey -in "$1" -passin pass: -pubout) || return 1
+  # RSA-2048 only, as consume.py checks: its public key in DER is 294 bytes,
+  # starting with the rsaEncryption algorithm identifier.
+  local der_len der_head
+  der_len=$(printf '%s\n' "$pub" | openssl pkey -pubin -outform DER | wc -c)
+  der_head=$(printf '%s\n' "$pub" | openssl pkey -pubin -outform DER | od -An -tx1 -N19 | tr -d ' \n')
+  if [ "$der_len" -ne 294 ] || [ "$der_head" != 30820122300d06092a864886f70d0101010500 ]; then
+    echo "agent-setup.sh: the key at $1 is not an RSA-2048 key; this protocol uses RSA-2048 only" >&2
+    return 1
+  fi
   printf '%s\n' "$pub" | openssl pkey -pubin -outform DER \
     | openssl dgst -sha256 -binary | openssl base64
 }
@@ -106,6 +115,8 @@ case "${1-}" in
       key="$(default_dir)/handoff-priv.pem" || exit 1
     fi
     [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
+    # A large non-key file makes openssl's decoder very slow: refuse it.
+    [ "$(wc -c < "$key")" -le 16384 ] || { echo "key file at $key is over 16384 bytes; not an RSA-2048 key file" >&2; exit 1; }
     fp=$(fingerprint_of "$key") || { echo "could not read key at $key" >&2; exit 1; }
     echo "key file: $key" >&2
     echo "SHA256:$fp"

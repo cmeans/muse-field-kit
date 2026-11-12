@@ -100,6 +100,12 @@ DEFAULT_PRIVKEY = "~/.config/handoff/handoff-priv.pem"
 PRIVKEY_ENV = "HANDOFF_PRIVKEY"
 BLOB_ENV = "HANDOFF_BLOB"
 CIPHERTEXT_BYTES = 256  # RSA-2048: every reference blob decodes to exactly this
+MAX_KEY_FILE = 16384    # bytes; an RSA-2048 PEM key is about 1.7 KB
+# An RSA-2048 public key in DER SubjectPublicKeyInfo form: always 294 bytes,
+# starting with the rsaEncryption algorithm identifier.
+RSA2048_SPKI_LEN = 294
+RSA2048_SPKI_PREFIX = bytes.fromhex("30820122300d06092a864886f70d0101010500")
+MAX_REASON = 300        # characters of openssl's error text shown
 MAX_BLOB_FILE = 8192    # characters; a reference blob is 344
 
 DEFAULT_ENV_MAP = {
@@ -195,7 +201,10 @@ def openssl_reason(stderr: str) -> str:
     if not lines:
         return ""
     readable = [ln for ln in lines if not re.match(r"^[0-9A-Fa-f]+:error:", ln)]
-    return ": " + (readable[0] if readable else lines[-1])
+    reason = readable[0] if readable else lines[-1]
+    if len(reason) > MAX_REASON:
+        reason = reason[:MAX_REASON] + "..."
+    return ": " + reason
 
 
 def check_openssl() -> None:
@@ -236,6 +245,13 @@ def decrypt(blob_b64: str) -> dict:
         )
     if st.st_uid != os.geteuid():
         raise fail(f"private key at {privkey} is not owned by this user. Refusing.")
+    if st.st_size > MAX_KEY_FILE:
+        # openssl's decoder slows down badly on large non-key input: a wrong
+        # HANDOFF_PRIVKEY pointing at a big file would hang the start.
+        raise fail(
+            f"private key at {privkey} is {st.st_size} bytes, over {MAX_KEY_FILE}; "
+            "not an RSA-2048 key file"
+        )
     # Tolerate line wrapping from a paste: strip ALL whitespace.
     compact = "".join(blob_b64.split())
     if not compact:
@@ -257,17 +273,25 @@ def decrypt(blob_b64: str) -> dict:
         loaded = subprocess.run(
             # -passin pass:, as in the decrypt below: an encrypted key fails
             # here instead of prompting, and never reads a passphrase from
-            # stdin (the command's transport) or a terminal.
-            ["openssl", "pkey", "-in", privkey, "-passin", "pass:", "-noout"],
-            capture_output=True, text=True, errors="replace", env=openssl_env(),
-            stdin=subprocess.DEVNULL,
+            # stdin (the command's transport) or a terminal. The public half
+            # comes back as DER, to check the key type below.
+            ["openssl", "pkey", "-in", privkey, "-passin", "pass:",
+             "-pubout", "-outform", "DER"],
+            capture_output=True, env=openssl_env(), stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         raise fail("openssl not found") from None
     if loaded.returncode != 0:
         raise fail(
-            f"cannot load the private key at {privkey}" + openssl_reason(loaded.stderr)
-            + " (it must be an unencrypted RSA private key)"
+            f"cannot load the private key at {privkey}"
+            + openssl_reason(loaded.stderr.decode("utf-8", "replace"))
+            + " (it must be an unencrypted RSA-2048 private key)"
+        )
+    spki = loaded.stdout
+    if len(spki) != RSA2048_SPKI_LEN or not spki.startswith(RSA2048_SPKI_PREFIX):
+        raise fail(
+            f"the private key at {privkey} is not an RSA-2048 key; "
+            "this protocol uses RSA-2048 only"
         )
     try:
         proc = subprocess.run(
