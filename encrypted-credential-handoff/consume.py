@@ -171,12 +171,23 @@ def privkey_path() -> str:
     return expand_home(DEFAULT_PRIVKEY, "the default key path")
 
 
+def openssl_env() -> dict:
+    """The environment for this helper's own openssl calls.
+
+    Without OPENSSL_* variables: a caller's OPENSSL_CONF or OPENSSL_MODULES
+    could load a provider module into the process that reads the private
+    key. The defaults are what this protocol is tested with.
+    """
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith("OPENSSL_")}
+
+
 def check_openssl() -> None:
     # The same gate as handoff.sh: LibreSSL's pkeyutl OAEP behavior is
     # unverified for this protocol.
     try:
         out = subprocess.run(
-            ["openssl", "version"], capture_output=True, text=True, errors="replace"
+            ["openssl", "version"], capture_output=True, text=True, errors="replace",
+            env=openssl_env(),
         )
     except FileNotFoundError:
         raise fail("openssl not found") from None
@@ -231,6 +242,7 @@ def decrypt(blob_b64: str) -> dict:
             ],
             input=cipher,
             capture_output=True,
+            env=openssl_env(),
         )
     except FileNotFoundError:
         raise fail("openssl not found") from None
