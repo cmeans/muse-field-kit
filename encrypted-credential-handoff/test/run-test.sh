@@ -1066,6 +1066,90 @@ mkdir -p "$R/dash"; cp "$TMPKEY" "$R/dash/-k.pem"
   && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire -k.pem >/dev/null 2>&1) \
   || fail "--rotate / --retire on a key path starting with - failed"
 [ ! -e "$R/dash/-k.pem.previous" ] || fail "--retire on a key path starting with - left the previous key"
+# Two --rotate runs at once: the second, started while the first is
+# generating, is refused at the lock, and the first one's key is the key.
+mkdir -p "$S/slowgen"; ln -sf "$PY" "$S/slowgen/python3"
+# shellcheck disable=SC2016  # $1 and $@ belong to the generated script
+printf '#!/bin/sh\n[ "$1" = genpkey ] && sleep 2\nexec %s "$@"\n' "$(command -v openssl)" > "$S/slowgen/openssl"
+chmod 755 "$S/slowgen/openssl"
+# The second run's fingerprint read is slow too (its dgst takes 4 s), so a
+# run that read the key before taking the lock would see the first run
+# finish, then take that run's new key for its own old one.
+mkdir -p "$S/slowdgst"; ln -sf "$PY" "$S/slowdgst/python3"
+# shellcheck disable=SC2016  # $1 and $@ belong to the generated script
+printf '#!/bin/sh\n[ "$1" = dgst ] && sleep 4\nexec %s "$@"\n' "$(command -v openssl)" > "$S/slowdgst/openssl"
+chmod 755 "$S/slowdgst/openssl"
+rk env PATH="$S/slowgen:/usr/bin:/bin" bash ../agent-setup.sh --rotate >"$R/race-a" 2>&1 &
+first=$!
+sleep 0.5
+rc=0; rk env PATH="$S/slowdgst:/usr/bin:/bin" bash ../agent-setup.sh --rotate >"$R/race-b" 2>&1 || rc=$?
+wait "$first" || fail "the first of two --rotate runs failed: $(cat "$R/race-a")"
+if [ "$rc" != 1 ] || ! grep -qF "another --rotate or --retire is running" "$R/race-b"; then
+  fail "the second of two --rotate runs wasn't refused at the lock: exit $rc, $(cat "$R/race-b")"
+fi
+won=$(sed -n 's/^new public key fingerprint: //p' "$R/race-a")
+[ -n "$won" ] && [ "$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$won" ] \
+  || fail "the first --rotate's key isn't the current key after a refused second run"
+# --rewrap refuses a half-done rotation: both names holding one key (linked
+# or copied), a blob "for the current key" would be for the key being retired.
+rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire before the half-done checks failed"
+for how in ln cp; do
+  if [ "$how" = ln ]; then ln "$R/k.pem" "$R/k.pem.previous"; else cp -p "$R/k.pem" "$R/k.pem.previous"; fi
+  expect_refusal "--rewrap in a half-done rotation ($how)" 1 "holds the same key as $R/k.pem: the rotation didn't finish" \
+    rk python3 ../consume.py --label example --rewrap --blob "$cur_blob"
+  rm "$R/k.pem.previous"
+done
+# --retire takes the lock too, and the lock message is only for a lock: an
+# unwritable key directory is reported as that.
+rk bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate before the --retire lock check failed"
+mkdir "$R/.handoff-lock"
+expect_refusal "--retire while another holds the lock" 1 "another --rotate or --retire is running" \
+  rk bash ../agent-setup.sh --retire
+[ -e "$R/k.pem.previous" ] || fail "a refused --retire deleted the previous key"
+rmdir "$R/.handoff-lock"
+if [ "$(id -u)" != 0 ]; then
+  chmod 500 "$R"
+  rc=0; rk bash ../agent-setup.sh --retire >"$S/out" 2>"$S/err" || rc=$?
+  chmod 700 "$R"
+  if [ "$rc" != 1 ] || ! grep -qF "cannot create the lock in $R" "$S/err" || grep -qF "is running" "$S/err"; then
+    fail "an unwritable key directory was reported as a held lock: exit $rc, $(cat "$S/err")"
+  fi
+  echo "ok (refused: an unwritable key directory, reported as such)"
+fi
+# A caller's $new or $lock can't make --retire delete something.
+printf 'keep\n' > "$R/victim"
+rk env new="$R/victim" lock="$R/victim" bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire with new= and lock= set failed"
+[ -f "$R/victim" ] || fail "--retire deleted a file named by the caller's \$new or \$lock"
+# A redirect onto its own blob: '>>' is refused without claiming the file was
+# emptied; an empty $HANDOFF_BLOB with an empty output file gets the hint.
+rk bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate before the redirect checks failed"
+printf '%s\n' "$cur_blob" > "$R/app.txt"
+rc=0
+# shellcheck disable=SC2094  # reading and appending to the same file is the case under test
+rk python3 ../consume.py --label example --rewrap --blob-file "$R/app.txt" >>"$R/app.txt" 2>"$R/err" || rc=$?
+if [ "$rc" != 1 ] || ! grep -qF "redirected to its own --blob-file" "$R/err" || grep -qF "emptied" "$R/err"; then
+  fail "--rewrap appending to its own --blob-file: exit $rc, $(cat "$R/err")"
+fi
+: > "$R/empty-out.txt"
+# shellcheck disable=SC2016  # $1 and $2 are the inner shell's arguments
+expect_refusal "--rewrap with an empty blob into an empty file" 1 "the redirect emptied it first" \
+  bash -c 'HANDOFF_PRIVKEY="$1" HANDOFF_BLOB= python3 ../consume.py --label example --rewrap >"$2"' _ "$R/k.pem" "$R/empty-out.txt"
+rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire after the redirect checks failed"
+# A key directory starting with "-" works for --rotate and first setup.
+mkdir -p "$R/dash2/-d"; cp "$TMPKEY" "$R/dash2/-d/k.pem"
+(cd "$R/dash2" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -d/k.pem >/dev/null 2>&1 \
+  && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire -d/k.pem >/dev/null 2>&1 \
+  && env -u HANDOFF_PRIVKEY HANDOFF_KEY_DIR=-g bash "$OLDPWD/../agent-setup.sh" >/dev/null 2>&1) \
+  || fail "a key directory starting with - failed"
+[ -f "$R/dash2/-g/handoff-priv.pem" ] || fail "first setup in a directory starting with - wrote no key"
+# First setup never replaces a key that appears while it generates.
+mkdir -p "$S/racegen"; ln -sf "$PY" "$S/racegen/python3"
+# shellcheck disable=SC2016  # $1, $a and $@ belong to the generated script
+printf '#!/bin/sh\nif [ "$1" = genpkey ]; then prev=; for a; do [ "$prev" = -out ] && printf existing > "$(dirname "$a")/handoff-priv.pem"; prev=$a; done; fi\nexec %s "$@"\n' "$(command -v openssl)" > "$S/racegen/openssl"
+chmod 755 "$S/racegen/openssl"
+expect_refusal "first setup when a key appears meanwhile" 1 "could not write the key to" \
+  env PATH="$S/racegen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/race-setup" bash ../agent-setup.sh
+[ "$(cat "$S/race-setup/handoff-priv.pem")" = existing ] || fail "first setup replaced a key that appeared meanwhile"
 # --help prints the usage and exits 0.
 consume --help >"$S/out" 2>&1 || fail "consume.py --help failed"
 grep -qF -- "--rewrap" "$S/out" || fail "consume.py --help doesn't show the usage"
