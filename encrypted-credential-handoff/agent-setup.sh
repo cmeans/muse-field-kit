@@ -130,6 +130,20 @@ key_fingerprint() {  # FILE
   fi
 }
 
+# --rotate and --retire act on the names KEY and KEY.previous: through a
+# symlink, the hard link and rename would act on the link, not the key file
+# (leaving the new key off the volume the link points to, and the old key on
+# it after --retire). Refuse, and have the path name the file itself.
+no_symlinks() {
+  local p
+  for p in "$key" "$prev"; do
+    if [ -L "$p" ]; then
+      echo "agent-setup.sh: $p is a symlink; set HANDOFF_PRIVKEY (or KEY) to the key file itself, not a link to it" >&2
+      exit 1
+    fi
+  done
+}
+
 usage() {
   echo "usage: agent-setup.sh                      generate a new keypair" >&2
   echo "       agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint" >&2
@@ -180,11 +194,19 @@ case "$mode" in
     #   2. the new key, written beside KEY, is renamed over KEY.
     # Between the two, both names are the old key, and everything decrypts.
     prev="$key.previous"
+    no_symlinks
     key_fingerprint "$key"
     if [ -e "$prev" ] || [ -L "$prev" ]; then
       if [ ! "$prev" -ef "$key" ]; then
-        echo "agent-setup.sh: $prev already exists: a rotation is under way." >&2
-        echo "Rewrap every label to the current key, then run agent-setup.sh --retire (SETUP.md, Rotation)." >&2
+        # The new key is in place: show its public half again, since an
+        # interruption may have come before the user got it (SETUP step 3).
+        PUB=$(openssl pkey -in "$key" -passin pass: -pubout) \
+          || { echo "could not derive the public key" >&2; exit 1; }
+        echo "agent-setup.sh: $prev already exists: a rotation is under way, and the new key is in place." >&2
+        echo "Its public key and fingerprint follow; if the user hasn't embedded it and confirmed the fingerprint, continue at SETUP.md Rotation step 3, else step 4." >&2
+        echo "current (new) public key fingerprint: SHA256:$fp"
+        echo
+        printf '%s\n' "$PUB"
         exit 1
       fi
       echo "note: resuming an interrupted rotation ($prev is still the current key)" >&2
@@ -219,6 +241,7 @@ case "$mode" in
     # says when (every label's rewrap reported the current key); this checks
     # only that a rotation finished.
     prev="$key.previous"
+    no_symlinks
     if [ ! -e "$prev" ] && [ ! -L "$prev" ]; then
       echo "agent-setup.sh: no $prev: no rotation to retire" >&2; exit 1
     fi
@@ -243,7 +266,7 @@ PRIV="$KEY_DIR/handoff-priv.pem"
 
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
-  echo "to rotate it, run agent-setup.sh --rotate (SETUP.md, Rotation)" >&2
+  echo "to rotate it, run HANDOFF_PRIVKEY=$PRIV agent-setup.sh --rotate (SETUP.md, Rotation)" >&2
   exit 1
 fi
 
