@@ -320,6 +320,10 @@ expect_refusal "damaged blob" 1 "check that HANDOFF_PRIVKEY names the key this b
 cp test-dummy-priv.pem "$S/loose.pem"; chmod 644 "$S/loose.pem"
 expect_refusal "group/other-readable key" 1 "must be owner-only" \
   env HANDOFF_PRIVKEY="$S/loose.pem" python3 ../consume.py --label example --check --blob-file blob.txt
+cp test-dummy-pub.pem "$S/pub-as-key.pem"; chmod 600 "$S/pub-as-key.pem"
+expect_refusal "a key that doesn't load (a public key)" 1 "cannot load the private key" \
+  env HANDOFF_PRIVKEY="$S/pub-as-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
+! grep -q "made for another key" "$S/err" || fail "a key that doesn't load was blamed on the blob"
 expect_refusal "missing key" 1 "cannot read private key" \
   env HANDOFF_PRIVKEY="$S/no-such-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "--env PATH" 1 "is on the refused list" \
@@ -507,6 +511,16 @@ expect_refusal "handoff.sh, openssl version fails silently" 1 "openssl version f
 expect_refusal "handoff.sh hint off wrappers" 1 "Put one first on your PATH" \
   env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
 ! grep -q "wrapper" "$S/err" || fail "handoff.sh's hint mentions wrappers"
+# An openssl version that prints nothing but exits 0: "no version output",
+# in all three scripts.
+mkdir -p "$S/empty-ssl"; ln -sf "$PY" "$S/empty-ssl/python3"
+printf '#!/bin/sh\nexit 0\n' > "$S/empty-ssl/openssl"; chmod 755 "$S/empty-ssl/openssl"
+expect_refusal "agent-setup.sh, empty openssl version" 1 "found: no version output" \
+  env PATH="$S/empty-ssl:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
+expect_refusal "handoff.sh, empty openssl version" 1 "found: no version output" \
+  env PATH="$S/empty-ssl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
+expect_refusal "consume.py, empty openssl version" 1 "found: no version output" \
+  env PATH="$S/empty-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
 # On macOS the hint names Homebrew's openssl@3: OSTYPE (which bash takes
 # from the environment) and sys.platform are faked to say darwin.
 ln -sf "$PY" "$S/libressl/python3"
@@ -635,9 +649,10 @@ expect_refusal "agent-setup.sh --fingerprint, empty KEY" 2 "empty KEY" \
   bash ../agent-setup.sh --fingerprint ""
 expect_refusal "agent-setup.sh --fingerprint, a public key" 1 "could not read key" \
   bash ../agent-setup.sh --fingerprint test-dummy-pub.pem
-# At most 3 lines: the first openssl stage's error (one or two lines) and
-# "could not read key". More means the next stage's error came through too.
-[ "$(grep -c . "$S/err")" -le 3 ] || fail "--fingerprint on a public key printed the second openssl stage's error too"
+# Only the first openssl stage's error (it reads the file) and "could not
+# read key": the next stage reads stdin, so an error naming stdin means it
+# ran too. (Checked by content, not line count: OpenSSL 3.0 repeats a line.)
+! grep -qi "stdin" "$S/err" || fail "--fingerprint on a public key printed the second openssl stage's error too"
 long=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "mk-Zq9" + "x" * 154}, separators=(",", ":")), end="")')
 [ "${#long}" = 191 ] || fail "test setup: oversize payload is ${#long} bytes, not 191"
 expect_refusal "handoff.sh 191-byte payload" 1 "payload is 191 bytes" \
