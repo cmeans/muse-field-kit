@@ -317,6 +317,17 @@ expect_refusal "input not base64" 1 "not valid base64" \
   consume --label example --check --blob '!!not base64!!'
 expect_refusal "damaged blob" 1 "stop and report it to the user (SETUP.md, stop conditions)" \
   consume --label example --check --blob "$(cat "$S/blob2" | tr 'A-Za-z' 'B-ZAb-za')"
+# One fixed message: the key file it tried, no openssl reason, and no hint to
+# try another key. Also for a valid blob made for another key (4b's), which
+# is what a wrapper left on the old key meets during re-keying.
+for which in damaged other-key; do
+  if [ "$which" = other-key ]; then
+    expect_refusal "a blob made for another key" 1 "decryption failed with the key at $TMPKEY" \
+      consume --label example --check --blob "$(printf '%s' '{"svc":"example","password":"mk-Zq9"}' | openssl pkeyutl -encrypt -pubin -inkey "$S/agent-pub.pem" -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 | openssl base64 -A)"
+  fi
+  ! grep -q "Public Key operation\|:error:\|error:" "$S/err" || fail "the decrypt refusal ($which) shows openssl's reason: $(cat "$S/err")"
+  ! grep -q "check that HANDOFF_PRIVKEY" "$S/err" || fail "the decrypt refusal ($which) invites trying another key"
+done
 cp test-dummy-priv.pem "$S/loose.pem"; chmod 644 "$S/loose.pem"
 expect_refusal "group/other-readable key" 1 "must be owner-only" \
   env HANDOFF_PRIVKEY="$S/loose.pem" python3 ../consume.py --label example --check --blob-file blob.txt

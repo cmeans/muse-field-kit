@@ -316,12 +316,12 @@ def check_key(privkey: str) -> None:
         )
 
 
-def pkeyutl(op: str, privkey: str, data: bytes) -> "subprocess.CompletedProcess":
+def pkeyutl_decrypt(privkey: str, data: bytes) -> "subprocess.CompletedProcess":
     """openssl pkeyutl -decrypt with the reference suite."""
     try:
         return subprocess.run(
             [
-                "openssl", "pkeyutl", op,
+                "openssl", "pkeyutl", "-decrypt",
                 "-inkey", privkey, "-passin", "pass:",
                 "-pkeyopt", "rsa_padding_mode:oaep",
                 "-pkeyopt", "rsa_oaep_md:sha256",
@@ -340,15 +340,18 @@ def decrypt(blob_b64: str, privkey: str) -> bytes:
     cipher = decode_blob(blob_b64)
     check_openssl()
     check_key(privkey)
-    proc = pkeyutl("-decrypt", privkey, cipher)
+    proc = pkeyutl_decrypt(privkey, cipher)
     if proc.returncode == 0:
         return proc.stdout
-    # One fixed message, however it failed, without openssl's reason: a decrypt that says more than "no" is an oracle (RFC 8017,
-    # section 7.1.2). It's a stop condition: retrying with another
+    # One fixed message, however it failed, without openssl's reason: a
+    # decrypt that says more than "no" is an oracle (RFC 8017, section
+    # 7.1.2). It names the key file it tried (a path, never payload data),
+    # since during re-keying a wrapper and its blob on different keys is the
+    # likely cause. It's a stop condition: retrying with another
     # HANDOFF_PRIVKEY is the "variation" SETUP.md forbids.
     raise fail(
-        "decryption failed (a blob made for another key, or a damaged one): stop and "
-        "report it to the user (SETUP.md, stop conditions)"
+        f"decryption failed with the key at {privkey} (a blob made for another key, "
+        "or a damaged one): stop and report it to the user (SETUP.md, stop conditions)"
     )
 
 
