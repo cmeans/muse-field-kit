@@ -11,14 +11,17 @@
 # Usage:
 #   agent-setup.sh                      generate a new keypair
 #   agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint
+#   agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY,
+#                                       the old one kept as KEY.previous
+#   agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous
 #
 # Environment:
-#   HANDOFF_KEY_DIR  where a NEW key is generated (default ~/.config/handoff);
-#                    rotation points this at a fresh directory.
-#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint reads: the same variable,
-#                    with the same default (~/.config/handoff/handoff-priv.pem),
-#                    that consume.py decrypts with. HANDOFF_KEY_DIR doesn't
-#                    change it. A KEY argument overrides it.
+#   HANDOFF_KEY_DIR  where a NEW key is generated (default ~/.config/handoff).
+#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint, --rotate and --retire
+#                    use: the same variable, with the same default
+#                    (~/.config/handoff/handoff-priv.pem), that consume.py
+#                    decrypts with. HANDOFF_KEY_DIR doesn't change it. A KEY
+#                    argument overrides it.
 set -euo pipefail
 umask 077
 
@@ -99,6 +102,41 @@ fingerprint_of() {
     | openssl dgst -sha256 -binary | openssl base64
 }
 
+# The key the consume side uses: KEY if given, else $HANDOFF_PRIVKEY, else
+# the default. Sets $key.
+resolve_key() {  # [KEY]
+  if [ $# -eq 1 ]; then
+    key=$(expand_home "$1" KEY) || exit 1
+  elif [ -n "${HANDOFF_PRIVKEY-}" ]; then
+    key=$(expand_home "$HANDOFF_PRIVKEY" HANDOFF_PRIVKEY) || exit 1
+  else
+    key="$(default_dir)/handoff-priv.pem" || exit 1
+  fi
+}
+
+# The fingerprint of an existing key file, refusing what isn't a usable
+# RSA-2048 key. Sets $fp.
+key_fingerprint() {  # FILE
+  [ -f "$1" ] || { echo "no key file at $1" >&2; exit 1; }
+  # A large non-key file makes openssl's decoder very slow: refuse it.
+  local size rc=0
+  size=$( { wc -c < "$1"; } 2>/dev/null ) || { echo "cannot read key file at $1" >&2; exit 1; }
+  [ "$size" -le 16384 ] || { echo "key file at $1 is over 16384 bytes; not an RSA-2048 key file" >&2; exit 1; }
+  fp=$(fingerprint_of "$1") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # 2: read, but not an RSA-2048 key (already said); else unreadable.
+    [ "$rc" -eq 2 ] || echo "could not read key at $1" >&2
+    exit 1
+  fi
+}
+
+usage() {
+  echo "usage: agent-setup.sh                      generate a new keypair" >&2
+  echo "       agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint" >&2
+  echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new key, the old one kept as KEY.previous" >&2
+  echo "       agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous" >&2
+}
+
 # Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
 # The setup and SETUP.md rules require the fingerprint to come from the
 # key file itself, never from notes, and forbid the agent reading the key
@@ -106,41 +144,92 @@ fingerprint_of() {
 # the key the consume side uses ($HANDOFF_PRIVKEY), and says which file it
 # read, so that during rotation the old key can't be reported by mistake.
 case "${1-}" in
-  --fingerprint)
-    [ $# -le 2 ] || { echo "usage: agent-setup.sh --fingerprint [KEY]" >&2; exit 2; }
+  --fingerprint|--rotate|--retire)
+    mode=$1
+    [ $# -le 2 ] || { echo "usage: agent-setup.sh $mode [KEY]" >&2; exit 2; }
     if [ $# -eq 2 ] && [ -z "$2" ]; then
-      echo "agent-setup.sh: --fingerprint was given an empty KEY" >&2; exit 2
+      echo "agent-setup.sh: $mode was given an empty KEY" >&2; exit 2
     fi
     need_openssl
-    if [ $# -eq 2 ]; then
-      key=$(expand_home "$2" KEY) || exit 1
-    elif [ -n "${HANDOFF_PRIVKEY-}" ]; then
-      key=$(expand_home "$HANDOFF_PRIVKEY" HANDOFF_PRIVKEY) || exit 1
-    else
-      key="$(default_dir)/handoff-priv.pem" || exit 1
-    fi
-    [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
-    # A large non-key file makes openssl's decoder very slow: refuse it.
-    size=$( { wc -c < "$key"; } 2>/dev/null ) || { echo "cannot read key file at $key" >&2; exit 1; }
-    [ "$size" -le 16384 ] || { echo "key file at $key is over 16384 bytes; not an RSA-2048 key file" >&2; exit 1; }
-    rc=0; fp=$(fingerprint_of "$key") || rc=$?
-    if [ "$rc" -ne 0 ]; then
-      # 2: read, but not an RSA-2048 key (already said); else unreadable.
-      [ "$rc" -eq 2 ] || echo "could not read key at $key" >&2
-      exit 1
-    fi
+    shift
+    resolve_key "$@"
+    ;;
+  "") mode=generate ;;
+  *)
+    # Anything else (--help, a typo of --fingerprint) must not fall through
+    # to generating a key.
+    usage
+    if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then exit 0; fi
+    exit 2
+    ;;
+esac
+
+case "$mode" in
+  --fingerprint)
+    key_fingerprint "$key"
     echo "key file: $key" >&2
     echo "SHA256:$fp"
     exit 0
     ;;
-  "") ;;
-  *)
-    # Anything else (--help, a typo of --fingerprint) must not fall through
-    # to generating a key.
-    echo "usage: agent-setup.sh                      generate a new keypair" >&2
-    echo "       agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint" >&2
-    if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then exit 0; fi
-    exit 2
+  --rotate)
+    # The current key becomes KEY.previous (consume.py tries it when the
+    # current key can't open a blob) and a new key takes KEY's place, so
+    # wrappers keep their HANDOFF_PRIVKEY. Each step is atomic, and a
+    # re-run after an interruption finishes the job:
+    #   1. KEY.previous is a hard link to KEY (ln refuses to replace one);
+    #   2. the new key, written beside KEY, is renamed over KEY.
+    # Between the two, both names are the old key, and everything decrypts.
+    prev="$key.previous"
+    key_fingerprint "$key"
+    if [ -e "$prev" ] || [ -L "$prev" ]; then
+      if [ ! "$prev" -ef "$key" ]; then
+        echo "agent-setup.sh: $prev already exists: a rotation is under way." >&2
+        echo "Rewrap every label to the current key, then run agent-setup.sh --retire (SETUP.md, Rotation)." >&2
+        exit 1
+      fi
+      echo "note: resuming an interrupted rotation ($prev is still the current key)" >&2
+    else
+      ln "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $prev" >&2; exit 1; }
+    fi
+    dir=$(dirname "$key")
+    new=$(mktemp "$dir/.handoff-new.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
+    trap 'rm -f "$new"' EXIT
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
+      || { echo "key generation failed; the old key is unchanged" >&2; exit 1; }
+    chmod 600 "$new"
+    mv -f "$new" "$key"
+    trap - EXIT
+    key_fingerprint "$key"
+    PUB=$(openssl pkey -in "$key" -pubout) \
+      || { echo "could not derive the public key" >&2; exit 1; }
+    echo "new key written to $key (mode 600); the old key is now $prev"
+    echo
+    echo "new public key fingerprint: SHA256:$fp"
+    echo "report this fingerprint to the human; they compare it with handoff.sh's output"
+    echo
+    echo "embed this public key in handoff.sh, in place of the old one:"
+    echo
+    printf '%s\n' "$PUB"
+    echo
+    echo "next: rewrap every label (consume.py --rewrap), then agent-setup.sh --retire"
+    exit 0
+    ;;
+  --retire)
+    # Deletes KEY.previous: blobs still made for it no longer open. SETUP.md
+    # says when (every label's rewrap reported the current key); this checks
+    # only that a rotation finished.
+    prev="$key.previous"
+    if [ ! -e "$prev" ] && [ ! -L "$prev" ]; then
+      echo "agent-setup.sh: no $prev: no rotation to retire" >&2; exit 1
+    fi
+    if [ "$prev" -ef "$key" ]; then
+      echo "agent-setup.sh: $prev is still the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
+      exit 1
+    fi
+    key_fingerprint "$key"
+    rm -f "$prev"
+    echo "deleted the previous key $prev; the current key is $key (SHA256:$fp)"
+    exit 0
     ;;
 esac
 
@@ -154,7 +243,7 @@ PRIV="$KEY_DIR/handoff-priv.pem"
 
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
-  echo "for rotation, set HANDOFF_KEY_DIR to a fresh directory instead" >&2
+  echo "to rotate it, run agent-setup.sh --rotate (SETUP.md, Rotation)" >&2
   exit 1
 fi
 
