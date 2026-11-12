@@ -856,7 +856,7 @@ chmod 755 "$S/shortgen/openssl"
 expect_refusal "first setup whose genpkey writes a short file" 1 "nothing was written" \
   env PATH="$S/shortgen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/short-setup" bash ../agent-setup.sh
 [ ! -e "$S/short-setup/handoff-priv.pem" ] || fail "first setup left a short key file at the key path"
-! compgen -G "$S/short-setup/.handoff-new*" >/dev/null || fail "first setup left a temporary key file"
+! compgen -G "$S/short-setup/.handoff-setup.*" >/dev/null || fail "first setup left a temporary key file"
 # First setup never replaces a key that appears while it generates.
 mkdir -p "$S/racegen"; ln -sf "$PY" "$S/racegen/python3"
 # shellcheck disable=SC2016  # $1, $a and $@ belong to the generated script
@@ -878,7 +878,7 @@ sleep 1
 kill -TERM "$gen"
 wait "$gen" 2>/dev/null || true
 sleep 3
-! compgen -G "$S/term-setup/.handoff-new*" >/dev/null || fail "a TERM during key generation left a temporary private key"
+! compgen -G "$S/term-setup/.handoff-setup.*" >/dev/null || fail "a TERM during key generation left a temporary private key"
 [ ! -e "$S/term-setup/handoff-priv.pem" ] || fail "a TERM during key generation still wrote the key"
 # A failing DER export is "could not read", not "another key type".
 mkdir -p "$S/noder"; ln -sf "$PY" "$S/noder/python3"
@@ -906,9 +906,12 @@ if compgen -G "$S/dir-setup/handoff-priv.pem/*" >/dev/null || compgen -G "$S/dir
 fi
 # A temporary key a killed setup left is removed by the next one.
 mkdir -p "$S/stale-setup"; printf 'leftover\n' > "$S/stale-setup/.handoff-setup.Leftov"
+# A symlink with the same name isn't a temporary key: it stays.
+ln -s "$TMPKEY" "$S/stale-setup/.handoff-setup.Link"
 HANDOFF_KEY_DIR="$S/stale-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || fail "first setup with a leftover temporary key failed"
-grep -qF "removed a temporary key a killed setup left behind" "$S/err" && [ ! -e "$S/stale-setup/.handoff-setup.Leftov" ] \
+grep -qF "removed a temporary key a killed (or concurrent) setup left behind" "$S/err" && [ ! -e "$S/stale-setup/.handoff-setup.Leftov" ] \
   || fail "the leftover temporary key wasn't removed"
+[ -L "$S/stale-setup/.handoff-setup.Link" ] || fail "the stale cleanup removed a symlink, which no setup makes"
 # --help prints the usage and exits 0.
 consume --help >"$S/out" 2>&1 || fail "consume.py --help failed"
 grep -qF -- "--check" "$S/out" || fail "consume.py --help doesn't show the usage"

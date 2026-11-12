@@ -19,7 +19,8 @@
 #
 # Environment:
 #   HANDOFF_KEY_DIR  where a NEW key is generated (default ~/.config/handoff).
-#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint reads: the same variable, with the same default
+#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint and --public-key
+#                    read: the same variable, with the same default
 #                    (~/.config/handoff/handoff-priv.pem), that consume.py
 #                    decrypts with. HANDOFF_KEY_DIR doesn't change it. A KEY
 #                    argument overrides it.
@@ -242,7 +243,7 @@ for f in "$KEY_DIR"/.handoff-setup.*; do
   # A temporary key a killed (SIGKILL) setup left behind: never a live key.
   [ -f "$f" ] && [ ! -L "$f" ] || continue
   rm -f -- "$f"
-  echo "note: removed a temporary key a killed setup left behind: $f" >&2
+  echo "note: removed a temporary key a killed (or concurrent) setup left behind: $f" >&2
 done
 new=$(mktemp -- "$KEY_DIR/.handoff-setup.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
@@ -262,7 +263,7 @@ if [ ! "$PRIV" -ef "$new" ]; then
 fi
 
 PUB=$(openssl pkey -in "$PRIV" -pubout) \
-  || { echo "the key was written to $PRIV, but its public key couldn't be derived; show it with agent-setup.sh --public-key $PRIV" >&2; exit 1; }
+  || { printf "the key was written to %s, but its public key couldn't be derived; show it with: agent-setup.sh --public-key %q\n" "$PRIV" "$PRIV" >&2; exit 1; }
 
 echo "private key written to $PRIV (mode 600) — never copy it off this machine"
 echo
@@ -277,5 +278,5 @@ echo "consume side: the decrypt helper reads \$HANDOFF_PRIVKEY"
 echo "(default ~/.config/handoff/handoff-priv.pem)."
 echo "this key lives at: $PRIV"
 if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-priv.pem" ]; then
-  echo "non-default location: set HANDOFF_PRIVKEY=$PRIV wherever the helper runs"
+  printf 'non-default location: set HANDOFF_PRIVKEY=%q wherever the helper runs\n' "$PRIV"
 fi
