@@ -856,6 +856,8 @@ echo "== 6. rotation: --rotate, the previous key, --rewrap, --retire =="
 # A copy of the dummy key, so blob.txt is a blob made for the key that
 # --rotate turns into the previous one.
 R="$S/rot"; mkdir -p "$R"
+# The blob store, apart from the key directory (--rewrap --out refuses that).
+ST="$S/store"; mkdir -p "$ST"
 cp "$TMPKEY" "$R/k.pem"
 rk() { env HANDOFF_PRIVKEY="$R/k.pem" "$@"; }
 rk bash ../agent-setup.sh --rotate >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--rotate failed"; }
@@ -886,34 +888,34 @@ grep -qF "label 'example' decrypted with the previous key; rewrap it" "$R/err" |
 no_dummy_in "$R/err"
 # --rewrap writes a new blob for the current key over --out, in place, and
 # prints nothing on stdout.
-cp blob.txt "$R/new.txt"
-rk python3 ../consume.py --label example --rewrap --blob-file "$R/new.txt" --out "$R/new.txt" >"$R/out" 2>"$R/err"
-grep -qxF "consume.py: rewrapped to the current key $R/k.pem; the blob was for the previous key ($R/k.pem.previous); wrote $R/new.txt" "$R/err" || fail "--rewrap didn't say the blob was for the previous key, naming both: $(cat "$R/err")"
+cp blob.txt "$ST/new.txt"
+rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" --out "$ST/new.txt" >"$R/out" 2>"$R/err"
+grep -qxF "consume.py: rewrapped to the current key $R/k.pem; the blob was for the previous key ($R/k.pem.previous); wrote $ST/new.txt" "$R/err" || fail "--rewrap didn't say the blob was for the previous key, naming both: $(cat "$R/err")"
 [ ! -s "$R/out" ] || fail "--rewrap printed to stdout"
-if [ "$(wc -l < "$R/new.txt")" != 1 ] || ! grep -qxE '[A-Za-z0-9+/]{342}==' "$R/new.txt"; then
+if [ "$(wc -l < "$ST/new.txt")" != 1 ] || ! grep -qxE '[A-Za-z0-9+/]{342}==' "$ST/new.txt"; then
   fail "--rewrap wrote something other than one blob"
 fi
-cmp -s blob.txt "$R/new.txt" && fail "--rewrap left --out unchanged"
-! compgen -G "$R/.new.txt.*" >/dev/null || fail "--rewrap left its temporary file"
-no_dummy_in "$R/new.txt" "$R/err"
+cmp -s blob.txt "$ST/new.txt" && fail "--rewrap left --out unchanged"
+! compgen -G "$ST/.new.txt.*" >/dev/null || fail "--rewrap left its temporary file"
+no_dummy_in "$ST/new.txt" "$R/err"
 # The new blob opens with the current key alone, to the same payload.
 mv "$R/k.pem.previous" "$R/held.pem"
-rk python3 ../consume.py --label example --check --blob-file "$R/new.txt" >"$R/out" \
+rk python3 ../consume.py --label example --check --blob-file "$ST/new.txt" >"$R/out" \
   || fail "the rewrapped blob doesn't open with the current key"
 diff "$R/out" expected-check.txt || fail "the rewrapped payload differs"
-out=$(rk python3 ../consume.py --label example --blob-file "$R/new.txt" -- python3 -c '
+out=$(rk python3 ../consume.py --label example --blob-file "$ST/new.txt" -- python3 -c '
 import os
 print(os.environ["SERVICE_USERNAME"], os.environ["SERVICE_PASSWORD"])
 ')
 [ "$out" = "$U $P" ] || fail "the rewrapped blob's values differ"
 mv "$R/held.pem" "$R/k.pem.previous"
-rk python3 ../consume.py --label example --rewrap --blob-file "$R/new.txt" --out "$R/new2.txt" 2>"$R/err"
-grep -qxF "consume.py: rewrapped to the current key $R/k.pem; the blob was for the current key ($R/k.pem); wrote $R/new2.txt" "$R/err" || fail "--rewrap of a current blob didn't say so"
-[ "$(stat -c %a "$R/new2.txt")" = 600 ] || fail "a new --out file isn't mode 600"
+rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" --out "$ST/new2.txt" 2>"$R/err"
+grep -qxF "consume.py: rewrapped to the current key $R/k.pem; the blob was for the current key ($R/k.pem); wrote $ST/new2.txt" "$R/err" || fail "--rewrap of a current blob didn't say so"
+[ "$(stat -c %a "$ST/new2.txt")" = 600 ] || fail "a new --out file isn't mode 600"
 # An existing --out keeps its mode.
-cp "$R/new.txt" "$R/mode.txt"; chmod 640 "$R/mode.txt"
-rk python3 ../consume.py --label example --rewrap --blob-file "$R/mode.txt" --out "$R/mode.txt" 2>/dev/null || fail "--rewrap onto a 0640 file failed"
-[ "$(stat -c %a "$R/mode.txt")" = 640 ] || fail "--rewrap changed --out's mode"
+cp "$ST/new.txt" "$ST/mode.txt"; chmod 640 "$ST/mode.txt"
+rk python3 ../consume.py --label example --rewrap --blob-file "$ST/mode.txt" --out "$ST/mode.txt" 2>/dev/null || fail "--rewrap onto a 0640 file failed"
+[ "$(stat -c %a "$ST/mode.txt")" = 640 ] || fail "--rewrap changed --out's mode"
 # A blob made for neither key (for 4b's freshly generated one): one message,
 # nothing about which key failed or why.
 enc_other() { printf '%s' "$1" | openssl pkeyutl -encrypt -pubin -inkey "$S/agent-pub.pem" \
@@ -934,7 +936,7 @@ rm "$R/k.pem.previous"; mv "$R/held.pem" "$R/k.pem.previous"
 # A blob the current key opens never reaches the previous key: a broken
 # previous key doesn't matter then.
 chmod 644 "$R/k.pem.previous"
-rk python3 ../consume.py --label example --check --blob-file "$R/new.txt" >/dev/null \
+rk python3 ../consume.py --label example --check --blob-file "$ST/new.txt" >/dev/null \
   || fail "a current blob was refused over the previous key"
 chmod 600 "$R/k.pem.previous"
 # --rewrap is refused with anything that changes the payload or runs a command.
@@ -945,9 +947,9 @@ expect_refusal "--rewrap with a command" 1 "--rewrap takes no command" \
 expect_refusal "--rewrap with --env" 1 "--rewrap takes no --env" \
   rk python3 ../consume.py --label example --rewrap --env password=APP_PASS --blob-file blob.txt
 expect_refusal "--rewrap twice" 1 "--rewrap given twice" \
-  rk python3 ../consume.py --label example --rewrap --rewrap --blob-file blob.txt --out "$R/x.txt"
+  rk python3 ../consume.py --label example --rewrap --rewrap --blob-file blob.txt --out "$ST/x.txt"
 expect_refusal "--rewrap, purpose mismatch" 1 "purpose mismatch" \
-  rk python3 ../consume.py --label other --rewrap --blob-file blob.txt --out "$R/x.txt"
+  rk python3 ../consume.py --label other --rewrap --blob-file blob.txt --out "$ST/x.txt"
 # --rewrap checks its new blob opens with the current key before printing
 # it: an openssl whose -encrypt output is 256 random bytes is caught.
 mkdir -p "$S/badenc"; ln -sf "$PY" "$S/badenc/python3"
@@ -955,7 +957,7 @@ mkdir -p "$S/badenc"; ln -sf "$PY" "$S/badenc/python3"
 printf '#!/bin/sh\nfor a; do [ "$a" = -encrypt ] && { cat >/dev/null; head -c 256 /dev/urandom; exit 0; }; done\nexec %s "$@"\n' "$(command -v openssl)" > "$S/badenc/openssl"
 chmod 755 "$S/badenc/openssl"
 expect_refusal "--rewrap whose new blob doesn't open" 1 "the new blob doesn't open with the current key" \
-  rk env PATH="$S/badenc:/usr/bin:/bin" python3 ../consume.py --label example --rewrap --blob-file blob.txt --out "$R/x.txt"
+  rk env PATH="$S/badenc:/usr/bin:/bin" python3 ../consume.py --label example --rewrap --blob-file blob.txt --out "$ST/x.txt"
 # The self-check compares payloads, not just that the new blob opens: an
 # openssl whose -encrypt encrypts another valid payload is caught too.
 mkdir -p "$S/swapenc"; ln -sf "$PY" "$S/swapenc/python3"
@@ -964,7 +966,7 @@ printf '#!/bin/sh\nfor a; do [ "$a" = -encrypt ] && { cat >/dev/null; printf %%s
   "'{\"svc\":\"example\",\"password\":\"mk-Zq9-other\"}'" "$(command -v openssl)" "$(command -v openssl)" > "$S/swapenc/openssl"
 chmod 755 "$S/swapenc/openssl"
 expect_refusal "--rewrap whose new blob opens to another payload" 1 "to the same payload" \
-  rk env PATH="$S/swapenc:/usr/bin:/bin" python3 ../consume.py --label example --rewrap --blob-file blob.txt --out "$R/x.txt"
+  rk env PATH="$S/swapenc:/usr/bin:/bin" python3 ../consume.py --label example --rewrap --blob-file blob.txt --out "$ST/x.txt"
 # A new blob that can't be written leaves --out as it was, with no temporary
 # file and no "rewrapped" line (a read-only directory; root can write anyway).
 if [ "$(id -u)" != 0 ]; then
@@ -978,7 +980,30 @@ if [ "$(id -u)" != 0 ]; then
   ! grep -q Traceback "$R/err" || fail "--rewrap into a read-only directory: traceback"
   cmp -s blob.txt "$R/ro/b.txt" || fail "a failed --rewrap changed --out"
   echo "ok (refused: --rewrap that can't write, --out unchanged)"
+else
+  echo "skip: running as root, the read-only --out check didn't run"
 fi
+# A rename that fails after the temporary file is written leaves --out as it
+# was and no temporary file (os.replace patched to fail).
+cp "$ST/new.txt" "$ST/rep.txt"
+expect_refusal "--rewrap whose rename fails" 1 "could not write the new blob to $ST/rep.txt" \
+  rk python3 -I -c '
+import os, sys
+def no_replace(a, b):
+    raise OSError(5, "simulated rename failure")
+os.replace = no_replace
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1], "--out", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/rep.txt"
+cmp -s "$ST/new.txt" "$ST/rep.txt" || fail "a failed rename changed --out"
+! compgen -G "$ST/.rep.txt.*" >/dev/null || fail "a failed rename left its temporary file"
+# --out is never in the key's directory: not the key, not .previous, not a
+# file beside them.
+for target in "$R/k.pem" "$R/k.pem.previous" "$R/beside.txt"; do
+  expect_refusal "--out in the key's directory ($target)" 1 "is in the key's directory" \
+    rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" --out "$target"
+done
+rk bash ../agent-setup.sh --fingerprint >/dev/null 2>&1 || fail "a refused --out damaged the key"
 # One rotation at a time: during one, --rotate rotates nothing, exits 0, and
 # shows the current (new) key's public key and fingerprint again.
 rc=0; rk bash ../agent-setup.sh --rotate >"$R/out" 2>"$R/err" || rc=$?
@@ -1002,7 +1027,7 @@ rk bash ../agent-setup.sh --retire >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; f
 [ ! -e "$R/k.pem.previous" ] || fail "--retire left the previous key"
 expect_refusal "an old blob after --retire" 1 "decryption failed" \
   rk python3 ../consume.py --label example --check --blob-file blob.txt
-rk python3 ../consume.py --label example --check --blob-file "$R/new.txt" >/dev/null || fail "the rewrapped blob stopped opening after --retire"
+rk python3 ../consume.py --label example --check --blob-file "$ST/new.txt" >/dev/null || fail "the rewrapped blob stopped opening after --retire"
 expect_refusal "--retire with no rotation" 1 "no rotation to retire" \
   rk bash ../agent-setup.sh --retire
 # An interrupted --rotate (stopped after keeping the old key, before the new
@@ -1067,26 +1092,26 @@ expect_refusal "--fingerprint whose DER export fails" 1 "could not read key" \
 # --rewrap runs only during a rotation, at the key the wrappers use: with no
 # previous key, or pointed at the previous key itself, it refuses.
 expect_refusal "--rewrap with no rotation under way" 1 "no rotation under way at $R/k.pem" \
-  rk python3 ../consume.py --label example --rewrap --blob-file "$R/new.txt" --out "$R/x.txt"
+  rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" --out "$ST/x.txt"
 rk bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate for the rewrap checks failed"
 expect_refusal "--rewrap pointed at the previous key" 1 "no rotation under way at $R/k.pem.previous" \
-  env HANDOFF_PRIVKEY="$R/k.pem.previous" python3 ../consume.py --label example --rewrap --blob-file "$R/new.txt" --out "$R/x.txt"
+  env HANDOFF_PRIVKEY="$R/k.pem.previous" python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" --out "$ST/x.txt"
 # A blob neither key opens: stop and report, never another HANDOFF_PRIVKEY.
 expect_refusal "--rewrap of a blob neither key opens" 1 "stop and report it to the user" \
-  rk python3 ../consume.py --label example --rewrap --blob "$(enc_other '{"svc":"example","password":"mk-Zq9"}')" --out "$R/x.txt"
+  rk python3 ../consume.py --label example --rewrap --blob "$(enc_other '{"svc":"example","password":"mk-Zq9"}')" --out "$ST/x.txt"
 ! grep -q "check that HANDOFF_PRIVKEY" "$S/err" || fail "the decrypt refusal still invites trying another key"
 # --out: required with --rewrap, only for --rewrap, never a symlink or a
 # directory.
 expect_refusal "--rewrap without --out" 1 "--rewrap needs --out FILE" \
-  rk python3 ../consume.py --label example --rewrap --blob-file "$R/new.txt"
+  rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt"
 expect_refusal "--out without --rewrap" 1 "--out is only for --rewrap" \
-  rk python3 ../consume.py --label example --check --blob-file "$R/new.txt" --out "$R/x.txt"
-ln -sf "$R/new.txt" "$R/link.txt"
+  rk python3 ../consume.py --label example --check --blob-file "$ST/new.txt" --out "$ST/x.txt"
+ln -sf "$ST/new.txt" "$ST/link.txt"
 expect_refusal "--out a symlink" 1 "is a symlink" \
-  rk python3 ../consume.py --label example --rewrap --blob-file "$R/new.txt" --out "$R/link.txt"
-rm -f "$R/link.txt"
+  rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" --out "$ST/link.txt"
+rm -f "$ST/link.txt"
 expect_refusal "--out a directory" 1 "is not a regular file" \
-  rk python3 ../consume.py --label example --rewrap --blob-file "$R/new.txt" --out "$R"
+  rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" --out "$R"
 # A copied (not hard-linked) .previous holding the current key resumes and
 # rotates, read by fingerprint; one holding another key is a rotation under way.
 rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire for the copy checks failed"
@@ -1161,7 +1186,7 @@ for how in ln cp traditional; do
     traditional) openssl pkey -in "$R/k.pem" -traditional -out "$R/k.pem.previous" 2>/dev/null; chmod 600 "$R/k.pem.previous" ;;
   esac
   expect_refusal "--rewrap in a half-done rotation ($how)" 1 "holds the same key as $R/k.pem: the rotation didn't finish" \
-    rk python3 ../consume.py --label example --rewrap --blob "$cur_blob" --out "$R/x.txt"
+    rk python3 ../consume.py --label example --rewrap --blob "$cur_blob" --out "$ST/x.txt"
   rm "$R/k.pem.previous"
 done
 # --retire takes the lock too, and the lock message is only for a lock: an
@@ -1187,9 +1212,9 @@ rk env new="$R/victim" lock="$R/victim" bash ../agent-setup.sh --retire >/dev/nu
 [ -f "$R/victim" ] || fail "--retire deleted a file named by the caller's \$new or \$lock"
 # Two blobs appended into one file are named as that, not "not base64".
 rk bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate before the concatenation check failed"
-printf '%s\n%s\n' "$cur_blob" "$cur_blob" > "$R/two.txt"
+printf '%s\n%s\n' "$cur_blob" "$cur_blob" > "$ST/two.txt"
 expect_refusal "two blobs concatenated" 1 "looks like several blobs concatenated" \
-  rk python3 ../consume.py --label example --rewrap --blob-file "$R/two.txt" --out "$R/x.txt"
+  rk python3 ../consume.py --label example --rewrap --blob-file "$ST/two.txt" --out "$ST/x.txt"
 rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire after the redirect checks failed"
 # A key directory starting with "-" works for --rotate and first setup.
 mkdir -p "$R/dash2/-d"; cp "$TMPKEY" "$R/dash2/-d/k.pem"
@@ -1287,6 +1312,31 @@ expect_refusal "--rotate when the key path becomes a directory" 1 "is now a dire
   env HANDOFF_PRIVKEY="$S/dr/k.pem" TARGET="$S/dr/k.pem" PATH="$S/dirrot:/usr/bin:/bin" bash ../agent-setup.sh --rotate
 ! compgen -G "$S/dr/k.pem/.handoff-*" >/dev/null || fail "a new key was left inside the directory at the key path"
 [ -f "$S/dr/k.pem.previous" ] || fail "the old key wasn't kept as .previous"
+# A blob for a larger key is named as that, not as concatenated blobs.
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out "$S/rsa4096.pem" 2>/dev/null
+big=$(printf '%s' '{"svc":"example","password":"mk-Zq9"}' | openssl pkeyutl -encrypt -inkey "$S/rsa4096.pem" \
+  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 | openssl base64 -A)
+expect_refusal "a blob for an RSA-4096 key" 1 "not a blob for an RSA-2048 key" \
+  consume --label example --check --blob "$big"
+! grep -q "concatenated" "$S/err" || fail "a 4096-bit blob was called concatenated blobs"
+# A key file named like a temporary key isn't swept by its own --rotate,
+# however its path is spelled (relative, or with a doubled slash).
+mkdir -p "$S/spell"; cp "$TMPKEY" "$S/spell/.handoff-new.pem"
+(cd "$S/spell" && env HANDOFF_PRIVKEY=.handoff-new.pem bash "$OLDPWD/../agent-setup.sh" --rotate >/dev/null 2>"$S/err") \
+  || fail "--rotate of a relative .handoff-new.pem failed: $(cat "$S/err")"
+[ -f "$S/spell/.handoff-new.pem" ] && [ -f "$S/spell/.handoff-new.pem.previous" ] || fail "a relative key path was swept"
+(cd "$S/spell" && env HANDOFF_PRIVKEY="$S//spell//.handoff-new.pem" bash "$OLDPWD/../agent-setup.sh" --rotate >/dev/null 2>&1) || true
+[ -f "$S/spell/.handoff-new.pem" ] && [ -f "$S/spell/.handoff-new.pem.previous" ] || fail "a doubled-slash key path was swept"
+(cd "$S/spell" && env HANDOFF_PRIVKEY=.handoff-new.pem bash "$OLDPWD/../agent-setup.sh" --retire >/dev/null 2>&1) || fail "--retire of a relative key failed"
+[ -f "$S/spell/.handoff-new.pem" ] && [ ! -e "$S/spell/.handoff-new.pem.previous" ] || fail "--retire of a relative key removed the wrong file"
+# The hard-link guard holds for a key path starting with -.
+mkdir -p "$S/dashlink"; cp "$TMPKEY" "$S/dashlink/-k.pem"
+(cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -k.pem >/dev/null 2>&1) || fail "--rotate -k.pem failed"
+ln -- "$S/dashlink/-k.pem.previous" "$S/dashlink/backup.pem"
+rc=0; (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire -k.pem >/dev/null 2>"$S/err") || rc=$?
+if [ "$rc" != 1 ] || ! grep -qF "has another hard link" "$S/err"; then
+  fail "--retire -k.pem with another link: exit $rc, $(cat "$S/err")"
+fi
 # A key file named like a temporary key isn't swept by its own --rotate.
 mkdir -p "$S/tmpname"; cp "$TMPKEY" "$S/tmpname/.handoff-new.pem"
 env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --rotate >/dev/null 2>"$S/err" \
