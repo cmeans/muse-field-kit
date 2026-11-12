@@ -25,8 +25,9 @@ verifies the payload's purpose binding, and either:
               ONLY. For the SETUP DUMMY round-trip only: lengths are output
               too, so never run --check on a real credential, or
   --rewrap    prints a new blob: the same payload, byte for byte, encrypted
-              to the current key (SETUP.md, Rotation). Ciphertext only; its
-              stderr line says which key the old blob was for.
+              to the current key (SETUP.md, Rotation). Only during a
+              rotation (refused with no <key path>.previous). Ciphertext
+              only; its stderr line names the key file the old blob was for.
 
 During a rotation the old key stays beside the current one as
 <key path>.previous (agent-setup.sh --rotate makes it, --retire deletes
@@ -55,12 +56,13 @@ Only the fields above can be mapped, each at most once. The default names
 environment before the payload's values go in, along with $HANDOFF_BLOB
 and $HANDOFF_PRIVKEY. Other variables pass through as inherited. The
 command also gets $HANDOFF_LABEL (the label), and this helper refuses to
-start when $HANDOFF_LABEL is already set: a command started by one
-consume.py can't run another consume.py directly, so no credential an
-outer call injected under another name reaches a second service. A
-wrapper's env -i removes the marker, along with the outer credentials, so
-a command that starts a wrapper isn't refused here: SETUP.md's no-nesting
-rule covers that.
+start when $HANDOFF_LABEL is already set, so a command started by one
+consume.py that runs another one directly is refused, and no credential an
+outer call injected under another name reaches a second service by
+accident. It's an accident guard, not a boundary: a command that unsets the
+marker gets past it. A wrapper's env -i removes the marker, along with the
+outer credentials, so a command that starts a wrapper isn't refused here:
+SETUP.md's no-nesting rule covers that.
 
 A blob file must be a regular file. A pipe, a FIFO, a tty or a device
 (so /dev/stdin on a pipe) and a process substitution (--blob-file
@@ -96,7 +98,9 @@ Usage:
     HANDOFF_BLOB=$(cat blob.txt) consume.py --label example -- my-tool --serve
     consume.py --label example --blob-file blob.txt -- my-tool --serve
     consume.py --label test --check --blob-file blob.txt
-    consume.py --label example --rewrap --blob-file blob.txt > new-blob.txt
+    new=$(consume.py --label example --rewrap --blob-file blob.txt)
+    (during a rotation only; store "$new" in the store, never in a file on
+    the key's disk: SETUP.md, Rotation step 4)
 """
 # Run as ./consume.py, the helper is isolated (python3 -I, see the top of
 # the docstring): the caller's PYTHON* variables and user site-packages don't
@@ -361,25 +365,20 @@ def decrypt(blob_b64: str) -> "tuple[bytes, str]":
     proc = pkeyutl("-decrypt", current, cipher)
     if proc.returncode == 0:
         return proc.stdout, "current"
-    reason = openssl_reason(proc.stderr.decode("utf-8", "replace"))
+    tried = "decryption failed"
     if os.path.lexists(previous):
         check_key(previous)
         proc = pkeyutl("-decrypt", previous, cipher)
         if proc.returncode == 0:
             return proc.stdout, "previous"
-        # One message, whichever key failed and however: a decrypt that says
-        # more than "no" is an oracle (RFC 8017, section 7.1.2).
-        raise fail(
-            "decryption failed with the current key and with the previous key"
-            " (a blob made for another key, or a damaged one: check that"
-            " HANDOFF_PRIVKEY names the key this blob was made for)"
-        )
-    # openssl's stderr names algorithms and key problems, never secrets.
+        tried = "decryption failed with the current key and with the previous key"
+    # One fixed message, whichever key failed and however, without openssl's
+    # reason: a decrypt that says more than "no" is an oracle (RFC 8017,
+    # section 7.1.2). It's a stop condition: retrying with another
+    # HANDOFF_PRIVKEY is the "variation" SETUP.md forbids.
     raise fail(
-        "decryption failed"
-        + reason
-        + " (a blob made for another key, or a damaged one: check that"
-        " HANDOFF_PRIVKEY names the key this blob was made for)"
+        tried + " (a blob made for another key, or a damaged one): stop and "
+        "report it to the user (SETUP.md, stop conditions)"
     )
 
 
@@ -565,9 +564,22 @@ def parse_args(argv):
             if not stat.S_ISREG(os.stat(path).st_mode):
                 raise fail(not_regular)
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0))
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
                 os.close(fd)
                 raise fail(not_regular)
+            try:
+                out = os.fstat(1)
+            except OSError:
+                out = None
+            if do_rewrap and out and (out.st_dev, out.st_ino) == (st.st_dev, st.st_ino):
+                # `--rewrap --blob-file X > X`: the shell emptied X first.
+                os.close(fd)
+                raise fail(
+                    f"--rewrap's output is redirected to its own --blob-file {blob_file}: "
+                    "the shell emptied that file before this ran, so its blob is gone "
+                    "from it. Restore it from the store, and write the output to a new file."
+                )
             # utf-8-sig: some editors save a byte-order mark first.
             with os.fdopen(fd, "r", encoding="utf-8-sig") as fh:
                 blob = fh.read(MAX_BLOB_FILE + 1)
@@ -596,9 +608,25 @@ def main() -> int:
         # caller controls: not echoed.
         raise fail(
             f"${LABEL_ENV} is set: this is a command another consume.py "
-            "started, and wrappers never nest (SETUP.md step 7). Refusing."
+            "started, and wrappers never nest (SETUP.md step 7). Refusing. "
+            "Don't unset it to get past this: report it to the user."
         )
+    if sys.argv[1:] in (["-h"], ["--help"]):
+        print(__doc__[__doc__.index("Usage:"):].rstrip())
+        return 0
     label, check, do_rewrap, blob, env_map, cmd = parse_args(sys.argv[1:])
+    current = privkey_path()
+    previous = current + ".previous"
+    if do_rewrap and not os.path.lexists(previous):
+        # "For the current key" means the label is done only during a
+        # rotation, and only for the key the wrappers use: with no previous
+        # key beside this one, HANDOFF_PRIVKEY names the wrong key, or there's
+        # no rotation to rewrap for.
+        raise fail(
+            f"--rewrap: no rotation under way at {current} (no {previous}). "
+            "Run it with HANDOFF_PRIVKEY as the label's wrappers set it, during "
+            "a rotation (SETUP.md, Rotation); anything else, stop and report it."
+        )
     plaintext, slot = decrypt(blob)
     creds = check_payload(parse_payload(plaintext), label, env_map)
     if check:
@@ -619,7 +647,9 @@ def main() -> int:
                 out = out[os.write(1, out):]
         except OSError as e:
             raise fail(f"could not write the new blob: {e.strerror}") from None
-        print(f"consume.py: rewrapped; the blob was for the {slot} key", file=sys.stderr)
+        print(f"consume.py: rewrapped to the current key {current}; "
+              f"the blob was for the {slot} key "
+              f"({current if slot == 'current' else previous})", file=sys.stderr)
         return 0
     if slot == "previous":
         # Nothing from the payload: which key file opened it.

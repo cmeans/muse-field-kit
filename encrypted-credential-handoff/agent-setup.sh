@@ -1,6 +1,7 @@
 #!/bin/bash
-# agent-setup.sh — run ONCE on the agent's machine (the computer that will
-# decrypt the blobs, e.g. your Muse's VM).
+# agent-setup.sh — run on the agent's machine (the computer that will
+# decrypt the blobs, e.g. your Muse's VM): once to make the keypair, and
+# again for fingerprints and rotations.
 #
 # Generates an RSA-2048 keypair for the encrypted credential handoff:
 #   private key: ~/.config/handoff/handoff-priv.pem  (mode 0600, NEVER shared)
@@ -12,8 +13,12 @@
 #   agent-setup.sh                      generate a new keypair
 #   agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint
 #   agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY,
-#                                       the old one kept as KEY.previous
-#   agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous
+#                                       the old one kept as KEY.previous;
+#                                       during one, shows the new key again
+#   agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous;
+#                                       blobs still made for it stop opening
+# Exit codes: 0 done (or, for --rotate during a rotation, shown), 1 refused
+# or failed (the reason on stderr), 2 a usage error.
 #
 # Environment:
 #   HANDOFF_KEY_DIR  where a NEW key is generated (default ~/.config/handoff).
@@ -89,7 +94,8 @@ fingerprint_of() {
   # exactly 2048 bits), and the exponent 65537 at the end. Returns 2 for a key
   # of another type.
   local der
-  der=$(printf '%s\n' "$pub" | openssl pkey -pubin -outform DER | od -An -tx1 -v | tr -d ' \n')
+  # A failing openssl here is "could not read", not "another key type".
+  der=$(printf '%s\n' "$pub" | openssl pkey -pubin -outform DER | od -An -tx1 -v | tr -d ' \n') || return 1
   case "$der" in
     30820122300d06092a864886f70d01010105000382010f003082010a0282010100*0203010001) ;;
     *) der=bad ;;
@@ -144,11 +150,36 @@ no_symlinks() {
   done
 }
 
+# The fingerprint of FILE, or nothing (and the reason on stderr) if it isn't
+# a usable key: key_fingerprint in a subshell, so its exit doesn't end this one.
+fingerprint_or_fail() {  # FILE
+  ( key_fingerprint "$1" && printf '%s' "$fp" )
+}
+
+# One --rotate or --retire at a time per key directory: a portable lock
+# (mkdir is atomic everywhere; flock isn't on macOS). An interrupted run
+# that couldn't remove it says so on the next run.
+lock_dir() {  # DIR
+  lock="$1/.handoff-lock"
+  if ! mkdir -- "$lock" 2>/dev/null; then
+    echo "agent-setup.sh: another --rotate or --retire is running ($lock exists)." >&2
+    echo "If none is (an earlier run was killed), remove that directory and run this again." >&2
+    exit 1
+  fi
+}
+
+# Run on any exit once the lock is held: removes the lock and a temporary key.
+cleanup() {
+  [ -z "${new-}" ] || rm -f -- "$new"
+  [ -z "${lock-}" ] || rmdir -- "$lock" 2>/dev/null || true
+}
+
 usage() {
-  echo "usage: agent-setup.sh                      generate a new keypair" >&2
+  echo "usage: agent-setup.sh                      generate a new keypair (once, at setup)" >&2
   echo "       agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint" >&2
-  echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new key, the old one kept as KEY.previous" >&2
-  echo "       agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous" >&2
+  echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY, the old one kept as KEY.previous;" >&2
+  echo "                                           during one, shows the new key again (exit 0)" >&2
+  echo "       agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous (blobs still made for it stop opening)" >&2
 }
 
 # Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
@@ -191,37 +222,53 @@ case "$mode" in
     # wrappers keep their HANDOFF_PRIVKEY. Each step is atomic, and a
     # re-run after an interruption finishes the job:
     #   1. KEY.previous is a hard link to KEY (ln refuses to replace one);
-    #   2. the new key, written beside KEY, is renamed over KEY.
-    # Between the two, both names are the old key, and everything decrypts.
+    #   2. the new key, written and checked beside KEY, is renamed over KEY.
+    # Between the two, both names hold the old key, and everything decrypts.
+    # Which state a rotation is in is read from the keys' fingerprints, not
+    # their inodes, so a copied .previous (a backup restore) reads the same.
     prev="$key.previous"
     no_symlinks
     key_fingerprint "$key"
-    if [ -e "$prev" ] || [ -L "$prev" ]; then
-      if [ ! "$prev" -ef "$key" ]; then
+    dir=$(dirname -- "$key")
+    lock_dir "$dir"
+    new=""
+    trap cleanup EXIT
+    for f in "$dir"/.handoff-new.*; do
+      # A temporary key a killed --rotate left (the lock says none is running).
+      [ -e "$f" ] || continue
+      rm -f -- "$f"
+      echo "note: removed a temporary key a killed --rotate left behind: $f" >&2
+    done
+    if [ -e "$prev" ]; then
+      [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
+      prev_fp=$(fingerprint_or_fail "$prev") || exit 1
+      if [ "$prev_fp" != "$fp" ]; then
         # The new key is in place: show its public half again, since an
         # interruption may have come before the user got it (SETUP step 3).
         PUB=$(openssl pkey -in "$key" -passin pass: -pubout) \
           || { echo "could not derive the public key" >&2; exit 1; }
-        echo "agent-setup.sh: $prev already exists: a rotation is under way, and the new key is in place." >&2
-        echo "Its public key and fingerprint follow; if the user hasn't embedded it and confirmed the fingerprint, continue at SETUP.md Rotation step 3, else step 4." >&2
+        echo "agent-setup.sh: a rotation is under way ($prev is the old key), and the new key is in place: nothing rotated." >&2
+        echo "If the user hasn't embedded this key in handoff.sh and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4." >&2
         echo "current (new) public key fingerprint: SHA256:$fp"
         echo
         printf '%s\n' "$PUB"
-        exit 1
+        exit 0
       fi
-      echo "note: resuming an interrupted rotation ($prev is still the current key)" >&2
+      echo "note: resuming an interrupted rotation ($prev holds the current key)" >&2
     else
-      ln "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $prev" >&2; exit 1; }
+      ln -- "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $prev" >&2; exit 1; }
     fi
-    dir=$(dirname "$key")
     new=$(mktemp "$dir/.handoff-new.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
-    trap 'rm -f "$new"' EXIT
     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
       || { echo "key generation failed; the old key is unchanged" >&2; exit 1; }
     chmod 600 "$new"
-    mv -f "$new" "$key"
-    trap - EXIT
-    key_fingerprint "$key"
+    # Checked before it replaces anything: genpkey can exit 0 after a short
+    # write (a full disk).
+    new_fp=$(fingerprint_or_fail "$new") \
+      || { echo "the new key didn't check out (a full disk?); the old key is unchanged" >&2; exit 1; }
+    mv -f -- "$new" "$key"
+    new=""
+    fp=$new_fp
     PUB=$(openssl pkey -in "$key" -pubout) \
       || { echo "could not derive the public key" >&2; exit 1; }
     echo "new key written to $key (mode 600); the old key is now $prev"
@@ -233,24 +280,28 @@ case "$mode" in
     echo
     printf '%s\n' "$PUB"
     echo
-    echo "next: rewrap every label (consume.py --rewrap), then agent-setup.sh --retire"
+    echo "next: SETUP.md Rotation step 3 (the user embeds this key in handoff.sh and confirms its fingerprint), then the rest of Rotation (or Compromise)"
     exit 0
     ;;
   --retire)
     # Deletes KEY.previous: blobs still made for it no longer open. SETUP.md
-    # says when (every label's rewrap reported the current key); this checks
-    # only that a rotation finished.
+    # says when (every label's rewrap reported the previous key's blob
+    # replaced); this checks only that a rotation finished.
     prev="$key.previous"
     no_symlinks
-    if [ ! -e "$prev" ] && [ ! -L "$prev" ]; then
+    if [ ! -e "$prev" ]; then
       echo "agent-setup.sh: no $prev: no rotation to retire" >&2; exit 1
     fi
-    if [ "$prev" -ef "$key" ]; then
-      echo "agent-setup.sh: $prev is still the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
+    [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
+    key_fingerprint "$key"
+    lock_dir "$(dirname -- "$key")"
+    trap cleanup EXIT
+    prev_fp=$(fingerprint_or_fail "$prev") || exit 1
+    if [ "$prev_fp" = "$fp" ]; then
+      echo "agent-setup.sh: $prev holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
       exit 1
     fi
-    key_fingerprint "$key"
-    rm -f "$prev"
+    rm -f -- "$prev"
     echo "deleted the previous key $prev; the current key is $key (SHA256:$fp)"
     exit 0
     ;;
@@ -266,7 +317,7 @@ PRIV="$KEY_DIR/handoff-priv.pem"
 
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
-  echo "to rotate it, run HANDOFF_PRIVKEY=$PRIV agent-setup.sh --rotate (SETUP.md, Rotation)" >&2
+  printf 'to rotate it, run HANDOFF_PRIVKEY=%q agent-setup.sh --rotate (SETUP.md, Rotation)\n' "$PRIV" >&2
   exit 1
 fi
 
@@ -285,10 +336,17 @@ KEY_DIR=$(cd "$KEY_DIR" && pwd)
 PRIV="$KEY_DIR/handoff-priv.pem"
 
 # No stderr suppression: if key generation fails, the human needs the cause.
-# Remove any partial file a failed run leaves behind.
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$PRIV" \
-  || { rm -f "$PRIV"; echo "key generation failed" >&2; exit 1; }
-chmod 600 "$PRIV"
+# Written to a temporary file and checked first (genpkey can exit 0 after a
+# short write), then linked into place: ln never replaces a key that
+# appeared meanwhile, and a failed run leaves no file at $PRIV.
+new=$(mktemp "$KEY_DIR/.handoff-new.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
+trap 'rm -f -- "$new"' EXIT
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
+  || { echo "key generation failed" >&2; exit 1; }
+chmod 600 "$new"
+fingerprint_or_fail "$new" >/dev/null \
+  || { echo "the new key didn't check out (a full disk?); nothing was written" >&2; exit 1; }
+ln -- "$new" "$PRIV" || { echo "could not write the key to $PRIV" >&2; exit 1; }
 
 PUB=$(openssl pkey -in "$PRIV" -pubout) \
   || { echo "could not derive the public key" >&2; exit 1; }
