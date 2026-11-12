@@ -75,9 +75,11 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Labels first, head second: a push between the two reads then
+          # shows up as a moved head, and this run stops.
+          PR_LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name]')
           NOW=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq '.headRefOid // ""')
           [ -n "$NOW" ] || { echo "could not read the PR's head"; exit 1; }
-          PR_LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name]')
           if [ "$NOW" != "$HEAD_SHA" ]; then
             # A push landed after the unlabel: its own on-push run sets
             # Awaiting CI, and this event's head's CI result is stale.

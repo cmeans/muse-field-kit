@@ -51,8 +51,9 @@ don't nest wrappers, or start the inner one with a clean environment.
 
 A blob file must be a regular file. A pipe, a FIFO, a tty or a device
 (so /dev/stdin on a pipe) and a process substitution (--blob-file
-<(fetch)) are refused: give the blob with --blob "$(fetch)" or
-$HANDOFF_BLOB instead.
+<(fetch)) are refused: give the blob with --blob "$(fetch </dev/null)"
+or $HANDOFF_BLOB instead (the fetch must not read stdin, which belongs
+to the command).
 
 Exactly one blob source (--blob, --blob-file or $HANDOFF_BLOB), and
 --label, --blob, --blob-file and --check at most once each. That is a
@@ -176,7 +177,8 @@ def openssl_env() -> dict:
 
     Without OPENSSL_* variables: a caller's OPENSSL_CONF or OPENSSL_MODULES
     could load a provider module into the process that reads the private
-    key. The defaults are what this protocol is tested with.
+    key. The defaults are what this protocol is tested with. Which openssl
+    runs is still the PATH's choice: a wrapper fixes it with its PATH= line.
     """
     return {k: v for k, v in os.environ.items() if not k.upper().startswith("OPENSSL_")}
 
@@ -199,8 +201,9 @@ def check_openssl() -> None:
         raise fail("openssl version failed" + (f": {detail[-1]}" if detail else ""))
     if not (version.startswith("OpenSSL 3.") or version.startswith("OpenSSL 4.")):
         raise fail(
-            f"requires OpenSSL 3 or 4; found: {version or 'no version output'} "
-            "(on macOS, put Homebrew's openssl@3 first on PATH)"
+            f"requires OpenSSL 3 or 4; found: {version or 'no version output'}. "
+            "Put one first in the PATH this runs with (in a wrapper, its PATH= line)"
+            + ("; on macOS, Homebrew's openssl@3" if sys.platform == "darwin" else "")
         )
 
 

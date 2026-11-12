@@ -22,6 +22,13 @@
 set -euo pipefail
 umask 077
 
+# The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
+# dropped, in any case: they could load a provider module into the openssl
+# processes this script runs. consume.py does the same.
+for v in $(compgen -e); do
+  case "$v" in [Oo][Pp][Ee][Nn][Ss][Ss][Ll]_*) unset "$v" ;; esac
+done
+
 # HOME is needed only for the default paths and for a leading ~: an absolute
 # HANDOFF_KEY_DIR, HANDOFF_PRIVKEY or KEY works without it, as in consume.py.
 need_home() {  # WHAT
@@ -57,7 +64,7 @@ need_openssl() {
   v=$(openssl version)
   case "$v" in
     "OpenSSL 3."*|"OpenSSL 4."*) ;;
-    *) echo "requires OpenSSL 3 or 4; found: $v (on macOS, put Homebrew's openssl@3 first on PATH)" >&2; exit 1 ;;
+    *) echo "requires OpenSSL 3 or 4; found: $v. Put one first in the PATH this runs with$( [ "$(uname -s)" = Darwin ] && printf '%s' "; on macOS, Homebrew's openssl@3")" >&2; exit 1 ;;
   esac
 }
 

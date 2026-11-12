@@ -24,6 +24,13 @@
 # yields a clean blob.
 set -euo pipefail
 
+# The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
+# dropped, in any case: they could load a provider module into the openssl
+# processes this script runs. consume.py does the same.
+for v in $(compgen -e); do
+  case "$v" in [Oo][Pp][Ee][Nn][Ss][Ss][Ll]_*) unset "$v" ;; esac
+done
+
 command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 
 # Fail closed on the wrong crypto tool: LibreSSL's pkeyutl OAEP behavior
@@ -31,7 +38,7 @@ command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 ssl_version=$(openssl version)
 case "$ssl_version" in
   "OpenSSL 3."*|"OpenSSL 4."*) ;;
-  *) echo "requires OpenSSL 3 or 4; found: $ssl_version (on macOS, put Homebrew's openssl@3 first on PATH)" >&2; exit 1 ;;
+  *) echo "requires OpenSSL 3 or 4; found: $ssl_version. Put one first on your PATH$( [ "$(uname -s)" = Darwin ] && printf '%s' "; on macOS, Homebrew's openssl@3")" >&2; exit 1 ;;
 esac
 
 # The agent's long-lived handoff public key (encryption only — safe to share).
