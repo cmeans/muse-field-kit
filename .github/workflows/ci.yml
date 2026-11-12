@@ -55,6 +55,12 @@ jobs:
           fi
       - name: shellcheck
         run: shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*.sh
+      - name: The scripts parse under bash 3.2 (macOS /bin/bash)
+        # shellcheck doesn't know bash 3.2's parser bugs (a `)` in a case
+        # pattern inside $(...) ends the substitution there).
+        run: |
+          docker run --rm -v "$PWD/encrypted-credential-handoff:/w:ro" -w /w bash:3.2 \
+            sh -c 'bash --version | head -1 && for f in agent-setup.sh handoff.sh test/run-test.sh; do bash -n "$f" || exit 1; done'
       - name: ruff
         run: pipx run ruff==0.15.7 check encrypted-credential-handoff/
       - name: A key file owned by another user, for the key-owner refusal

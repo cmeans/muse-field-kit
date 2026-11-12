@@ -1161,6 +1161,21 @@ chmod 755 "$S/racegen/openssl"
 expect_refusal "first setup when a key appears meanwhile" 1 "could not write the key to" \
   env PATH="$S/racegen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/race-setup" bash ../agent-setup.sh
 [ "$(cat "$S/race-setup/handoff-priv.pem")" = existing ] || fail "first setup replaced a key that appeared meanwhile"
+# A TERM while genpkey runs leaves no temporary private key behind (bash
+# waits for the child, then its EXIT trap removes the file the child wrote).
+mkdir -p "$S/slowgen3"; ln -sf "$PY" "$S/slowgen3/python3"
+# shellcheck disable=SC2016  # $1 and $@ belong to the generated script
+printf '#!/bin/sh\n[ "$1" = genpkey ] && sleep 3\nexec %s "$@"\n' "$(command -v openssl)" > "$S/slowgen3/openssl"
+chmod 755 "$S/slowgen3/openssl"
+mkdir -p "$S/term-setup"
+env PATH="$S/slowgen3:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/term-setup" bash ../agent-setup.sh >/dev/null 2>&1 &
+gen=$!
+sleep 1
+kill -TERM "$gen"
+wait "$gen" 2>/dev/null || true
+sleep 3
+! compgen -G "$S/term-setup/.handoff-new*" >/dev/null || fail "a TERM during key generation left a temporary private key"
+[ ! -e "$S/term-setup/handoff-priv.pem" ] || fail "a TERM during key generation still wrote the key"
 # --help prints the usage and exits 0.
 consume --help >"$S/out" 2>&1 || fail "consume.py --help failed"
 grep -qF -- "--rewrap" "$S/out" || fail "consume.py --help doesn't show the usage"
