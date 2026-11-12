@@ -413,6 +413,7 @@ mkdir -p "$S/fake-ssl"; ln -sf "$(command -v python3)" "$S/fake-ssl/python3"
 printf '#!/bin/sh\necho "LibreSSL 3.8.2"\n' > "$S/fake-ssl/openssl"; chmod 755 "$S/fake-ssl/openssl"
 expect_refusal "not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
+[ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
 # ~/ is expanded, ~user is refused, and both scripts agree on each.
 mkdir -p "$S/home2"; cp blob.txt "$S/home2/b.txt"
 # shellcheck disable=SC2088
@@ -461,6 +462,7 @@ PATH="$S/ssl4" python3 ../consume.py --label example --check --blob-file blob.tx
   || fail "consume.py refused OpenSSL 4"
 expect_refusal "agent-setup.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/fake-ssl:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
+[ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
 # Run as ./consume.py, the helper is isolated: a planted sitecustomize on
 # PYTHONPATH doesn't run.
 mkdir -p "$S/pp"
@@ -480,13 +482,16 @@ PYTHONPATH="$S/pp" sh ../consume.py --label example --check --blob-file blob.txt
   || fail "handoff.sh refused OpenSSL 4"
 expect_refusal "agent-setup.sh generation, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/fake-ssl:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/libressl-key" bash ../agent-setup.sh
+[ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
 [ ! -e "$S/libressl-key" ] || fail "agent-setup.sh created a key directory under LibreSSL"
 mkdir -p "$S/libressl"
 printf '#!/bin/sh\necho "LibreSSL 3.8.2"\n' > "$S/libressl/openssl"; chmod 755 "$S/libressl/openssl"
 expect_refusal "handoff.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
+[ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
 expect_refusal "handoff.sh encrypting, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" <<<'{"svc":"example","password":"mk-Zq9"}'
+[ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
 # shellcheck disable=SC2088
 expect_refusal "agent-setup.sh, ~ without HOME" 1 "a ~ in HANDOFF_KEY_DIR needs it" \
   env -u HOME HANDOFF_KEY_DIR='~/kd' bash ../agent-setup.sh
@@ -535,7 +540,13 @@ printf '#!/bin/sh\nif %s | %s -qi "^openssl_"; then echo "OPENSSL_ variable reac
 chmod 755 "$S/ssl-env/openssl"
 env PATH="$S/ssl-env" OPENSSL_MODULES="$S/nowhere" openssl_x=1 python3 ../consume.py --label example --check --blob-file blob.txt >/dev/null 2>"$S/err" \
   || fail "an OPENSSL_* variable reached the helper's openssl: $(cat "$S/err")"
-# agent-setup.sh and handoff.sh drop a caller's OPENSSL_CONF as well.
+# agent-setup.sh and handoff.sh drop every OPENSSL_* variable too, in any
+# case: through the fake openssl that fails on one...
+[ "$(env PATH="$S/ssl-env:/usr/bin:/bin" OPENSSL_MODULES="$S/nowhere" openssl_x=1 bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
+  || fail "an OPENSSL_* variable reached agent-setup.sh's openssl"
+[ "$(env PATH="$S/ssl-env:/usr/bin:/bin" OPENSSL_MODULES="$S/nowhere" openssl_x=1 bash "$S/handoff-dummy.sh" --fingerprint 2>/dev/null)" = "$want" ] \
+  || fail "an OPENSSL_* variable reached handoff.sh's openssl"
+# ...and a caller's OPENSSL_CONF that would break them.
 [ "$(OPENSSL_CONF="$S/evil.cnf" bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "a caller's OPENSSL_CONF reached agent-setup.sh's openssl"
 [ "$(OPENSSL_CONF="$S/evil.cnf" bash "$S/handoff-dummy.sh" --fingerprint)" = "$want" ] \
