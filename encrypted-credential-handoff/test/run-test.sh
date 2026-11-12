@@ -338,13 +338,26 @@ expect_refusal "agent-setup.sh --fingerprint, an encrypted key" 1 "could not rea
 # Only RSA-2048 keys: an Ed25519 or P-256 key loads but isn't this protocol's.
 openssl genpkey -algorithm ED25519 -out "$S/ed25519.pem" 2>/dev/null
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$S/p256.pem" 2>/dev/null
-chmod 600 "$S/ed25519.pem" "$S/p256.pem"
-for k in ed25519 p256; do
+# A 2052-bit RSA key has the same 294-byte public key as a 2048-bit one, and
+# an RSA-2048 key with e = 3 differs only in its exponent: both refused too.
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2052 -out "$S/rsa2052.pem" 2>/dev/null
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:3 -out "$S/rsa-e3.pem" 2>/dev/null
+chmod 600 "$S/ed25519.pem" "$S/p256.pem" "$S/rsa2052.pem" "$S/rsa-e3.pem"
+for k in ed25519 p256 rsa2052 rsa-e3; do
   expect_refusal "a $k key (consume.py)" 1 "is not an RSA-2048 key" \
     env HANDOFF_PRIVKEY="$S/$k.pem" python3 ../consume.py --label example --check --blob-file blob.txt
   expect_refusal "a $k key (agent-setup.sh --fingerprint)" 1 "is not an RSA-2048 key" \
     bash ../agent-setup.sh --fingerprint "$S/$k.pem"
+  ! grep -q "could not read key" "$S/err" || fail "agent-setup.sh said it couldn't read a $k key it did read"
 done
+# An unreadable key file is reported as unreadable, not as oversized (root
+# can read anything, so skip it there).
+if [ "$(id -u)" != 0 ]; then
+  cp "$TMPKEY" "$S/noread.pem"; chmod 000 "$S/noread.pem"
+  expect_refusal "agent-setup.sh --fingerprint, an unreadable key file" 1 "cannot read key file at" \
+    bash ../agent-setup.sh --fingerprint "$S/noread.pem"
+  ! grep -q "over 16384" "$S/err" || fail "an unreadable key file was reported as oversized"
+fi
 # A key file over 16384 bytes is refused before openssl sees it (its decoder
 # is very slow on large junk).
 head -c 20000 /dev/zero | tr '\0' 'A' > "$S/big-key.pem"; chmod 600 "$S/big-key.pem"
@@ -571,6 +584,10 @@ expect_refusal "consume.py, openssl version fails silently" 1 "openssl version f
 grep -qx "consume.py: openssl version failed" "$S/err" || fail "a silent openssl failure got a reason: $(cat "$S/err")"
 printf '#!/bin/sh\nprintf "00AB12CD:error:0A000086:SSL routines::internal\\nfirst readable reason\\nsecond readable reason\\n" >&2\nexit 1\n' > "$S/reason-ssl/openssl"
 expect_refusal "consume.py, openssl's readable line" 1 "openssl version failed: first readable reason" \
+  env PATH="$S/reason-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
+# Only openssl's internal lines: the last one is shown.
+printf '#!/bin/sh\nprintf "00AB12CD:error:first internal\\n00AB12CD:error:second internal\\n" >&2\nexit 1\n' > "$S/reason-ssl/openssl"
+expect_refusal "consume.py, only internal openssl lines" 1 "openssl version failed: 00AB12CD:error:second internal" \
   env PATH="$S/reason-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
 printf '#!/bin/sh\nhead -c 5000 /dev/zero | tr "\\0" x >&2\nexit 1\n' > "$S/reason-ssl/openssl"
 expect_refusal "consume.py, a long openssl error" 1 "openssl version failed: xxx" \
