@@ -363,16 +363,18 @@ def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
     proc = pkeyutl("-decrypt", current, cipher)
     if proc.returncode == 0:
         return proc.stdout, "current"
-    tried = "decryption failed"
+    tried = f"decryption failed with the key at {current}"
     if os.path.lexists(previous):
         check_key(previous)
         proc = pkeyutl("-decrypt", previous, cipher)
         if proc.returncode == 0:
             return proc.stdout, "previous"
-        tried = "decryption failed with the current key and with the previous key"
+        tried = (f"decryption failed with the current key ({current}) "
+                 f"and with the previous key ({previous})")
     # One fixed message, whichever key failed and however, without openssl's
     # reason: a decrypt that says more than "no" is an oracle (RFC 8017,
-    # section 7.1.2). It's a stop condition: retrying with another
+    # section 7.1.2). It names the key files it tried (paths, never payload
+    # data). It's a stop condition: retrying with another
     # HANDOFF_PRIVKEY is the "variation" SETUP.md forbids.
     raise fail(
         tried + " (a blob made for another key, or a damaged one): stop and "
