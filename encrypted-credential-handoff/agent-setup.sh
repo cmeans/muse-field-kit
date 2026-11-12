@@ -57,7 +57,7 @@ need_openssl() {
   v=$(openssl version)
   case "$v" in
     "OpenSSL 3."*|"OpenSSL 4."*) ;;
-    *) echo "requires OpenSSL 3 or 4; found: $v" >&2; exit 1 ;;
+    *) echo "requires OpenSSL 3 or 4; found: $v (on macOS, put Homebrew's openssl@3 first on PATH)" >&2; exit 1 ;;
   esac
 }
 

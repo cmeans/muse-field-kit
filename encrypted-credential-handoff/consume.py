@@ -55,9 +55,11 @@ A blob file must be a regular file. A pipe, a FIFO, a tty or a device
 $HANDOFF_BLOB instead.
 
 Exactly one blob source (--blob, --blob-file or $HANDOFF_BLOB), and
---label, --blob, --blob-file and --check at most once each: a wrapper's
-caller can't relabel it by appending options. An empty credential value
-is refused.
+--label, --blob, --blob-file and --check at most once each. That is a
+backstop for a wrongly written wrapper, not a license for one: a wrapper
+passes no caller arguments at all (SETUP.md step 7), since a caller's
+own --env or -- would otherwise pick where the credential goes. An empty
+credential value is refused.
 A target must be a plain variable name, never one that changes what the
 command runs or where it connects (PATH, LD_*, PYTHON*, GIT_*, BASH_ENV,
 the proxy and CA-bundle variables, ...; a partial list, in any case),
@@ -185,7 +187,10 @@ def check_openssl() -> None:
         detail = out.stderr.strip().splitlines()
         raise fail("openssl version failed" + (f": {detail[-1]}" if detail else ""))
     if not (version.startswith("OpenSSL 3.") or version.startswith("OpenSSL 4.")):
-        raise fail(f"requires OpenSSL 3 or 4; found: {version or 'no version output'}")
+        raise fail(
+            f"requires OpenSSL 3 or 4; found: {version or 'no version output'} "
+            "(on macOS, put Homebrew's openssl@3 first on PATH)"
+        )
 
 
 def decrypt(blob_b64: str) -> dict:
@@ -308,8 +313,9 @@ def parse_args(argv):
             cmd = argv[i + 1:]
             break
         if a in ("--label", "--blob", "--blob-file", "--check"):
-            # Each at most once: a wrapper shaped `consume.py --label A "$@"`
-            # must not be relabeled by whatever its caller appends.
+            # Each at most once: a backstop if a wrapper wrongly passes its
+            # caller's arguments (SETUP.md says it never does), so at least
+            # the label can't be overridden.
             if a in seen:
                 raise fail(f"{a} given twice")
             seen.add(a)
@@ -365,20 +371,29 @@ def parse_args(argv):
     if len(sources) > 1:
         raise fail(f"more than one blob source ({', '.join(sources)}); give exactly one")
     if blob_file is not None:
+        if not blob_file:
+            raise fail("--blob-file is empty")
         path = expand_home(blob_file, "--blob-file")
+        not_regular = (
+            f"blob file at {blob_file} is not a regular file (a "
+            "directory, pipe, FIFO or device); give the blob with "
+            "--blob or $HANDOFF_BLOB"
+        )
         try:
-            # Opened non-blocking, so a FIFO with no writer can't hang the
-            # open before the check. A regular file only: /dev/stdin, a pipe
-            # or a tty would take the command's stdin. (A redirect from a
-            # file, < blob.txt, is a regular file and isn't caught here.)
-            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            # A regular file only: /dev/stdin, a pipe or a tty would take
+            # the command's stdin. Checked before opening, since opening a
+            # device can act on it (a tty can become the controlling
+            # terminal), and again on the open descriptor, in case the path
+            # changed in between. Opened non-blocking and without taking a
+            # controlling terminal, so even that race can't hang or attach.
+            # (A redirect from a file, < blob.txt, is a regular file and
+            # isn't caught here.)
+            if not stat.S_ISREG(os.stat(path).st_mode):
+                raise fail(not_regular)
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0))
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 os.close(fd)
-                raise fail(
-                    f"blob file at {blob_file} is not a regular file (a "
-                    "directory, pipe, FIFO or device); give the blob with "
-                    "--blob or $HANDOFF_BLOB"
-                )
+                raise fail(not_regular)
             # utf-8-sig: some editors save a byte-order mark first.
             with os.fdopen(fd, "r", encoding="utf-8-sig") as fh:
                 blob = fh.read(MAX_BLOB_FILE + 1)

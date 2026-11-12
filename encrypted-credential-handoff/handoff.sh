@@ -31,7 +31,7 @@ command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
 ssl_version=$(openssl version)
 case "$ssl_version" in
   "OpenSSL 3."*|"OpenSSL 4."*) ;;
-  *) echo "requires OpenSSL 3 or 4; found: $ssl_version" >&2; exit 1 ;;
+  *) echo "requires OpenSSL 3 or 4; found: $ssl_version (on macOS, put Homebrew's openssl@3 first on PATH)" >&2; exit 1 ;;
 esac
 
 # The agent's long-lived handoff public key (encryption only — safe to share).
