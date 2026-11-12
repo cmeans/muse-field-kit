@@ -37,6 +37,7 @@ jobs:
       - name: Execute bits are committed
         # A fresh clone must be able to run ./handoff.sh and friends.
         run: |
+          set -o pipefail
           bad=$(git ls-files -s encrypted-credential-handoff \
             | awk '$1 != "100755" && $4 ~ /(\.sh|\.py)$/ { print $4 }')
           if [ -n "$bad" ]; then
@@ -66,7 +67,10 @@ jobs:
           echo "HANDOFF_TEST_OTHER_OWNER_KEY=$RUNNER_TEMP/root-owned-key.pem" >> "$GITHUB_ENV"
       - name: Interop and refusal tests
         # In CI, every check must run: a skip line fails the step.
+        # pipefail: GitHub's default bash runs with -e only, so without it
+        # tee's exit status would hide a failing suite.
         run: |
+          set -o pipefail
           ./encrypted-credential-handoff/test/run-test.sh | tee "$RUNNER_TEMP/run-test.log"
           if grep '^skip:' "$RUNNER_TEMP/run-test.log"; then
             echo "a check was skipped in CI"
