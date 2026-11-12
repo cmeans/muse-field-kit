@@ -818,8 +818,9 @@ R="$S/rot"; mkdir -p "$R"
 cp "$TMPKEY" "$R/k.pem"
 rk() { env HANDOFF_PRIVKEY="$R/k.pem" "$@"; }
 rk bash ../agent-setup.sh --rotate >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--rotate failed"; }
-[ -f "$R/k.pem.previous" ] && [ ! "$R/k.pem.previous" -ef "$R/k.pem" ] \
-  || fail "--rotate didn't leave the old key as k.pem.previous beside a new k.pem"
+if [ ! -f "$R/k.pem.previous" ] || [ "$R/k.pem.previous" -ef "$R/k.pem" ]; then
+  fail "--rotate didn't leave the old key as k.pem.previous beside a new k.pem"
+fi
 [ "$(stat -c %a "$R/k.pem")" = 600 ] || fail "the rotated key is not mode 600"
 old_fp=$(rk bash ../agent-setup.sh --fingerprint "$R/k.pem.previous" 2>/dev/null)
 [ "$old_fp" = "$want" ] || fail "k.pem.previous is not the old key"
@@ -844,8 +845,9 @@ no_dummy_in "$R/err"
 # --rewrap prints a new blob for the current key, and only that.
 rk python3 ../consume.py --label example --rewrap --blob-file blob.txt >"$R/new.txt" 2>"$R/err"
 grep -qxF "consume.py: rewrapped; the blob was for the previous key" "$R/err" || fail "--rewrap didn't say the blob was for the previous key"
-[ "$(wc -l < "$R/new.txt")" = 1 ] && grep -qxE '[A-Za-z0-9+/]{342}==' "$R/new.txt" \
-  || fail "--rewrap printed something other than one blob"
+if [ "$(wc -l < "$R/new.txt")" != 1 ] || ! grep -qxE '[A-Za-z0-9+/]{342}==' "$R/new.txt"; then
+  fail "--rewrap printed something other than one blob"
+fi
 no_dummy_in "$R/new.txt" "$R/err"
 # The new blob opens with the current key alone, to the same payload.
 mv "$R/k.pem.previous" "$R/held.pem"
