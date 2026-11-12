@@ -112,7 +112,9 @@ MAX_KEY_FILE = 16384    # bytes; an RSA-2048 PEM key is about 1.7 KB
 # SubjectPublicKeyInfo form: 294 bytes, a fixed 33-byte header (the
 # rsaEncryption identifier, then a 257-byte modulus field whose leading 00
 # means the top bit is set, so exactly 2048 bits), and the exponent 65537.
-# The three overlap: each alone rejects every other key type and size.
+# Together they reject every other key type, size and exponent: the length
+# and head every other type and size, the tail any other exponent of the
+# same length.
 RSA2048_SPKI_LEN = 294
 RSA2048_SPKI_HEAD = bytes.fromhex(
     "30820122300d06092a864886f70d0101010500"  # SPKI, rsaEncryption
@@ -534,18 +536,22 @@ def main() -> int:
         # capture_output and text= need 3.7; say so instead of a traceback.
         print("consume.py: requires Python 3.7 or later", file=sys.stderr)
         return 1
+    if sys.argv[1:] in (["-h"], ["--help"]):
+        # __doc__ is None under python3 -OO; the usage then is the one line.
+        doc = __doc__ or ""
+        print(doc[doc.index("Usage:"):].rstrip() if "Usage:" in doc else
+              "usage: consume.py --label LABEL [--env field=NAME ...] "
+              "[--blob B | --blob-file F] (--check | -- command ...)")
+        return 0
     if LABEL_ENV in os.environ:
         # Set by a consume.py that is running the command this call came
         # from: wrappers never nest. The value is the outer label, which the
         # caller controls: not echoed.
         raise fail(
-            f"${LABEL_ENV} is set: this is a command another consume.py "
-            "started, and wrappers never nest (SETUP.md step 7). Refusing. "
+            f"${LABEL_ENV} is set (normally by an outer consume.py, for the "
+            "command it started), and wrappers never nest (SETUP.md step 7). Refusing. "
             "Don't unset it to get past this: report it to the user."
         )
-    if sys.argv[1:] in (["-h"], ["--help"]):
-        print(__doc__[__doc__.index("Usage:"):].rstrip())
-        return 0
     label, check, blob, env_map, cmd = parse_args(sys.argv[1:])
     plaintext = decrypt(blob, privkey_path())
     creds = check_payload(parse_payload(plaintext), label, env_map)

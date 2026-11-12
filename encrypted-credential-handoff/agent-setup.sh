@@ -12,6 +12,8 @@
 # Usage:
 #   agent-setup.sh                      generate a new keypair
 #   agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint
+#   agent-setup.sh --public-key [KEY]   print an existing key's public key and
+#                                       fingerprint again (to give the user)
 # Exit codes: 0 done, 1 refused or failed (the reason on stderr), 2 a usage
 # error.
 #
@@ -23,7 +25,10 @@
 #                    argument overrides it.
 set -euo pipefail
 umask 077
-# This run's temporary key (removed on exit): never inherited.
+# cd must never search the caller's CDPATH for a relative key directory.
+unset CDPATH
+# This run's temporary key (removed when the run ends, except after a
+# SIGKILL; the next first setup removes one left behind): never inherited.
 new=""
 
 # The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
@@ -141,6 +146,7 @@ fingerprint_or_fail() {  # FILE
 usage() {
   echo "usage: agent-setup.sh                      generate a new keypair (once, at setup)" >&2
   echo "       agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint" >&2
+  echo "       agent-setup.sh --public-key [KEY]   print an existing key's public key and fingerprint" >&2
 }
 
 # Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
@@ -150,7 +156,7 @@ usage() {
 # the key the consume side uses ($HANDOFF_PRIVKEY), and says which file it
 # read, so that during re-keying the old key can't be reported by mistake.
 case "${1-}" in
-  --fingerprint)
+  --fingerprint|--public-key)
     mode=$1
     [ $# -le 2 ] || { echo "usage: agent-setup.sh $mode [KEY]" >&2; exit 2; }
     if [ $# -eq 2 ] && [ -z "$2" ]; then
@@ -177,6 +183,19 @@ case "$mode" in
     echo "SHA256:$fp"
     exit 0
     ;;
+  --public-key)
+    # The sanctioned way to show a key's public half again (a resumed setup
+    # or re-keying needs it for the user; the public key isn't a secret),
+    # from a key that passes the same checks as --fingerprint.
+    key_fingerprint "$key"
+    PUB=$(openssl pkey -in "$key" -passin pass: -pubout) \
+      || { echo "could not derive the public key from $key" >&2; exit 1; }
+    echo "key file: $key" >&2
+    echo "public key fingerprint: SHA256:$fp"
+    echo
+    printf '%s\n' "$PUB"
+    exit 0
+    ;;
 esac
 
 need_openssl
@@ -200,10 +219,13 @@ if [ -d "$KEY_DIR" ]; then
   echo "note: key directory $KEY_DIR already exists; its permissions were left unchanged (expected 0700)" >&2
 else
   mkdir -p -- "$KEY_DIR"
-  chmod 700 -- "$KEY_DIR"
+  # `--` before the mode: BSD chmod stops reading options at the mode, so a
+  # `--` after it would be taken as a file.
+  chmod -- 700 "$KEY_DIR"
 fi
 # An absolute path from here on: the path printed below is what wrappers
 # set HANDOFF_PRIVKEY to, from whatever directory they run in.
+case "$KEY_DIR" in /*) ;; *) KEY_DIR="./$KEY_DIR" ;; esac  # not cd's "-" or a search
 KEY_DIR=$(cd -- "$KEY_DIR" && pwd)
 PRIV="$KEY_DIR/handoff-priv.pem"
 
@@ -216,16 +238,31 @@ trap 'rm -f -- "$new"' EXIT
 # openssl exits: without these, bash would die at once and the EXIT trap
 # would run before genpkey wrote its file, leaving a private key behind.
 trap 'exit 1' INT TERM HUP
-new=$(mktemp -- "$KEY_DIR/.handoff-new.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
+for f in "$KEY_DIR"/.handoff-setup.*; do
+  # A temporary key a killed (SIGKILL) setup left behind: never a live key.
+  [ -f "$f" ] && [ ! -L "$f" ] || continue
+  rm -f -- "$f"
+  echo "note: removed a temporary key a killed setup left behind: $f" >&2
+done
+new=$(mktemp -- "$KEY_DIR/.handoff-setup.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
   || { echo "key generation failed" >&2; exit 1; }
-chmod 600 -- "$new"
+chmod -- 600 "$new"
 FPR=$(fingerprint_or_fail "$new") \
   || { echo "the new key didn't check out (a full disk?); nothing was written" >&2; exit 1; }
-ln -- "$new" "$PRIV" || { echo "could not write the key to $PRIV" >&2; exit 1; }
+ln -- "$new" "$PRIV" || {
+  echo "could not link the new key into place at $PRIV; nothing was written (the key directory needs hard links, SETUP.md step 1, or a key appeared meanwhile)" >&2
+  exit 1
+}
+if [ ! "$PRIV" -ef "$new" ]; then
+  # $PRIV became a directory meanwhile, and ln put the key inside it.
+  rm -f -- "$PRIV/${new##*/}"
+  echo "could not link the new key into place at $PRIV (it is now a directory); nothing was written" >&2
+  exit 1
+fi
 
 PUB=$(openssl pkey -in "$PRIV" -pubout) \
-  || { echo "could not derive the public key" >&2; exit 1; }
+  || { echo "the key was written to $PRIV, but its public key couldn't be derived; show it with agent-setup.sh --public-key $PRIV" >&2; exit 1; }
 
 echo "private key written to $PRIV (mode 600) — never copy it off this machine"
 echo
