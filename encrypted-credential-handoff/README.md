@@ -93,7 +93,7 @@ This pattern fills exactly that gap, and only that gap. Use the platform's own f
 
 An install set up before this rotation existed, or one whose wrappers run a consumer other than this folder's `consume.py`, must update that consumer to try the previous key before its first rotation; otherwise its labels stop working when the key rotates.
 
-**Compromise** (the private key may have leaked): rotating the key is *not* sufficient — every blob ever encrypted to it must be assumed readable. **Change each credential at its service first**, then rotate the key and stage the new credentials; don't rewrap the old blobs, which hold the exposed ones. “Rotate on suspicion” means this paragraph, not just a new key.
+**Compromise** (the private key may have leaked): rotating the key is *not* sufficient — every blob ever encrypted to it must be assumed readable. **Change each credential at its service first**, then rotate the key (retiring first any rotation already under way, whose keys leaked too) and stage the new credentials; don't rewrap the old blobs, which hold the exposed ones. “Rotate on suspicion” means this paragraph, not just a new key.
 
 ## Variations: what is fixed, and what is a choice
 
