@@ -287,6 +287,26 @@ here=$PWD
   || fail "agent-setup.sh with a relative HANDOFF_KEY_DIR failed"
 grep -qxF "this key lives at: $S/cwd/rel/handoff-priv.pem" "$S/setup-out" \
   || fail "agent-setup.sh printed a relative key path: $(grep 'lives at' "$S/setup-out")"
+# ...without searching a caller's CDPATH, and "-" is a directory named "-".
+mkdir -p "$S/cdpath/rel2"
+(cd "$S/cwd" && CDPATH="$S/cdpath" HANDOFF_KEY_DIR=rel2 bash "$here/../agent-setup.sh" >"$S/setup-out" 2>&1) \
+  || fail "agent-setup.sh with CDPATH set failed: $(cat "$S/setup-out")"
+[ -f "$S/cwd/rel2/handoff-priv.pem" ] && [ ! -e "$S/cdpath/rel2/handoff-priv.pem" ] || fail "a relative HANDOFF_KEY_DIR followed CDPATH"
+(cd "$S/cwd" && HANDOFF_KEY_DIR=- bash "$here/../agent-setup.sh" >/dev/null 2>&1) \
+  || fail "agent-setup.sh with HANDOFF_KEY_DIR=- failed"
+[ -f "$S/cwd/-/handoff-priv.pem" ] || fail "HANDOFF_KEY_DIR=- didn't make the key in ./-"
+# chmod with -- before the mode, as BSD chmod needs: GNU chmod in POSIX mode
+# takes options only before the mode, as BSD's does.
+env POSIXLY_CORRECT=1 HANDOFF_KEY_DIR="$S/posix-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" \
+  || fail "first setup failed with POSIX option parsing (BSD chmod): $(cat "$S/err")"
+[ "$(stat -c %a "$S/posix-setup")" = 700 ] && [ "$(stat -c %a "$S/posix-setup/handoff-priv.pem")" = 600 ] \
+  || fail "first setup under POSIX option parsing left the wrong modes"
+# --public-key shows an existing key's public half and fingerprint again.
+got=$(bash ../agent-setup.sh --public-key "$TMPKEY" 2>"$S/err")
+grep -qxF "key file: $TMPKEY" "$S/err" || fail "--public-key didn't name the key file"
+[ "$(printf '%s\n' "$got" | sed -n 's/^public key fingerprint: //p')" = "$want" ] || fail "--public-key printed another fingerprint"
+[ "$(printf '%s\n' "$got" | sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p')" = "$(cat test-dummy-pub.pem)" ] \
+  || fail "--public-key printed another public key"
 echo "ok"
 
 echo "== 5. refusals =="
@@ -349,12 +369,16 @@ expect_refusal "agent-setup.sh --fingerprint, an encrypted key" 1 "could not rea
 # Only RSA-2048 keys: an Ed25519 or P-256 key loads but isn't this protocol's.
 openssl genpkey -algorithm ED25519 -out "$S/ed25519.pem" 2>/dev/null
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$S/p256.pem" 2>/dev/null
-# A 2052-bit RSA key has the same 294-byte public key as a 2048-bit one, and
-# an RSA-2048 key with e = 3 differs only in its exponent: both refused too.
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2052 -out "$S/rsa2052.pem" 2>/dev/null
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:3 -out "$S/rsa-e3.pem" 2>/dev/null
-chmod 600 "$S/ed25519.pem" "$S/p256.pem" "$S/rsa2052.pem" "$S/rsa-e3.pem"
-for k in ed25519 p256 rsa2052 rsa-e3; do
+# A 2052-bit RSA key has the same 294-byte public key as a 2048-bit one; an
+# RSA-2048 key with e = 3 differs in its exponent (and length), and one with
+# e = 65539 only in its exponent's value (the same length): all refused too.
+# A FIPS-mode openssl may refuse to make some of these: those are skipped.
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2052 -out "$S/rsa2052.pem" 2>/dev/null || true
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:3 -out "$S/rsa-e3.pem" 2>/dev/null || true
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:65539 -out "$S/rsa-e65539.pem" 2>/dev/null || true
+for k in ed25519 p256 rsa2052 rsa-e3 rsa-e65539; do
+  if [ ! -s "$S/$k.pem" ]; then echo "skip: openssl couldn't make a $k key, its refusal wasn't tested"; continue; fi
+  chmod 600 "$S/$k.pem"
   expect_refusal "a $k key (consume.py)" 1 "is not an RSA-2048 key" \
     env HANDOFF_PRIVKEY="$S/$k.pem" python3 ../consume.py --label example --check --blob-file blob.txt
   expect_refusal "a $k key (agent-setup.sh --fingerprint)" 1 "is not an RSA-2048 key" \
@@ -732,7 +756,7 @@ exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
 # controlling terminal (setsid), opens the blob file with O_NOCTTY, so a
 # terminal swapped in after the stat check is refused without becoming its
 # controlling terminal (which /dev/tty would then open).
-if command -v setsid >/dev/null && [ -e /dev/ptmx ]; then
+if setsid -w true 2>/dev/null && [ -e /dev/ptmx ]; then
   expect_refusal "blob file swapped to a terminal after the stat check" 1 "is not a regular file" \
     timeout 20 setsid -w python3 -I -c '
 import atexit, os, pty, sys
@@ -770,7 +794,7 @@ src = open("../consume.py").read()
 exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
 ' blob.txt
 else
-  echo "skip: setsid or /dev/ptmx missing, the O_NOCTTY check didn't run"
+  echo "skip: setsid -w (util-linux) or /dev/ptmx missing, the O_NOCTTY check didn't run"
 fi
 # A FIFO with no writer is refused, not waited on (timeout catches a hang).
 mkfifo "$S/blob.fifo"
@@ -1011,7 +1035,7 @@ rm "$R/k.pem.previous"
 expect_refusal "first setup whose genpkey writes a short file" 1 "nothing was written" \
   env PATH="$S/shortgen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/short-setup" bash ../agent-setup.sh
 [ ! -e "$S/short-setup/handoff-priv.pem" ] || fail "first setup left a short key file at the key path"
-! compgen -G "$S/short-setup/.handoff-*" >/dev/null || fail "first setup left a temporary key file"
+! compgen -G "$S/short-setup/.handoff-setup.*" >/dev/null || fail "first setup left a temporary key file"
 # A failing DER export is "could not read", not "another key type".
 mkdir -p "$S/noder"; ln -sf "$PY" "$S/noder/python3"
 # shellcheck disable=SC2016  # $a and $@ belong to the generated script
@@ -1164,7 +1188,7 @@ mkdir -p "$S/racegen"; ln -sf "$PY" "$S/racegen/python3"
 # shellcheck disable=SC2016  # $1, $a and $@ belong to the generated script
 printf '#!/bin/sh\nif [ "$1" = genpkey ]; then prev=; for a; do [ "$prev" = -out ] && printf existing > "$(dirname "$a")/handoff-priv.pem"; prev=$a; done; fi\nexec %s "$@"\n' "$(command -v openssl)" > "$S/racegen/openssl"
 chmod 755 "$S/racegen/openssl"
-expect_refusal "first setup when a key appears meanwhile" 1 "could not write the key to" \
+expect_refusal "first setup when a key appears meanwhile" 1 "could not link the new key into place" \
   env PATH="$S/racegen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/race-setup" bash ../agent-setup.sh
 [ "$(cat "$S/race-setup/handoff-priv.pem")" = existing ] || fail "first setup replaced a key that appeared meanwhile"
 # A TERM while genpkey runs leaves no temporary private key behind (bash
@@ -1180,7 +1204,7 @@ sleep 1
 kill -TERM "$gen"
 wait "$gen" 2>/dev/null || true
 sleep 3
-! compgen -G "$S/term-setup/.handoff-*" >/dev/null || fail "a TERM during key generation left a temporary private key"
+! compgen -G "$S/term-setup/.handoff-setup.*" >/dev/null || fail "a TERM during key generation left a temporary private key"
 [ ! -e "$S/term-setup/handoff-priv.pem" ] || fail "a TERM during key generation still wrote the key"
 # Any --rewrap refusal into an empty output file gets the redirect hint (bash
 # reads $(cat X) before '> X' truncates it, so the blob isn't empty there).
@@ -1210,9 +1234,32 @@ sleep 3
 ! compgen -G "$R/.handoff-*" >/dev/null || fail "a TERM during --rotate left a temporary key or the lock"
 [ "$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$before" ] || fail "a TERM during --rotate changed the key"
 rm -f "$R/k.pem.previous"
+# A key path that turns into a directory during generation: ln would put the
+# key inside it. Refused, with no copy left behind.
+mkdir -p "$S/dirgen"; ln -sf "$PY" "$S/dirgen/python3"
+# shellcheck disable=SC2016  # $1, $a and $@ belong to the generated script
+printf '#!/bin/sh\nif [ "$1" = genpkey ]; then prev=; for a; do [ "$prev" = -out ] && mkdir "$(dirname "$a")/handoff-priv.pem"; prev=$a; done; fi\nexec %s "$@"\n' "$(command -v openssl)" > "$S/dirgen/openssl"
+chmod 755 "$S/dirgen/openssl"
+expect_refusal "first setup when the key path becomes a directory" 1 "it is now a directory" \
+  env PATH="$S/dirgen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/dir-setup" bash ../agent-setup.sh
+if compgen -G "$S/dir-setup/handoff-priv.pem/*" >/dev/null || compgen -G "$S/dir-setup/handoff-priv.pem/.handoff-*" >/dev/null; then
+  fail "a key was left inside the directory at the key path"
+fi
+# A temporary key a killed setup left is removed by the next one.
+mkdir -p "$S/stale-setup"; printf 'leftover\n' > "$S/stale-setup/.handoff-setup.Leftov"
+# A symlink with the same name isn't a temporary key: it stays.
+ln -s "$TMPKEY" "$S/stale-setup/.handoff-setup.Link"
+HANDOFF_KEY_DIR="$S/stale-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || fail "first setup with a leftover temporary key failed"
+grep -qF "removed a temporary key a killed (or concurrent) setup left behind" "$S/err" && [ ! -e "$S/stale-setup/.handoff-setup.Leftov" ] \
+  || fail "the leftover temporary key wasn't removed"
+[ -L "$S/stale-setup/.handoff-setup.Link" ] || fail "the stale cleanup removed a symlink, which no setup makes"
 # --help prints the usage and exits 0.
 consume --help >"$S/out" 2>&1 || fail "consume.py --help failed"
 grep -qF -- "--rewrap" "$S/out" || fail "consume.py --help doesn't show the usage"
+# ...also with $HANDOFF_LABEL set, and with docstrings stripped (-OO).
+HANDOFF_LABEL=x python3 ../consume.py --help >/dev/null 2>&1 || fail "--help was refused with HANDOFF_LABEL set"
+python3 -OO ../consume.py --help >"$S/out" 2>&1 || fail "--help failed under python3 -OO: $(cat "$S/out")"
+grep -qF "usage: consume.py" "$S/out" || fail "--help under -OO printed no usage"
 echo "ok"
 
 echo "== 7. nesting: \$HANDOFF_LABEL =="

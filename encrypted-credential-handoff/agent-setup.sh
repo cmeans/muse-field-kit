@@ -12,6 +12,8 @@
 # Usage:
 #   agent-setup.sh                      generate a new keypair
 #   agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint
+#   agent-setup.sh --public-key [KEY]   print an existing key's public key and
+#                                       fingerprint again (to give the user)
 #   agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY,
 #                                       the old one kept as KEY.previous;
 #                                       during one, shows the new key again
@@ -22,14 +24,17 @@
 #
 # Environment:
 #   HANDOFF_KEY_DIR  where a NEW key is generated (default ~/.config/handoff).
-#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint, --rotate and --retire
-#                    use: the same variable, with the same default
+#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint, --public-key, --rotate
+#                    and --retire use: the same variable, with the same default
 #                    (~/.config/handoff/handoff-priv.pem), that consume.py
 #                    decrypts with. HANDOFF_KEY_DIR doesn't change it. A KEY
 #                    argument overrides it.
 set -euo pipefail
 umask 077
-# This run's temporary key and lock (cleanup removes them): never inherited.
+# cd must never search the caller's CDPATH for a relative key directory.
+unset CDPATH
+# This run's temporary key and lock (cleanup removes them, except after a
+# SIGKILL; the next run removes a key left behind): never inherited.
 new=""
 lock=""
 
@@ -186,6 +191,7 @@ cleanup() {
 usage() {
   echo "usage: agent-setup.sh                      generate a new keypair (once, at setup)" >&2
   echo "       agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint" >&2
+  echo "       agent-setup.sh --public-key [KEY]   print an existing key's public key and fingerprint" >&2
   echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY, the old one kept as KEY.previous;" >&2
   echo "                                           during one, shows the new key again (exit 0)" >&2
   echo "       agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous (blobs still made for it stop opening)" >&2
@@ -198,7 +204,7 @@ usage() {
 # the key the consume side uses ($HANDOFF_PRIVKEY), and says which file it
 # read, so that during rotation the old key can't be reported by mistake.
 case "${1-}" in
-  --fingerprint|--rotate|--retire)
+  --fingerprint|--public-key|--rotate|--retire)
     mode=$1
     [ $# -le 2 ] || { echo "usage: agent-setup.sh $mode [KEY]" >&2; exit 2; }
     if [ $# -eq 2 ] && [ -z "$2" ]; then
@@ -278,7 +284,7 @@ case "$mode" in
     new=$(mktemp -- "$dir/.handoff-new.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
     openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
       || { echo "key generation failed; the old key is unchanged" >&2; exit 1; }
-    chmod 600 -- "$new"
+    chmod -- 600 "$new"
     # Checked before it replaces anything: genpkey can exit 0 after a short
     # write (a full disk).
     new_fp=$(fingerprint_or_fail "$new") \
@@ -323,6 +329,19 @@ case "$mode" in
     echo "deleted the previous key $prev; the current key is $key (SHA256:$fp)"
     exit 0
     ;;
+  --public-key)
+    # The sanctioned way to show a key's public half again (a resumed setup
+    # or rotation needs it for the user; the public key isn't a secret),
+    # from a key that passes the same checks as --fingerprint.
+    key_fingerprint "$key"
+    PUB=$(openssl pkey -in "$key" -passin pass: -pubout) \
+      || { echo "could not derive the public key from $key" >&2; exit 1; }
+    echo "key file: $key" >&2
+    echo "public key fingerprint: SHA256:$fp"
+    echo
+    printf '%s\n' "$PUB"
+    exit 0
+    ;;
 esac
 
 need_openssl
@@ -346,10 +365,13 @@ if [ -d "$KEY_DIR" ]; then
   echo "note: key directory $KEY_DIR already exists; its permissions were left unchanged (expected 0700)" >&2
 else
   mkdir -p -- "$KEY_DIR"
-  chmod 700 -- "$KEY_DIR"
+  # `--` before the mode: BSD chmod stops reading options at the mode, so a
+  # `--` after it would be taken as a file.
+  chmod -- 700 "$KEY_DIR"
 fi
 # An absolute path from here on: the path printed below is what wrappers
 # set HANDOFF_PRIVKEY to, from whatever directory they run in.
+case "$KEY_DIR" in /*) ;; *) KEY_DIR="./$KEY_DIR" ;; esac  # not cd's "-" or a search
 KEY_DIR=$(cd -- "$KEY_DIR" && pwd)
 PRIV="$KEY_DIR/handoff-priv.pem"
 
@@ -362,18 +384,31 @@ trap 'rm -f -- "$new"' EXIT
 # openssl exits: without these, bash would die at once and the EXIT trap
 # would run before genpkey wrote its file, leaving a private key behind.
 trap 'exit 1' INT TERM HUP
-# Its own name (.handoff-setup.*): --rotate's sweep of .handoff-new.* never
-# takes a first setup's file.
+for f in "$KEY_DIR"/.handoff-setup.*; do
+  # A temporary key a killed (SIGKILL) setup left behind: never a live key.
+  [ -f "$f" ] && [ ! -L "$f" ] || continue
+  rm -f -- "$f"
+  echo "note: removed a temporary key a killed (or concurrent) setup left behind: $f" >&2
+done
 new=$(mktemp -- "$KEY_DIR/.handoff-setup.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
   || { echo "key generation failed" >&2; exit 1; }
-chmod 600 -- "$new"
+chmod -- 600 "$new"
 FPR=$(fingerprint_or_fail "$new") \
   || { echo "the new key didn't check out (a full disk?); nothing was written" >&2; exit 1; }
-ln -- "$new" "$PRIV" || { echo "could not write the key to $PRIV" >&2; exit 1; }
+ln -- "$new" "$PRIV" || {
+  echo "could not link the new key into place at $PRIV; nothing was written (the key directory needs hard links, SETUP.md step 1, or a key appeared meanwhile)" >&2
+  exit 1
+}
+if [ ! "$PRIV" -ef "$new" ]; then
+  # $PRIV became a directory meanwhile, and ln put the key inside it.
+  rm -f -- "$PRIV/${new##*/}"
+  echo "could not link the new key into place at $PRIV (it is now a directory); nothing was written" >&2
+  exit 1
+fi
 
 PUB=$(openssl pkey -in "$PRIV" -pubout) \
-  || { echo "could not derive the public key" >&2; exit 1; }
+  || { printf "the key was written to %s, but its public key couldn't be derived; show it with: agent-setup.sh --public-key %q\n" "$PRIV" "$PRIV" >&2; exit 1; }
 
 echo "private key written to $PRIV (mode 600) — never copy it off this machine"
 echo
@@ -388,5 +423,5 @@ echo "consume side: the decrypt helper reads \$HANDOFF_PRIVKEY"
 echo "(default ~/.config/handoff/handoff-priv.pem)."
 echo "this key lives at: $PRIV"
 if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-priv.pem" ]; then
-  echo "non-default location: set HANDOFF_PRIVKEY=$PRIV wherever the helper runs"
+  printf 'non-default location: set HANDOFF_PRIVKEY=%q wherever the helper runs\n' "$PRIV"
 fi

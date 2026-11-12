@@ -136,7 +136,7 @@ A note on review, in the same spirit: the reviewers of this folder were AI agent
 ## Files
 
 - `handoff.sh` — your side (Linux reference). Embed your agent's public key in the marked block before use.
-- `agent-setup.sh` — the agent's side. Generates the keypair and prints the public key, the fingerprint, and the consume-side key path to use; `--rotate` and `--retire` start and end a rotation.
+- `agent-setup.sh` — the agent's side. Generates the keypair and prints the public key, the fingerprint, and the consume-side key path to use; `--fingerprint` recomputes an existing key's fingerprint, `--public-key` shows its public key again, and `--rotate` and `--retire` start and end a rotation.
 - `consume.py` — the consume-side template: fetch-side decryption in memory (with the previous key too, during a rotation), `svc` purpose-binding check, environment injection, a `--check` mode (field names and lengths only) for setup tests, and `--rewrap` for rotation.
 - `SETUP.md` — step-by-step instructions written for your Muse, including the hard rules, the precise definition of a mechanism change, and the rotation procedures.
 - `test/` — a known-answer interop test: dummy keypair, a fixed blob, and its expected plaintext, so any port or variant can prove byte-compatibility.
