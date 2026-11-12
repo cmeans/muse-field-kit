@@ -379,6 +379,26 @@ else
 fi
 expect_refusal "missing key" 1 "cannot read private key" \
   env HANDOFF_PRIVKEY="$S/no-such-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
+# A key file owned by another user is refused, even at mode 0600. It needs a
+# file this account doesn't own, so: $HANDOFF_TEST_OTHER_OWNER_KEY if set (CI
+# makes a root-owned 0600 copy of the dummy key), else a root-owned,
+# owner-only system file such as Fedora's /etc/shadow (mode 0000: its
+# metadata is readable, its contents aren't, and the refusal comes before
+# any read). Skipped as root, or where neither exists.
+other_owner=""
+if [ "$(id -u)" != 0 ]; then
+  for f in "${HANDOFF_TEST_OTHER_OWNER_KEY-}" /etc/shadow /etc/gshadow; do
+    if [ -z "$f" ] || [ ! -f "$f" ]; then continue; fi
+    [ "$(stat -c %u "$f")" != "$(id -u)" ] || continue
+    case "$(stat -c %a "$f")" in 0|[0-7]00) other_owner=$f; break ;; esac
+  done
+fi
+if [ -n "$other_owner" ]; then
+  expect_refusal "a key owned by another user ($other_owner)" 1 "is not owned by this user" \
+    env HANDOFF_PRIVKEY="$other_owner" python3 ../consume.py --label example --check --blob-file blob.txt
+else
+  echo "skip: no owner-only file owned by another user, the key-owner refusal wasn't tested"
+fi
 expect_refusal "--env PATH" 1 "is on the refused list" \
   consume --label example --blob-file blob.txt --env password=PATH -- true
 expect_refusal "--env LD_PRELOAD" 1 "is on the refused list" \
@@ -697,6 +717,50 @@ atexit.register(lambda: hits["stat"] and hits["open"] or os._exit(7))
 src = open("../consume.py").read()
 exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
 ' blob.txt "$S/swap.fifo"
+# The same swap to a terminal: the helper, a session leader with no
+# controlling terminal (setsid), opens the blob file with O_NOCTTY, so a
+# terminal swapped in after the stat check is refused without becoming its
+# controlling terminal (which /dev/tty would then open).
+if command -v setsid >/dev/null && [ -e /dev/ptmx ]; then
+  expect_refusal "blob file swapped to a terminal after the stat check" 1 "is not a regular file" \
+    timeout 20 setsid -w python3 -I -c '
+import atexit, os, pty, sys
+regular = sys.argv[1]
+master, slave = pty.openpty()
+tty = os.ttyname(slave)
+os.close(slave)
+real_stat = os.stat
+hits = {"stat": 0, "open": 0}
+def fake_stat(p, *a, **k):
+    if p == tty:
+        hits["stat"] += 1
+        return real_stat(regular, *a, **k)
+    return real_stat(p, *a, **k)
+os.stat = fake_stat
+real_open = os.open
+def counting_open(p, *a, **k):
+    if p == tty:
+        hits["open"] += 1
+    return real_open(p, *a, **k)
+os.open = counting_open
+def check():
+    if not (hits["stat"] and hits["open"]):
+        os._exit(7)  # the swap never happened: the test proves nothing
+    try:
+        os.close(real_open("/dev/tty", os.O_RDONLY | os.O_NOCTTY))
+    except OSError:
+        return  # no controlling terminal, as it should be
+    sys.stderr.write("the blob-file open took a controlling terminal\n")
+    sys.stderr.flush()
+    os._exit(8)
+atexit.register(check)
+sys.argv = ["consume.py", "--label", "example", "--check", "--blob-file", tty]
+src = open("../consume.py").read()
+exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
+' blob.txt
+else
+  echo "skip: setsid or /dev/ptmx missing, the O_NOCTTY check didn't run"
+fi
 # A FIFO with no writer is refused, not waited on (timeout catches a hang).
 mkfifo "$S/blob.fifo"
 expect_refusal "blob file is a FIFO" 1 "is not a regular file" \
