@@ -23,8 +23,11 @@ set -euo pipefail
 umask 077
 
 # The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
-# dropped, in any case: they could load a provider module into the openssl
-# processes this script runs. consume.py does the same.
+# dropped, in any case, as consume.py does: a stray or planted openssl config
+# can't load a provider into the openssl processes this script runs. This
+# guards against a config, not against a caller who controls the environment
+# (LD_PRELOAD would still pass): that control is a clean environment, the
+# wrapper's env -i (SETUP.md step 7).
 for v in $(compgen -e); do
   case "$v" in [Oo][Pp][Ee][Nn][Ss][Ss][Ll]_*) unset "$v" ;; esac
 done
@@ -57,14 +60,15 @@ expand_home() {  # PATH WHAT
   esac
 }
 
-# The same gate as handoff.sh and consume.py: LibreSSL is unverified here.
+# The same gate, and the same hint, as handoff.sh and consume.py: LibreSSL is
+# unverified here.
 need_openssl() {
   command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
   local v
   v=$(openssl version)
   case "$v" in
     "OpenSSL 3."*|"OpenSSL 4."*) ;;
-    *) echo "requires OpenSSL 3 or 4; found: $v. Put one first in the PATH this runs with$(case "${OSTYPE-}" in darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
+    *) echo "requires OpenSSL 3 or 4; found: ${v:-no version output}. Put one first in the PATH this runs with (in a wrapper, its PATH= line)$(case "${OSTYPE-}" in darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
   esac
 }
 

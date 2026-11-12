@@ -33,7 +33,7 @@ lands in the agent's tool output. What the launched command prints is the
 command's own business: a command that prints its environment (printenv)
 reveals the credential to whoever ran the helper. So execute access to this
 helper is read access to every staged credential, and each label runs only
-the command it was set up with (SETUP.md, hard rules).
+what SETUP.md's hard rules record for it.
 
     username / password          -> SERVICE_USERNAME / SERVICE_PASSWORD
     api_key_id / api_key_secret  -> SERVICE_API_KEY_ID / SERVICE_API_KEY_SECRET
@@ -116,8 +116,7 @@ DEFAULT_ENV_MAP = {
 # payload field onto PATH or GIT_SSH_COMMAND, for example, would let whoever
 # wrote the payload choose what runs. This list is a partial backstop, not
 # the control: no list can name every variable every program reads.
-# SETUP.md's hard rule, which pins each label to its recorded command and
-# mappings, is the control.
+# What SETUP.md's hard rules record for each label is the control.
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Compared case-insensitively (curl and others read http_proxy as well as
 # HTTP_PROXY). Two kinds: variables that change what code runs, and ones that
@@ -175,16 +174,19 @@ def privkey_path() -> str:
 def openssl_env() -> dict:
     """The environment for this helper's own openssl calls.
 
-    Without OPENSSL_* variables: a caller's OPENSSL_CONF or OPENSSL_MODULES
-    could load a provider module into the process that reads the private
-    key. The defaults are what this protocol is tested with. Which openssl
-    runs is still the PATH's choice: a wrapper fixes it with its PATH= line.
+    Without OPENSSL_* variables, in any case: a stray or planted
+    OPENSSL_CONF or OPENSSL_MODULES can't load a provider into the process
+    that reads the private key. This guards against a config, not a caller
+    who controls the environment (LD_PRELOAD would still pass), and which
+    openssl runs is still the PATH's choice: both are the wrapper's job, with
+    its env -i and PATH= line (SETUP.md step 7).
     """
     return {k: v for k, v in os.environ.items() if not k.upper().startswith("OPENSSL_")}
 
 
 def check_openssl() -> None:
-    # The same gate as handoff.sh: LibreSSL's pkeyutl OAEP behavior is
+    # The same gate, and the same hint, as handoff.sh and agent-setup.sh:
+    # LibreSSL's pkeyutl OAEP behavior is
     # unverified for this protocol.
     try:
         out = subprocess.run(
