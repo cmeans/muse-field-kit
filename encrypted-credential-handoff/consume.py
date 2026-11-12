@@ -56,8 +56,11 @@ environment before the payload's values go in, along with $HANDOFF_BLOB
 and $HANDOFF_PRIVKEY. Other variables pass through as inherited. The
 command also gets $HANDOFF_LABEL (the label), and this helper refuses to
 start when $HANDOFF_LABEL is already set: a command started by one
-consume.py can't run another, so no credential an outer call injected
-under another name reaches a second service.
+consume.py can't run another consume.py directly, so no credential an
+outer call injected under another name reaches a second service. A
+wrapper's env -i removes the marker, along with the outer credentials, so
+a command that starts a wrapper isn't refused here: SETUP.md's no-nesting
+rule covers that.
 
 A blob file must be a regular file. A pipe, a FIFO, a tty or a device
 (so /dev/stdin on a pipe) and a process substitution (--blob-file
@@ -606,7 +609,16 @@ def main() -> int:
     if do_rewrap:
         # The new blob is ciphertext: safe on stdout, and stored in place of
         # the old one (SETUP.md, Rotation).
-        print(rewrap(plaintext))
+        out = (rewrap(plaintext) + "\n").encode("ascii")
+        try:
+            # Written to fd 1 directly, before the success line: a full disk
+            # must not leave "rewrapped" on stderr with no blob behind it, and
+            # no Python buffer is left for a second failed flush at exit.
+            sys.stdout.flush()
+            while out:
+                out = out[os.write(1, out):]
+        except OSError as e:
+            raise fail(f"could not write the new blob: {e.strerror}") from None
         print(f"consume.py: rewrapped; the blob was for the {slot} key", file=sys.stderr)
         return 0
     if slot == "previous":
