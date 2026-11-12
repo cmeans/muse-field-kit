@@ -1,5 +1,18 @@
 # Changelog — encrypted-credential-handoff
 
+## Unreleased — QA round 7 revision (2026-11-11)
+
+QA's round 7 on PR #1 (3 Medium, 7 Low, 1 Nit), all in the round-6 wrapper guidance. Fixed:
+
+- **The fetch can't eat the client's stdin (Medium).** For a stdio MCP server, the wrapper's stdin is the client's transport, and the example's fetch inherited it (an `ssh store cat blob` would swallow the first message). SETUP's example runs the fetch with `</dev/null`, under its own `env -i`, and states the fetch contract: ciphertext on stdout only, no stdin, non-zero exit on failure.
+- **The tool runs in a fixed directory (Medium).** `env -i` resets the environment, not the directory, and many tools read a `.env` from where they start. The example `cd`s to a fixed directory first, and the working directory is on the record list.
+- **One record list per label (Medium).** SETUP's hard rule now holds the only list of what's recorded per label: the wrapper paths (probe and use), each command line and its mappings, each wrapper's environment and working directory, the fetch and its environment, the endpoint, and anything the user accepted knowingly. The mechanism-change list, steps 7 and 8, and README point to it.
+- **No runtime arguments at all:** the "record which ones are allowed" escape hatch is gone; a tool that needs a per-run choice gets one wrapper per choice. The probe (step 6) runs through a probe wrapper of the same shape.
+- **`OPENSSL_*` is dropped in `agent-setup.sh` and `handoff.sh` too** (any case), not only in `consume.py`'s own openssl calls, and the docstring says which openssl runs is still the PATH's choice. The OpenSSL refusal points to "the PATH this runs with (in a wrapper, its `PATH=` line)" and shows the Homebrew hint only on macOS.
+- **`on-unlabel`** reads the labels first and the head second, so a push between the reads stops the run.
+- **`LANG`:** the example notes `en_US.UTF-8` on macOS, which has no `C.UTF-8`.
+- **Tests:** a fake `openssl` that fails if any `OPENSSL_*` variable reaches it; `agent-setup.sh` and `handoff.sh` under a caller's `OPENSSL_CONF` that loads a missing provider; and the `fstat` re-check, with `os.stat` patched so a FIFO passes the first check. 76 refusal checks plus one over 107 `--env` targets. Of 102 mutants (against a passing baseline), 101 are killed; the survivor is `O_NOCTTY`, which takes a real terminal to observe. SETUP's use wrapper was run as written (scratch paths only) with a stdin-reading fetch, a planted `.env` in the caller's directory and a caller's `HTTPS_PROXY`: the tool ran in its fixed directory, got the client's first message intact, and saw no proxy.
+
 ## Unreleased — QA round 6 revision (2026-11-11)
 
 QA's round 6 on PR #1 (1 Medium, 7 Low, 2 Nit). Fixed:
