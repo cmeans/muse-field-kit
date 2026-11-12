@@ -324,6 +324,17 @@ cp test-dummy-pub.pem "$S/pub-as-key.pem"; chmod 600 "$S/pub-as-key.pem"
 expect_refusal "a key that doesn't load (a public key)" 1 "cannot load the private key" \
   env HANDOFF_PRIVKEY="$S/pub-as-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
 ! grep -q "made for another key" "$S/err" || fail "a key that doesn't load was blamed on the blob"
+! grep -q ":error:" "$S/err" || fail "the key-load refusal shows openssl's internal error line, not its readable one"
+# An encrypted key is refused, and never takes a passphrase from stdin (the
+# command's transport): the passphrase is right there on stdin.
+openssl pkey -in test-dummy-priv.pem -aes256 -passout pass:mk-Zq9-pass -out "$S/enc-key.pem" 2>/dev/null
+chmod 600 "$S/enc-key.pem"
+# shellcheck disable=SC2016  # $1 is the inner shell's argument
+expect_refusal "an encrypted key, passphrase on stdin" 1 "cannot load the private key" \
+  bash -c 'echo mk-Zq9-pass | HANDOFF_PRIVKEY="$1" python3 ../consume.py --label example --check --blob-file blob.txt' _ "$S/enc-key.pem"
+# shellcheck disable=SC2016  # $1 is the inner shell's argument
+expect_refusal "agent-setup.sh --fingerprint, an encrypted key" 1 "could not read key" \
+  bash -c 'echo mk-Zq9-pass | bash ../agent-setup.sh --fingerprint "$1"' _ "$S/enc-key.pem"
 expect_refusal "missing key" 1 "cannot read private key" \
   env HANDOFF_PRIVKEY="$S/no-such-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "--env PATH" 1 "is on the refused list" \
