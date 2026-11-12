@@ -504,6 +504,11 @@ done
 # command's stdin: refused.
 expect_refusal "blob file on a pipe" 1 "is not a regular file" \
   bash -c 'cat blob.txt | python3 ../consume.py --label example --check --blob-file /dev/stdin'
+# Devices and an empty path are refused before anything is opened.
+expect_refusal "blob file is a device" 1 "is not a regular file" \
+  consume --label example --check --blob-file /dev/null
+expect_refusal "empty --blob-file" 1 "--blob-file is empty" \
+  consume --label example --check --blob-file ''
 # A FIFO with no writer is refused, not waited on (timeout catches a hang).
 mkfifo "$S/blob.fifo"
 expect_refusal "blob file is a FIFO" 1 "is not a regular file" \
