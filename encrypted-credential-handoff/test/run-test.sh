@@ -992,7 +992,7 @@ if [ "$(id -u)" != 0 ]; then
   mkdir -p "$ST/ro"; cp blob.txt "$ST/ro/b.txt"; chmod 500 "$ST/ro"
   rc=0; rk python3 ../consume.py --label example --rewrap --blob-file "$ST/ro/b.txt" 2>"$R/err" || rc=$?
   chmod 700 "$ST/ro"
-  if [ "$rc" != 1 ] || ! grep -qF "could not write the new blob to '$ST/ro/b.txt'" "$R/err" || ! grep -qF "it is unchanged" "$R/err"; then
+  if [ "$rc" != 1 ] || ! grep -qF "could not write the new blob beside '$ST/ro/b.txt'" "$R/err" || ! grep -qF "that directory must be writable" "$R/err" || ! grep -qF "it is unchanged" "$R/err"; then
     fail "--rewrap into a read-only directory: exit $rc, $(cat "$R/err")"
   fi
   ! grep -qF "rewrapped" "$R/err" || fail "--rewrap reported success it didn't have"
@@ -1030,6 +1030,49 @@ exec(compile(builtins.open("../consume.py").read(), "consume.py", "exec"), {"__n
 ' "$ST/rb.txt"
 cmp -s blob.txt "$ST/rb.txt" || fail "a blob that didn't read back replaced the blob file"
 ! compgen -G "$ST/.rb.txt.*" >/dev/null || fail "a failed read-back left its temporary file"
+# A TERM during the rewrite: before the rename, the file is as it was and no
+# temporary file is left; after it, the message says the file holds the new blob.
+for when in before after; do
+  cp blob.txt "$ST/term.txt"
+  rc=0; rk python3 -I -c '
+import os, signal, sys
+real, when = os.replace, sys.argv[2]
+def term_replace(a, b):
+    if when == "after":
+        real(a, b)
+    os.kill(os.getpid(), signal.SIGTERM)
+os.replace = term_replace
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/term.txt" "$when" 2>"$R/err" || rc=$?
+  ! grep -q Traceback "$R/err" || fail "a TERM during --rewrap ($when the rename): traceback"
+  [ "$rc" = 1 ] || fail "a TERM during --rewrap ($when the rename): exit $rc, expected 1"
+  ! compgen -G "$ST/.term.txt.*" >/dev/null || fail "a TERM during --rewrap ($when the rename) left its temporary file"
+  if [ "$when" = before ]; then
+    grep -qF "interrupted; '$ST/term.txt' is unchanged" "$R/err" || fail "a TERM before the rename: $(cat "$R/err")"
+    cmp -s blob.txt "$ST/term.txt" || fail "a TERM before the rename changed the blob file"
+  else
+    grep -qF "interrupted after the rename; '$ST/term.txt' holds the new blob" "$R/err" || fail "a TERM after the rename: $(cat "$R/err")"
+    cmp -s blob.txt "$ST/term.txt" && fail "a TERM after the rename: the file wasn't replaced"
+  fi
+done
+# An INT before any write (during the decrypt): one line, nothing written.
+cp blob.txt "$ST/int.txt"
+rc=0; rk python3 -I -c '
+import subprocess, sys
+real = subprocess.run
+def int_run(cmd, *a, **k):
+    if "-decrypt" in cmd:
+        raise KeyboardInterrupt
+    return real(cmd, *a, **k)
+subprocess.run = int_run
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/int.txt" 2>"$R/err" || rc=$?
+if [ "$rc" != 1 ] || grep -q Traceback "$R/err" || ! grep -qxF "consume.py: interrupted; nothing written" "$R/err"; then
+  fail "an INT during --rewrap's decrypt: exit $rc, $(cat "$R/err")"
+fi
+cmp -s blob.txt "$ST/int.txt" || fail "an INT during --rewrap's decrypt changed the blob file"
 # The blob file is never under the key's directory, however it's spelled:
 # beside the key, in a subdirectory, or through a symlink into it.
 cp blob.txt "$R/beside.txt"; mkdir -p "$R/sub"; cp blob.txt "$R/sub/b.txt"
@@ -1039,6 +1082,13 @@ for target in "$R/beside.txt" "$R/sub/b.txt" "$ST/s/beside.txt" "$ST/s/sub/../be
     rk python3 ../consume.py --label example --rewrap --blob-file "$target"
 done
 cmp -s blob.txt "$R/beside.txt" || fail "a refused --rewrap changed a file beside the key"
+# A symlinked key path guards the directory it names too (where .previous is
+# looked up), not only the one the key file is in.
+mkdir -p "$S/lk"; ln -s "$R/k.pem" "$S/lk/k.pem"; ln -s "$R/k.pem.previous" "$S/lk/k.pem.previous"; cp blob.txt "$S/lk/beside.txt"
+expect_refusal "--rewrap beside a symlinked key path" 1 "under the key's directory ($S/lk)" \
+  env HANDOFF_PRIVKEY="$S/lk/k.pem" python3 ../consume.py --label example --rewrap --blob-file "$S/lk/beside.txt"
+cmp -s blob.txt "$S/lk/beside.txt" || fail "a refused --rewrap changed a file beside a symlinked key path"
+rm -r "$S/lk"
 rm -r "$R/beside.txt" "$R/sub" "$ST/s" "$ST/to-beside.txt"
 rk bash ../agent-setup.sh --fingerprint >/dev/null 2>&1 || fail "a refused --rewrap damaged the key"
 # One rotation at a time: during one, --rotate rotates nothing, exits 0, and
@@ -1391,6 +1441,8 @@ rc=0; (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.s
 if [ "$rc" != 1 ] || ! grep -qF "has another hard link" "$S/err"; then
   fail "--retire -k.pem with another link: exit $rc, $(cat "$S/err")"
 fi
+# A relative key path still gets an absolute path in the find hint.
+grep -qF -- "-samefile '$(cd "$S/dashlink" && pwd -P)/-k.pem.previous'" "$S/err" || fail "the find hint for a relative key isn't absolute: $(cat "$S/err")"
 # A key file named like a temporary key isn't swept by its own --rotate.
 mkdir -p "$S/tmpname"; cp "$TMPKEY" "$S/tmpname/.handoff-new.pem"
 env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --rotate >/dev/null 2>"$S/err" \
@@ -1403,7 +1455,7 @@ expect_refusal "--retire with another link to the old key" 1 "has another hard l
   env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire
 [ -f "$S/tmpname/.handoff-new.pem.previous" ] || fail "a refused --retire deleted the previous key"
 # The refusal says how to find the other name: find from the disk's mount point.
-grep -qF -- "-xdev -samefile '$S/tmpname/.handoff-new.pem.previous'" "$S/err" || fail "the link refusal doesn't give the find command: $(cat "$S/err")"
+grep -qF -- "-xdev -samefile '$(cd "$S/tmpname" && pwd -P)/.handoff-new.pem.previous'" "$S/err" || fail "the link refusal doesn't give the find command: $(cat "$S/err")"
 mnt=$(sed -n "s/.*find '\([^']*\)' -xdev.*/\1/p" "$S/err")
 case "$S/" in "${mnt%/}"/*) [ -d "$mnt" ] ;; *) false ;; esac || fail "the link refusal's mount point ($mnt) doesn't hold the key"
 rm "$S/tmpname/backup.pem"
