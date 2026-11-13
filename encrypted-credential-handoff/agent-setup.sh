@@ -20,7 +20,9 @@
 #   agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous;
 #                                       blobs still made for it stop opening
 #                                       (without --yes, it says what it would
-#                                       delete, keeps the old key, and exits 1)
+#                                       delete, keeps the old key, removing
+#                                       only a leftover temporary link to it,
+#                                       and exits 1)
 # Exit codes: 0 done (or, for --rotate during a rotation, shown), 1 refused
 # or failed (the reason on stderr), 2 a usage error.
 #
@@ -204,7 +206,8 @@ usage() {
   echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY, the old one kept as KEY.previous;" >&2
   echo "                                           during one, shows the new key again (exit 0)" >&2
   echo "       agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous (blobs still made for it stop opening);" >&2
-  echo "                                           without --yes, says what it would delete and keeps the old key (exit 1)" >&2
+  echo "                                           without --yes, says what it would delete and keeps the old key, removing only" >&2
+  echo "                                           a leftover temporary link to it (exit 1)" >&2
 }
 
 # Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
@@ -236,6 +239,8 @@ case "${1-}" in
           echo "usage: agent-setup.sh $syntax (--yes goes only right after --retire)" >&2
         fi
         exit 2 ;;
+      (--yes=*|--[Yy][Ee][Ss])
+        echo "usage: agent-setup.sh $syntax (the confirmation is spelled --yes, right after --retire)" >&2; exit 2 ;;
       (--*) echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2; exit 2 ;;
     esac
     if [ $# -eq 0 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
@@ -360,7 +365,13 @@ case "$mode" in
     # The key first, as the other modes check it: a mistyped KEY (-y for
     # --yes) is "no key file", not "no rotation to retire", which would read
     # as the old key being gone.
-    [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
+    if [ ! -f "$key" ]; then
+      case "$key" in
+        -y|-Y|-yes) echo "no key file at $key (the confirmation is spelled --yes)" >&2 ;;
+        *) echo "no key file at $key" >&2 ;;
+      esac
+      exit 1
+    fi
     if [ ! -e "$prev" ]; then
       echo "agent-setup.sh: no $prev: no rotation to retire" >&2; exit 1
     fi
@@ -412,7 +423,7 @@ case "$mode" in
     # up before the confirmation, not after it.
     if [ -z "$yes" ]; then
       echo "agent-setup.sh: --retire deletes the previous key $prev (SHA256:$prev_fp), and a blob still made for it never opens again; it was not deleted." >&2
-      echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user. In a compromise response, run it at once (SETUP.md, Compromise)." >&2
+      echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user in a direct conversational turn. In a compromise response your notes record (the user's go-ahead, given directly), run it at Compromise step 2 or 4." >&2
       exit 1
     fi
     # Not atomic with the check above: an ln made in between (the lock is
