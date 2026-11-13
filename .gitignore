@@ -1,0 +1,13 @@
+# Never commit real keys or staged credentials, in any folder.
+*.pem
+*.key
+*priv
+secrets.*
+blob.txt
+__pycache__/
+
+# Exceptions: the interop test vectors are published throwaway material.
+# The dummy keypair protects nothing and exists to be checked against.
+!encrypted-credential-handoff/test/blob.txt
+!encrypted-credential-handoff/test/test-dummy-priv.pem
+!encrypted-credential-handoff/test/test-dummy-pub.pem

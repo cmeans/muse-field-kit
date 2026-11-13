@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only token for every job: nothing here writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # NOTE: pr-labels.yml and pr-labels-ci.yml find this workflow by its name
+  # ("CI") and file (ci.yml). If either is renamed, update them too.
+  # This job's name ("encrypted-credential-handoff") is a required check in
+  # main's ruleset: if it is renamed, update the ruleset, or every PR waits
+  # on a check that never comes.
+  encrypted-credential-handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tool versions
+        run: |
+          openssl version
+          python3 --version
+          bash --version | head -1
+          jq --version
+          shellcheck --version | sed -n 2p
+      - name: Execute bits are committed
+        # A fresh clone must be able to run ./handoff.sh and friends.
+        run: |
+          set -o pipefail
+          bad=$(git ls-files -s encrypted-credential-handoff \
+            | awk '$1 != "100755" && $4 ~ /(\.sh|\.py)$/ { print $4 }')
+          if [ -n "$bad" ]; then
+            echo "not executable in git: $bad"
+            exit 1
+          fi
+      - name: No CR line endings in the scripts and vectors
+        # .gitattributes keeps them LF on checkout; this catches a commit
+        # that slipped a CR in anyway.
+        run: |
+          bad=$(git ls-files -z -- '*.sh' '*.py' '*.json' '*.txt' '*.pem' | xargs -0 grep -l $'\r' || true)
+          if [ -n "$bad" ]; then
+            echo "CR line endings in: $bad"
+            exit 1
+          fi
+      - name: shellcheck
+        run: shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*.sh
+      - name: The scripts parse under bash 3.2 (macOS /bin/bash)
+        # shellcheck doesn't know bash 3.2's parser bugs (a `)` in a case
+        # pattern inside $(...) ends the substitution there).
+        run: |
+          docker run --rm -v "$PWD/encrypted-credential-handoff:/w:ro" -w /w \
+            bash:3.2@sha256:2556c2da19c32c1614d318645c73a7bf64d38be21cf69e98e3ca51f053983719 \
+            sh -c 'bash --version | head -1 && for f in agent-setup.sh handoff.sh test/run-test.sh; do bash -n "$f" || exit 1; done'
+      - name: ruff
+        run: pipx run ruff==0.15.7 check encrypted-credential-handoff/
+      - name: A key file owned by another user, for the key-owner refusal
+        # Ubuntu's /etc/shadow is group-readable, so run-test.sh finds no
+        # owner-only file of another user's: give it a root-owned 0600 copy
+        # of the dummy key, which is a published test vector.
+        run: |
+          sudo install -o root -g root -m 600 \
+            encrypted-credential-handoff/test/test-dummy-priv.pem "$RUNNER_TEMP/root-owned-key.pem"
+          echo "HANDOFF_TEST_OTHER_OWNER_KEY=$RUNNER_TEMP/root-owned-key.pem" >> "$GITHUB_ENV"
+      - name: Interop and refusal tests
+        # In CI, every check must run: a skip line fails the step.
+        # pipefail: GitHub's default bash runs with -e only, so without it
+        # tee's exit status would hide a failing suite.
+        run: |
+          set -o pipefail
+          ./encrypted-credential-handoff/test/run-test.sh | tee "$RUNNER_TEMP/run-test.log"
+          if grep '^skip:' "$RUNNER_TEMP/run-test.log"; then
+            echo "a check was skipped in CI"
+            exit 1
+          fi

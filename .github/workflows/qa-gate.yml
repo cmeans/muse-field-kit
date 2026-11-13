@@ -1,0 +1,64 @@
+name: QA Gate
+
+# Posts a "QA Gate" commit status that is success only while the PR has the
+# QA Approved label (the maintainer's sign-off). Adapted from mcp-synology.
+# "QA Gate" (the status context) is a required check in main's ruleset: if it
+# is renamed, update the ruleset, or every PR waits on a check that never comes.
+# On a fork's PR the token is read-only and no status is posted.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  statuses: write
+  pull-requests: read
+
+jobs:
+  qa-approved:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set QA status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          PENDING="Waiting for QA — add 'QA Approved' label when testing is complete"
+          post() {
+            gh api "repos/$REPO/statuses/$EVENT_SHA" --method POST \
+              -f state="$1" -f description="$2" -f context="QA Gate" > /dev/null
+            echo "QA Gate: $1 on $EVENT_SHA"
+          }
+
+          # A new commit can't have been approved yet. The push event's label
+          # list can still hold "QA Approved" until pr-labels.yml removes it,
+          # and that removal (made with GITHUB_TOKEN) never triggers this
+          # workflow again, so reading labels here would leave new commits green.
+          case "$ACTION" in
+            opened|synchronize|reopened)
+              post pending "$PENDING"
+              exit 0
+              ;;
+          esac
+
+          # labeled / unlabeled: decide from the PR as it is now, not the event payload.
+          # A command substitution, not a process substitution: under set -e a
+          # failed API call then fails the job, instead of reading as an empty
+          # head and exiting green on the "stale event" path.
+          OUT=$(gh api "repos/$REPO/pulls/$PR" \
+            --jq '[.head.sha, ([.labels[].name] | index("QA Approved") != null)] | @tsv')
+          read -r HEAD APPROVED <<<"$OUT"
+          [ -n "$HEAD" ] || { echo "no head SHA in the API reply"; exit 1; }
+          if [ "$HEAD" != "$EVENT_SHA" ]; then
+            echo "Stale event: $EVENT_SHA is no longer the head ($HEAD); not changing QA Gate"
+            exit 0
+          fi
+          if [ "$APPROVED" = "true" ]; then
+            post success "QA testing completed"
+          else
+            post pending "$PENDING"
+          fi

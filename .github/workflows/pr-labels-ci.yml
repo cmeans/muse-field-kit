@@ -1,0 +1,90 @@
+name: PR Label Automation (CI)
+
+# Label transitions when the CI workflow finishes on a PR: Awaiting CI ->
+# Ready for QA on success, -> CI Failed on failure. Skipped while Dev Active
+# is on (pr-labels.yml's on-unlabel takes over when it comes off).
+#
+# NOTE: references the CI workflow by name ("CI"); if ci.yml's name changes,
+# update it here and in pr-labels.yml.
+#
+# LIMITATION: workflow_run always runs this file as it is on main, never a
+# PR's copy, so a change to it takes effect only after merge. On the PR that
+# adds it, the transitions are made by hand.
+#
+# Fork PRs: this runs with the base repository's token, but finds a PR only
+# by its head commit and head repository, so a fork can't steer it at
+# another PR.
+#
+# workflow_dispatch is here so the file can be run once by hand after it
+# first lands: the workflow_run listener doesn't always register until the
+# workflow has had a run, and a dispatched run (which matches no job below)
+# primes it.
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  on-ci-complete:
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.event == 'pull_request'
+      && contains(fromJSON('["success","failure","timed_out"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-labels-ci-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Update CI labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          # The open PR whose head commit AND head repository match this run.
+          # Never by branch name: a fork chooses its branch name, and a fork
+          # branch named after a maintainer branch would relabel that PR. A
+          # run whose commit is no longer any PR's head matches nothing.
+          PR=$(gh pr list --repo "$REPO" --state open --limit 100 \
+            --json number,headRefOid,headRepositoryOwner,headRepository \
+            --jq '[.[] | select(.headRefOid == env.HEAD_SHA and (.headRepositoryOwner.login + "/" + .headRepository.name) == env.HEAD_REPO) | .number] | first // empty')
+          if [ -z "$PR" ]; then
+            echo "No open PR has $HEAD_SHA as its head — exiting"
+            exit 0
+          fi
+
+          LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name')
+          if echo "$LABELS" | grep -qx "Dev Active"; then
+            echo "Dev Active present — skipping"
+            exit 0
+          fi
+          if ! echo "$LABELS" | grep -qx "Awaiting CI"; then
+            echo "PR #$PR isn't at Awaiting CI — nothing to do"
+            exit 0
+          fi
+
+          # A push since this run started makes its result stale: re-check
+          # the head right before editing, so a commit with no CI of its own
+          # is never promoted.
+          NOW=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          if [ "$NOW" != "$HEAD_SHA" ]; then
+            echo "PR #$PR moved to $NOW — this run's result is stale"
+            exit 0
+          fi
+
+          if [ "$CONCLUSION" = success ]; then
+            REMOVE="Awaiting CI"
+            if echo "$LABELS" | grep -qx "CI Failed"; then REMOVE="$REMOVE,CI Failed"; fi
+            gh pr edit "$PR" --repo "$REPO" --remove-label "$REMOVE"
+            gh pr edit "$PR" --repo "$REPO" --add-label "Ready for QA"
+          else
+            gh pr edit "$PR" --repo "$REPO" --remove-label "Awaiting CI"
+            gh pr edit "$PR" --repo "$REPO" --add-label "CI Failed"
+          fi
