@@ -27,6 +27,10 @@
 # The scripts are run through python3 / bash / sh explicitly, so the test
 # doesn't depend on their execute bits surviving a download.
 set -Eeuo pipefail
+# Every file and directory the suite makes is private, whatever the caller's
+# umask (0002 on user-private-group systems would make the store 0775, which
+# --rewrap refuses, as it should).
+umask 077
 # A failing command substitution (got=$(...)) stops the script under set -e
 # before its own check can say why: name the line instead.
 # Only in the top-level shell: with set -E a failure inside $(...) would
@@ -931,6 +935,12 @@ mkdir -p "$ST/gwd"; cp blob.txt "$ST/gwd/b.txt"; chmod 770 "$ST/gwd"
 expect_refusal "--rewrap in a group-writable directory" 1 "directory '$ST/gwd' is writable by others (mode 0770)" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gwd/b.txt"
 cmp -s blob.txt "$ST/gwd/b.txt" || fail "a refused --rewrap changed a file in a group-writable directory"
+# Checked before anything else is decided: a blob already for the current key
+# in such a directory is refused too, not reported done.
+cp "$ST/new.txt" "$ST/gwd/cur.txt"
+expect_refusal "--rewrap of a current blob in a group-writable directory" 1 "directory '$ST/gwd' is writable by others" \
+  rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gwd/cur.txt"
+rm "$ST/gwd/cur.txt"
 chmod 1770 "$ST/gwd"
 rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gwd/b.txt" 2>/dev/null || fail "--rewrap in a sticky group-writable directory failed"
 chmod 700 "$ST/gwd"
@@ -1141,6 +1151,22 @@ exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "
 ' "$ST/lost.txt"
 [ "$(cat "$ST/lost.txt")" = "staged meanwhile" ] || fail "--rewrap replaced a blob staged meanwhile"
 ! compgen -G "$ST/.lost.txt.*" >/dev/null || fail "a refused lost update left its temporary file"
+# A same-size blob put back with the old mtime (touch -r, cp -p) is still seen
+# as changed: the ctime can't be set back.
+cp blob.txt "$ST/ct.txt"; cp "$ST/new.txt" "$ST/ct-staged.txt"; touch -r "$ST/ct.txt" "$ST/ct-staged.txt"
+expect_refusal "--rewrap whose blob file was replaced keeping size and mtime" 1 "changed" \
+  rk python3 -I -c '
+import subprocess, sys
+real, target, staged = subprocess.run, sys.argv[1], sys.argv[2]
+def staging_run(cmd, *a, **k):
+    if "-decrypt" in cmd:
+        real(["cp", "-p", staged, target])
+    return real(cmd, *a, **k)
+subprocess.run = staging_run
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/ct.txt" "$ST/ct-staged.txt"
+cmp -s "$ST/ct-staged.txt" "$ST/ct.txt" || fail "--rewrap replaced a blob staged with the old size and mtime"
 # A HUP inherited as ignored (nohup) stays ignored: the rewrap finishes.
 cp blob.txt "$ST/hup.txt"
 rc=0; rk python3 -I -c '
@@ -1582,6 +1608,14 @@ printf '#!/bin/sh\nexit 1\n' > "$S/nofind/find"; chmod 755 "$S/nofind/find"
 expect_refusal "--retire whose link check fails" 1 "couldn't check" \
   env PATH="$S/nofind:/usr/bin:/bin" HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire
 [ -f "$S/tmpname/.handoff-new.pem.previous" ] || fail "--retire whose link check failed deleted the previous key"
+# A mount point df reports as not absolute (a space in it, cut short) isn't
+# used: the hint says where to look in words instead.
+mkdir -p "$S/reldf"; ln -sf "$PY" "$S/reldf/python3"; ln -sf "$(command -v openssl)" "$S/reldf/openssl"
+printf '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted on"\necho "x 1 1 1 1%% ."\n' > "$S/reldf/df"; chmod 755 "$S/reldf/df"
+ln "$S/tmpname/.handoff-new.pem.previous" "$S/tmpname/backup2.pem"
+rc=0; env PATH="$S/reldf:/usr/bin:/bin" HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
+rm "$S/tmpname/backup2.pem"
+if [ "$rc" != 1 ] || ! grep -qF "find <the mount point of its disk> -xdev" "$S/qerr"; then fail "a relative mount point from df was used in the hint: $(cat "$S/qerr")"; fi
 env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire after removing the other link failed"
 # A misordered flag isn't taken as KEY; the lock message gives the exact rmdir.
 expect_refusal "--rotate --fingerprint" 2 "one mode at a time" \
