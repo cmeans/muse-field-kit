@@ -375,11 +375,13 @@ case "$mode" in
       # Absolute, so the command works from any directory (sudo -i changes it).
       abs=$(cd -- "$(dirname -- "$prev")" && pwd -P)/${prev##*/} || abs=$prev
       # shellcheck disable=SC2012  # ls -di is the portable inode read (find -printf is GNU's)
-      ino=$(ls -di -- "$q" 2>/dev/null | awk '{ print $1 }')
+      ino=$(ls -di -- "$q" 2>/dev/null | awk 'NR == 1 { print $1; exit }')
+      case $ino in ''|*[!0-9]*) ino= ;; esac
       # Each path single-quoted for a POSIX shell: the user may run this as root.
       sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
-      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; nothing was deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs") (or, where find has no -samefile, as BusyBox's: find $where -xdev -inum $ino), as root to see every directory, and removes it first (SETUP.md, Rotation step 5)" >&2
+      if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
+      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; nothing was deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes it first (SETUP.md, Rotation step 5)" >&2
       exit 1
     fi
     # Not atomic with the check above: an ln made in between (the lock is

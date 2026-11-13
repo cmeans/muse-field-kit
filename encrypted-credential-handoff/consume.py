@@ -408,7 +408,10 @@ def shell_quote(s: str) -> str:
 
 
 def file_identity(st: os.stat_result) -> tuple:
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    # ctime too: every blob is the same size, and an mtime can be set back
+    # (touch -r, cp -p), but the ctime can't be from user space. Best-effort on
+    # NFS and CIFS, whose attributes can be cached.
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
 def under_dir(target: str, directory: str) -> bool:
@@ -439,9 +442,9 @@ def under_dir(target: str, directory: str) -> bool:
         p = parent
 
 
-def write_atomically(path: str, data: bytes) -> None:
-    """Replace path with data: a temporary file beside it, synced, read back
-    and checked, then renamed over it. Any failure leaves path as it was."""
+def check_blob_file(path: str) -> os.stat_result:
+    """--rewrap's checks on its blob file, run before anything else is
+    decided about it (an already-current blob included)."""
     directory = os.path.dirname(path)
     try:
         st = os.stat(path)
@@ -450,8 +453,10 @@ def write_atomically(path: str, data: bytes) -> None:
     # Windows reports any writable file as 0o666: no group or world bits to read.
     if os.name != "nt":
         # Group- or world-writable: anyone who can write it can plant a blob,
-        # and anyone who can write its directory (without the sticky bit) can
-        # rename another file over it.
+        # and anyone who can write its own directory (without the sticky bit)
+        # can rename another file over it. Only the immediate directory is
+        # checked: a writable ancestor is the store's setup to get right
+        # (SETUP.md, step 6).
         if st.st_mode & 0o022:
             raise fail(f"the blob file {path!r} is writable by others (mode "
                        f"{stat.S_IMODE(st.st_mode):03o}); stop and report it to the user, "
@@ -466,7 +471,16 @@ def write_atomically(path: str, data: bytes) -> None:
                        f"user, who runs: chmod go-w {shell_quote(directory)}")
     if BLOB_FILE_READ is not None and file_identity(st) != BLOB_FILE_READ:
         raise fail(f"the blob file {path!r} changed since it was read (a blob staged "
-                   "meanwhile?); it is left as it is now: run the rewrap again")
+                   "meanwhile?); it is left as it is now: probe the label (SETUP.md, "
+                   "Rotation step 4)")
+    return st
+
+
+def write_atomically(path: str, data: bytes) -> None:
+    """Replace path with data: a temporary file beside it, synced, read back
+    and checked, then renamed over it. Any failure leaves path as it was."""
+    directory = os.path.dirname(path)
+    st = check_blob_file(path)
     mode = stat.S_IMODE(st.st_mode)
     global WRITTEN
     tmp = None
@@ -503,10 +517,13 @@ def write_atomically(path: str, data: bytes) -> None:
         # isn't replaced with the old payload.
         if BLOB_FILE_READ is not None and file_identity(os.stat(path)) != BLOB_FILE_READ:
             raise fail(f"the blob file {path!r} changed while it was being rewrapped (a "
-                       "blob staged meanwhile?); it is left as it is now: run the rewrap again")
+                       "blob staged meanwhile?); it is left as it is now: probe the label "
+                       "(SETUP.md, Rotation step 4)")
+        # Set first, so a signal in the moment after the rename can't report
+        # "nothing written"; cleared again on every path that didn't rename.
+        WRITTEN = path
         os.replace(tmp, path)
         renamed = True
-        WRITTEN = path
         tmp = None
         try:
             dfd = os.open(directory, os.O_RDONLY)
@@ -517,6 +534,8 @@ def write_atomically(path: str, data: bytes) -> None:
         except OSError:
             pass  # some platforms can't sync a directory; the rename is done
     except OSError as e:
+        if not renamed:
+            WRITTEN = None
         raise fail(f"could not write the new blob to {path!r}: {e.strerror}; it is unchanged") from None
     except KeyboardInterrupt:
         # After the rename, the file already holds the new blob.
@@ -525,6 +544,7 @@ def write_atomically(path: str, data: bytes) -> None:
             WRITTEN = path
             raise fail(f"interrupted after the rename; {path!r} holds the new blob "
                        "(probe the label: SETUP.md, Rotation step 4)") from None
+        WRITTEN = None
         raise fail(f"interrupted; {path!r} is unchanged") from None
     finally:
         if tmp is not None:
@@ -852,6 +872,7 @@ def main() -> int:
             print(f"{name}: {len(creds[name].encode('utf-8'))} bytes")
         return 0
     if do_rewrap:
+        check_blob_file(target)
         if slot == "current":
             # Already for the current key: rewriting it would only change the
             # bytes (OAEP is randomized) and confuse a comparison with the store.
