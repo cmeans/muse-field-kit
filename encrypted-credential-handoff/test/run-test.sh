@@ -1058,12 +1058,19 @@ for when in before after; do
   cp blob.txt "$ST/term.txt"
   rc=0; rk python3 -I -c '
 import os, signal, sys
-real, when = os.replace, sys.argv[2]
-def term_replace(a, b):
-    if when == "after":
+real, real_fsync, when = os.replace, os.fsync, sys.argv[2]
+if when == "after":
+    # Sent during the rename: blocked there, so it lands just after it.
+    def term_replace(a, b):
+        os.kill(os.getpid(), signal.SIGTERM)
         real(a, b)
-    os.kill(os.getpid(), signal.SIGTERM)
-os.replace = term_replace
+    os.replace = term_replace
+else:
+    # Sent while the temporary file is synced, before the rename.
+    def term_fsync(fd):
+        real_fsync(fd)
+        os.kill(os.getpid(), signal.SIGTERM)
+    os.fsync = term_fsync
 sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
 exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
 ' "$ST/term.txt" "$when" 2>"$R/err" || rc=$?
@@ -1135,6 +1142,24 @@ exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "
     if ! grep -qF "No space left on device" "$R/err" || grep -qF "must be writable" "$R/err"; then fail "ENOSPC in mkstemp: $(cat "$R/err")"; fi
   fi
 done
+# A second interrupt inside the first one's handler, before any rename, still
+# says nothing was written (the file is unchanged).
+cp blob.txt "$ST/dbl.txt"
+rc=0; rk python3 -I -c '
+import os, os.path, sys
+real_lexists = os.path.lexists
+def first(a, b):
+    def second(p):
+        os.path.lexists = real_lexists
+        raise KeyboardInterrupt
+    os.path.lexists = second
+    raise KeyboardInterrupt
+os.replace = first
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/dbl.txt" 2>"$R/err" || rc=$?
+if [ "$rc" != 1 ] || ! grep -qxF "consume.py: interrupted; nothing written" "$R/err"; then fail "a second interrupt before the rename: exit $rc, $(cat "$R/err")"; fi
+cmp -s blob.txt "$ST/dbl.txt" || fail "a double interrupt changed the blob file"
 # A blob staged while a rewrap runs isn't replaced with the old payload.
 cp blob.txt "$ST/lost.txt"
 expect_refusal "--rewrap whose blob file changed meanwhile" 1 "changed while it was being rewrapped" \
@@ -1584,6 +1609,17 @@ got=$(cd "$S" && sh -c "find() { printf '%s\n' \"\$4\"; }; $hint")
 [ "$got" = "$(cd "$S" && pwd -P)/q'; touch PWNED; echo '/k.pem.previous" ] && [ ! -e "$S/PWNED" ] || fail "the find hint's path isn't quoted: $hint"
 grep -qF -- "-xdev -inum $(stat -c %i -- "$qk.previous")" "$S/qerr" || fail "the find hint has no -inum form with the key's inode"
 rm -rf "$S/q'; touch PWNED; echo '" "$S/qbackup.pem"
+# A key path with a newline in it: the -inum form takes one line of digits,
+# and nothing after the newline becomes a line of its own.
+nl="$S/nl
+touch PWNED"; mkdir -p "$nl"; cp "$TMPKEY" "$nl/k.pem"
+env HANDOFF_PRIVKEY="$nl/k.pem" bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate on a key path with a newline failed"
+ln "$nl/k.pem.previous" "$S/nlbackup.pem"
+rc=0; env HANDOFF_PRIVKEY="$nl/k.pem" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
+[ "$rc" = 1 ] || fail "--retire with a newline in the path and another link: exit $rc"
+grep -qE -- "-xdev -inum [0-9]+\), as root" "$S/qerr" || fail "the -inum hint isn't one number: $(cat "$S/qerr")"
+! grep -q '^touch), as root' "$S/qerr" || fail "the -inum hint split on the newline: $(cat "$S/qerr")"
+rm -rf "$nl" "$S/nlbackup.pem"
 # A relative key path still gets an absolute path in the find hint.
 grep -qF -- "-samefile '$(cd "$S/dashlink" && pwd -P)/-k.pem.previous'" "$S/err" || fail "the find hint for a relative key isn't absolute: $(cat "$S/err")"
 # A key file named like a temporary key isn't swept by its own --rotate.

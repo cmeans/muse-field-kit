@@ -519,11 +519,20 @@ def write_atomically(path: str, data: bytes) -> None:
             raise fail(f"the blob file {path!r} changed while it was being rewrapped (a "
                        "blob staged meanwhile?); it is left as it is now: probe the label "
                        "(SETUP.md, Rotation step 4)")
-        # Set first, so a signal in the moment after the rename can't report
-        # "nothing written"; cleared again on every path that didn't rename.
-        WRITTEN = path
-        os.replace(tmp, path)
-        renamed = True
+        # TERM, HUP and INT blocked around the rename and the two flags, where
+        # the platform can (not Windows): a signal then lands after them, so
+        # what an interrupt reports always matches the file.
+        sigs = {getattr(signal, n) for n in ("SIGINT", "SIGTERM", "SIGHUP")
+                if hasattr(signal, n)}
+        mask = (signal.pthread_sigmask(signal.SIG_BLOCK, sigs)
+                if hasattr(signal, "pthread_sigmask") else None)
+        try:
+            os.replace(tmp, path)
+            renamed = True
+            WRITTEN = path
+        finally:
+            if mask is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
         tmp = None
         try:
             dfd = os.open(directory, os.O_RDONLY)
@@ -534,8 +543,6 @@ def write_atomically(path: str, data: bytes) -> None:
         except OSError:
             pass  # some platforms can't sync a directory; the rename is done
     except OSError as e:
-        if not renamed:
-            WRITTEN = None
         raise fail(f"could not write the new blob to {path!r}: {e.strerror}; it is unchanged") from None
     except KeyboardInterrupt:
         # After the rename, the file already holds the new blob.
@@ -544,7 +551,6 @@ def write_atomically(path: str, data: bytes) -> None:
             WRITTEN = path
             raise fail(f"interrupted after the rename; {path!r} holds the new blob "
                        "(probe the label: SETUP.md, Rotation step 4)") from None
-        WRITTEN = None
         raise fail(f"interrupted; {path!r} is unchanged") from None
     finally:
         if tmp is not None:
