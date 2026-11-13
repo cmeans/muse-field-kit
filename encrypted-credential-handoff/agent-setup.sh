@@ -240,7 +240,12 @@ case "${1-}" in
         fi
         exit 2 ;;
       (--yes=*|--[Yy][Ee][Ss])
-        echo "usage: agent-setup.sh $syntax (the confirmation is spelled --yes, right after --retire)" >&2; exit 2 ;;
+        if [ "$mode" = --retire ] && [ -z "$yes" ]; then
+          echo "usage: agent-setup.sh $syntax (the confirmation is spelled --yes, right after --retire)" >&2
+        else
+          echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2
+        fi
+        exit 2 ;;
       (--*) echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2; exit 2 ;;
     esac
     if [ $# -eq 0 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
@@ -366,8 +371,9 @@ case "$mode" in
     # --yes) is "no key file", not "no rotation to retire", which would read
     # as the old key being gone.
     if [ ! -f "$key" ]; then
-      case "$key" in
-        -y|-Y|-yes) echo "no key file at $key (the confirmation is spelled --yes)" >&2 ;;
+      # A hint only when --yes wasn't given: then the KEY may be a typo of it.
+      case "$yes:$key" in
+        :-[Yy]|:-[Yy][Ee][Ss]|:[Yy][Ee][Ss]) echo "no key file at $key (the confirmation is spelled --yes)" >&2 ;;
         *) echo "no key file at $key" >&2 ;;
       esac
       exit 1
@@ -416,7 +422,7 @@ case "$mode" in
       sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
-      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; nothing was deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes it first (SETUP.md, Rotation step 5)" >&2
+      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes it first (SETUP.md, Rotation step 5)" >&2
       exit 1
     fi
     # Last, so every other refusal comes first: a hard link to resolve shows

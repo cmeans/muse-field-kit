@@ -1295,6 +1295,13 @@ expect_refusal "--retire --YES" 2 "the confirmation is spelled --yes" \
 expect_refusal "--retire --yes=1" 2 "the confirmation is spelled --yes" \
   rk bash ../agent-setup.sh --retire --yes=1
 [ -e "$R/k.pem.previous" ] || fail "a mistyped confirmation deleted the previous key"
+# With --yes given, a stray -y or --YES isn't called a misspelling of it.
+(cd "$S" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire --yes -y >/dev/null 2>"$S/err") || true
+if ! grep -qxF "no key file at -y" "$S/err"; then fail "--retire --yes -y gave the confirmation hint: $(cat "$S/err")"; fi
+expect_refusal "--retire --yes --YES" 2 "--YES isn't a KEY" \
+  rk bash ../agent-setup.sh --retire --yes --YES
+expect_refusal "--rotate --YES" 2 "--YES isn't a KEY" \
+  rk bash ../agent-setup.sh --rotate --YES
 # --retire --yes deletes the previous key; old blobs stop opening, new ones don't.
 rk bash ../agent-setup.sh --retire --yes >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--retire --yes failed"; }
 [ ! -e "$R/k.pem.previous" ] || fail "--retire left the previous key"
@@ -1625,7 +1632,7 @@ mkdir -p "$S/spell"; cp "$TMPKEY" "$S/spell/.handoff-new.pem"
 mkdir -p "$S/dashlink"; cp "$TMPKEY" "$S/dashlink/-k.pem"
 (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -k.pem >/dev/null 2>&1) || fail "--rotate -k.pem failed"
 ln -- "$S/dashlink/-k.pem.previous" "$S/dashlink/backup.pem"
-rc=0; (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire -k.pem >/dev/null 2>"$S/err") || rc=$?
+rc=0; (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire --yes -k.pem >/dev/null 2>"$S/err") || rc=$?
 if [ "$rc" != 1 ] || ! grep -qF "has another hard link" "$S/err"; then
   fail "--retire -k.pem with another link: exit $rc, $(cat "$S/err")"
 fi
