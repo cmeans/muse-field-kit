@@ -329,7 +329,7 @@ case "$mode" in
         PUB=$(pub_of "$key") \
           || { echo "could not derive the public key" >&2; exit 1; }
         echo "agent-setup.sh: a rotation is under way ($prev is the old key), and the new key is in place: nothing rotated." >&2
-        echo "If the user hasn't embedded this key in handoff.sh and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4 (step 5 if your notes say staging held)." >&2
+        echo "If the user hasn't embedded this key in handoff.sh and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
         echo "current (new) public key fingerprint: SHA256:$fp"
         echo
         printf '%s\n' "$PUB"
