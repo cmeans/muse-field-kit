@@ -472,9 +472,11 @@ def write_atomically(path: str, data: bytes) -> None:
     tmp = None
     renamed = False
     try:
-        # The basename cut short in bytes, so the temporary name stays under
-        # NAME_MAX whatever its encoding.
-        short = os.fsdecode(os.fsencode(os.path.basename(path))[:100])
+        # The basename cut to at most 100 bytes on a character boundary, so
+        # the temporary name stays under NAME_MAX and is still valid text.
+        short = os.path.basename(path)
+        while len(os.fsencode(short)) > 100:
+            short = short[:-1]
         try:
             fd, tmp = tempfile.mkstemp(prefix="." + short + ".", suffix=".rewrap",
                                        dir=directory)

@@ -1085,6 +1085,46 @@ if [ "$rc" != 1 ] || grep -q Traceback "$R/err" || ! grep -qxF "consume.py: inte
   fail "an INT during --rewrap's decrypt: exit $rc, $(cat "$R/err")"
 fi
 cmp -s blob.txt "$ST/int.txt" || fail "an INT during --rewrap's decrypt changed the blob file"
+# A blob file changed between the read and the write (during the decrypt) is
+# refused by the first check.
+cp blob.txt "$ST/early.txt"
+expect_refusal "--rewrap whose blob file changed before the write" 1 "changed since it was read" \
+  rk python3 -I -c '
+import subprocess, sys
+real, target = subprocess.run, sys.argv[1]
+def staging_run(cmd, *a, **k):
+    if "-decrypt" in cmd:
+        with open(target, "w") as fh:
+            fh.write("staged early\n")
+    return real(cmd, *a, **k)
+subprocess.run = staging_run
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/early.txt"
+[ "$(cat "$ST/early.txt")" = "staged early" ] || fail "--rewrap replaced a blob changed before the write"
+# An interrupt inside mkstemp (before the temporary file exists) is "unchanged";
+# a temporary file that can't be made for another reason doesn't blame the directory.
+for how in int enospc; do
+  cp blob.txt "$ST/mk.txt"
+  rc=0; rk python3 -I -c '
+import errno, sys, tempfile
+how = sys.argv[2]
+def broken(*a, **k):
+    if how == "int":
+        raise KeyboardInterrupt
+    raise OSError(errno.ENOSPC, "No space left on device")
+tempfile.mkstemp = broken
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/mk.txt" "$how" 2>"$R/err" || rc=$?
+  if [ "$rc" != 1 ] || grep -q Traceback "$R/err"; then fail "mkstemp failing ($how): exit $rc, $(cat "$R/err")"; fi
+  cmp -s blob.txt "$ST/mk.txt" || fail "mkstemp failing ($how) changed the blob file"
+  if [ "$how" = int ]; then
+    grep -qF "interrupted; '$ST/mk.txt' is unchanged" "$R/err" || fail "an interrupt in mkstemp: $(cat "$R/err")"
+  else
+    if ! grep -qF "No space left on device" "$R/err" || grep -qF "must be writable" "$R/err"; then fail "ENOSPC in mkstemp: $(cat "$R/err")"; fi
+  fi
+done
 # A blob staged while a rewrap runs isn't replaced with the old payload.
 cp blob.txt "$ST/lost.txt"
 expect_refusal "--rewrap whose blob file changed meanwhile" 1 "changed while it was being rewrapped" \
@@ -1516,7 +1556,7 @@ rc=0; env HANDOFF_PRIVKEY="$qk" bash ../agent-setup.sh --retire >/dev/null 2>"$S
 hint=$(sed -n 's/.*finds the other name with: \(find .* -samefile .*\) (or, where.*/\1/p' "$S/qerr")
 got=$(cd "$S" && sh -c "find() { printf '%s\n' \"\$4\"; }; $hint")
 [ "$got" = "$(cd "$S" && pwd -P)/q'; touch PWNED; echo '/k.pem.previous" ] && [ ! -e "$S/PWNED" ] || fail "the find hint's path isn't quoted: $hint"
-grep -qF -- "-xdev -inum " "$S/qerr" || fail "the find hint has no -inum form"
+grep -qF -- "-xdev -inum $(stat -c %i -- "$qk.previous")" "$S/qerr" || fail "the find hint has no -inum form with the key's inode"
 rm -rf "$S/q'; touch PWNED; echo '" "$S/qbackup.pem"
 # A relative key path still gets an absolute path in the find hint.
 grep -qF -- "-samefile '$(cd "$S/dashlink" && pwd -P)/-k.pem.previous'" "$S/err" || fail "the find hint for a relative key isn't absolute: $(cat "$S/err")"
