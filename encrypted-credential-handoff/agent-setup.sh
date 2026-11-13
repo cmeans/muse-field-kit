@@ -20,7 +20,7 @@
 #   agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous;
 #                                       blobs still made for it stop opening
 #                                       (without --yes, it says what it would
-#                                       delete, deletes nothing, and exits 1)
+#                                       delete, keeps the old key, and exits 1)
 # Exit codes: 0 done (or, for --rotate during a rotation, shown), 1 refused
 # or failed (the reason on stderr), 2 a usage error.
 #
@@ -204,7 +204,7 @@ usage() {
   echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY, the old one kept as KEY.previous;" >&2
   echo "                                           during one, shows the new key again (exit 0)" >&2
   echo "       agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous (blobs still made for it stop opening);" >&2
-  echo "                                           without --yes, says what it would delete and deletes nothing (exit 1)" >&2
+  echo "                                           without --yes, says what it would delete and keeps the old key (exit 1)" >&2
 }
 
 # Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
@@ -229,7 +229,13 @@ case "${1-}" in
       echo "agent-setup.sh: $mode was given an empty KEY" >&2; exit 2
     fi
     case "${1-}" in
-      (--yes) echo "usage: agent-setup.sh $syntax (--yes goes only right after --retire)" >&2; exit 2 ;;
+      (--yes)
+        if [ -n "$yes" ]; then
+          echo "usage: agent-setup.sh $syntax (--yes given twice)" >&2
+        else
+          echo "usage: agent-setup.sh $syntax (--yes goes only right after --retire)" >&2
+        fi
+        exit 2 ;;
       (--*) echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2; exit 2 ;;
     esac
     if [ $# -eq 0 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
@@ -351,11 +357,14 @@ case "$mode" in
     # label's stored blob still needs the old key (issue #4).
     prev="$key.previous"
     no_symlinks
+    # The key first, as the other modes check it: a mistyped KEY (-y for
+    # --yes) is "no key file", not "no rotation to retire", which would read
+    # as the old key being gone.
+    [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     if [ ! -e "$prev" ]; then
       echo "agent-setup.sh: no $prev: no rotation to retire" >&2; exit 1
     fi
     [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
-    [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     trap cleanup EXIT
     lock_dir "$(dirname -- "$key")"
     key_fingerprint "$key"

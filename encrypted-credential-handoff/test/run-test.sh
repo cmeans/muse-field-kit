@@ -1266,7 +1266,7 @@ expect_refusal "--retire through a symlink" 1 "is a symlink" \
   env HANDOFF_PRIVKEY="$R/link.pem" bash ../agent-setup.sh --retire
 [ -e "$R/k.pem.previous" ] || fail "a refused --retire deleted the previous key"
 rm "$R/link.pem"
-# --retire without --yes deletes nothing, names the old key and its
+# --retire without --yes keeps the old key, names it and its
 # fingerprint, and points at step 5's last pass (issue #4).
 old_fp=$(rk bash ../agent-setup.sh --fingerprint "$R/k.pem.previous" 2>/dev/null)
 expect_refusal "--retire without --yes" 1 "only once SETUP.md Rotation step 5's last pass is recorded" \
@@ -1274,13 +1274,20 @@ expect_refusal "--retire without --yes" 1 "only once SETUP.md Rotation step 5's 
 [ -e "$R/k.pem.previous" ] || fail "--retire without --yes deleted the previous key"
 grep -qF "deletes the previous key $R/k.pem.previous ($old_fp)" "$S/err" \
   || fail "--retire without --yes didn't name the old key and its fingerprint: $(cat "$S/err")"
-expect_refusal "--retire --yes given twice" 2 "goes only right after --retire" \
+expect_refusal "--retire --yes given twice" 2 "--yes given twice" \
   rk bash ../agent-setup.sh --retire --yes --yes
 expect_refusal "--yes with another mode" 2 "goes only right after --retire" \
   rk bash ../agent-setup.sh --rotate --yes
 expect_refusal "--retire KEY --yes (misordered)" 2 "usage: agent-setup.sh --retire --yes [KEY]" \
   rk bash ../agent-setup.sh --retire "$R/k.pem" --yes
 [ -e "$R/k.pem.previous" ] || fail "a refused --retire --yes deleted the previous key"
+# A caller's yes= can't confirm: only --yes on the command line does.
+expect_refusal "--retire with yes=1 in the environment" 1 "only once SETUP.md Rotation step 5's last pass is recorded" \
+  rk env yes=1 bash ../agent-setup.sh --retire
+[ -e "$R/k.pem.previous" ] || fail "a caller's yes= confirmed --retire"
+# A mistyped confirmation (-y) is a KEY with no key file, not "no rotation".
+(cd "$S" && expect_refusal "--retire -y" 1 "no key file at -y" \
+  env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire -y)
 # --retire --yes deletes the previous key; old blobs stop opening, new ones don't.
 rk bash ../agent-setup.sh --retire --yes >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--retire --yes failed"; }
 [ ! -e "$R/k.pem.previous" ] || fail "--retire left the previous key"
