@@ -1304,14 +1304,18 @@ expect_refusal "--rotate --YES" 2 "--YES isn't a KEY" \
   rk bash ../agent-setup.sh --rotate --YES
 # Each KEY the hint covers, typed on the command line; not one from
 # HANDOFF_PRIVKEY, which nobody typed as a confirmation.
-for k in yes -yes y; do
+for k in yes -yes y ye -ye; do
   (cd "$S" && expect_refusal "--retire $k" 1 "no key file at $k (the confirmation is spelled --yes)" \
     env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire "$k")
 done
 (cd "$S" && env HANDOFF_PRIVKEY=yes bash "$OLDPWD/../agent-setup.sh" --retire >/dev/null 2>"$S/err") || true
 if ! grep -qxF "no key file at yes" "$S/err"; then fail "HANDOFF_PRIVKEY=yes got the confirmation hint: $(cat "$S/err")"; fi
-expect_refusal "--retire --y" 2 "the confirmation is spelled --yes" \
-  rk bash ../agent-setup.sh --retire --y
+for y in --y --ye; do
+  expect_refusal "--retire $y" 2 "the confirmation is spelled --yes" \
+    rk bash ../agent-setup.sh --retire "$y"
+done
+expect_refusal "--retire --yes KEY --yes" 2 "(--yes given twice)" \
+  rk bash ../agent-setup.sh --retire --yes "$R/k.pem" --yes
 expect_refusal "--retire KEY --yes (the reason)" 2 "--yes goes right after --retire, before KEY" \
   rk bash ../agent-setup.sh --retire "$R/k.pem" --yes
 [ -e "$R/k.pem.previous" ] || fail "a misplaced confirmation deleted the previous key"

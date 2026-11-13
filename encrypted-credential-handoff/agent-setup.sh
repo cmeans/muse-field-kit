@@ -229,7 +229,9 @@ case "${1-}" in
       if [ "${1-}" = --yes ]; then yes=1; shift; fi
     fi
     if [ $# -gt 1 ]; then
-      if [ "$mode" = --retire ] && [ "$2" = --yes ] && [ $# -eq 2 ]; then
+      if [ "$mode" = --retire ] && [ "$2" = --yes ] && [ $# -eq 2 ] && [ -n "$yes" ]; then
+        echo "usage: agent-setup.sh $syntax (--yes given twice)" >&2
+      elif [ "$mode" = --retire ] && [ "$2" = --yes ] && [ $# -eq 2 ]; then
         echo "usage: agent-setup.sh $syntax (--yes goes right after --retire, before KEY)" >&2
       else
         echo "usage: agent-setup.sh $syntax" >&2
@@ -384,7 +386,7 @@ case "$mode" in
       # A hint only for a KEY typed on the command line (not HANDOFF_PRIVKEY)
       # when --yes wasn't given: then the KEY may be a typo of it.
       case "$yes:$key_given:$key" in
-        :1:-[Yy]|:1:-[Yy][Ee][Ss]|:1:[Yy]|:1:[Yy][Ee][Ss]) echo "no key file at $key (the confirmation is spelled --yes)" >&2 ;;
+        :1:-[Yy]|:1:-[Yy][Ee]|:1:-[Yy][Ee][Ss]|:1:[Yy]|:1:[Yy][Ee]|:1:[Yy][Ee][Ss]) echo "no key file at $key (the confirmation is spelled --yes)" >&2 ;;
         *) echo "no key file at $key" >&2 ;;
       esac
       exit 1
