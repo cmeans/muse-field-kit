@@ -924,8 +924,20 @@ cp blob.txt "$ST/mode.txt"; chmod 640 "$ST/mode.txt"
 rk python3 ../consume.py --label example --rewrap --blob-file "$ST/mode.txt" 2>/dev/null || fail "--rewrap of a 0640 file failed"
 [ "$(stat -c %a "$ST/mode.txt")" = 640 ] || fail "--rewrap changed its blob file's mode"
 cp blob.txt "$ST/gw.txt"; chmod 660 "$ST/gw.txt"
-expect_refusal "--rewrap of a group-writable blob file" 1 "is writable by others (mode 660)" \
+expect_refusal "--rewrap of a group-writable blob file" 1 "is writable by others (mode 660); stop and report it to the user, who runs: chmod go-w '$ST/gw.txt'" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gw.txt"
+# A directory others can write (without the sticky bit) is refused too; with it, not.
+mkdir -p "$ST/gwd"; cp blob.txt "$ST/gwd/b.txt"; chmod 770 "$ST/gwd"
+expect_refusal "--rewrap in a group-writable directory" 1 "directory '$ST/gwd' is writable by others (mode 0770)" \
+  rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gwd/b.txt"
+cmp -s blob.txt "$ST/gwd/b.txt" || fail "a refused --rewrap changed a file in a group-writable directory"
+chmod 1770 "$ST/gwd"
+rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gwd/b.txt" 2>/dev/null || fail "--rewrap in a sticky group-writable directory failed"
+chmod 700 "$ST/gwd"
+# A long multibyte name: the temporary name is cut in bytes, so it fits.
+mb="$ST/$(python3 -c 'print("\u65e5" * 80)').txt"; cp blob.txt "$mb"
+rk python3 ../consume.py --label example --rewrap --blob-file "$mb" 2>"$R/err" || fail "--rewrap of a long multibyte name failed: $(cat "$R/err")"
+rm -f "$mb"
 cmp -s blob.txt "$ST/gw.txt" || fail "a refused --rewrap changed a group-writable blob file"
 # A symlinked blob file: the file it points at is rewritten, the link stays.
 cp blob.txt "$ST/real.txt"; ln -s "$ST/real.txt" "$ST/link.txt"
@@ -1073,6 +1085,51 @@ if [ "$rc" != 1 ] || grep -q Traceback "$R/err" || ! grep -qxF "consume.py: inte
   fail "an INT during --rewrap's decrypt: exit $rc, $(cat "$R/err")"
 fi
 cmp -s blob.txt "$ST/int.txt" || fail "an INT during --rewrap's decrypt changed the blob file"
+# A blob staged while a rewrap runs isn't replaced with the old payload.
+cp blob.txt "$ST/lost.txt"
+expect_refusal "--rewrap whose blob file changed meanwhile" 1 "changed while it was being rewrapped" \
+  rk python3 -I -c '
+import sys, tempfile
+real, target = tempfile.mkstemp, sys.argv[1]
+def staged(*a, **k):
+    with open(target, "w") as fh:
+        fh.write("staged meanwhile\n")
+    return real(*a, **k)
+tempfile.mkstemp = staged
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/lost.txt"
+[ "$(cat "$ST/lost.txt")" = "staged meanwhile" ] || fail "--rewrap replaced a blob staged meanwhile"
+! compgen -G "$ST/.lost.txt.*" >/dev/null || fail "a refused lost update left its temporary file"
+# A HUP inherited as ignored (nohup) stays ignored: the rewrap finishes.
+cp blob.txt "$ST/hup.txt"
+rc=0; rk python3 -I -c '
+import os, signal, sys
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+real = os.replace
+def hup_replace(a, b):
+    os.kill(os.getpid(), signal.SIGHUP)
+    real(a, b)
+os.replace = hup_replace
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/hup.txt" 2>"$R/err" || rc=$?
+if [ "$rc" != 0 ] || ! grep -qF "rewrapped '$ST/hup.txt'" "$R/err"; then fail "--rewrap with HUP ignored: exit $rc, $(cat "$R/err")"; fi
+# An interrupt after the write, before the success line, says the file holds the new blob.
+cp blob.txt "$ST/late.txt"
+rc=0; rk python3 -I -c '
+import builtins, sys
+def late_print(*a, **k):
+    if a and str(a[0]).startswith("consume.py: rewrapped"):
+        raise KeyboardInterrupt
+    builtins.print(*a, **k)
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__", "print": late_print})
+' "$ST/late.txt" 2>"$R/err" || rc=$?
+if [ "$rc" != 1 ] || ! grep -qF "interrupted after the rename; '$ST/late.txt' holds the new blob" "$R/err"; then
+  fail "an interrupt after the write: exit $rc, $(cat "$R/err")"
+fi
+cmp -s blob.txt "$ST/late.txt" && fail "an interrupt after the write: the file wasn't replaced"
 # The blob file is never under the key's directory, however it's spelled:
 # beside the key, in a subdirectory, or through a symlink into it.
 cp blob.txt "$R/beside.txt"; mkdir -p "$R/sub"; cp blob.txt "$R/sub/b.txt"
@@ -1081,6 +1138,15 @@ for target in "$R/beside.txt" "$R/sub/b.txt" "$ST/s/beside.txt" "$ST/s/sub/../be
   expect_refusal "--rewrap of a blob file under the key's directory ($target)" 1 "under the key's directory ($R)" \
     rk python3 ../consume.py --label example --rewrap --blob-file "$target"
 done
+# The same file by identity, not by path (a bind mount or a case-insensitive
+# spelling): with the path comparison disabled, the parent walk still refuses it.
+expect_refusal "--rewrap beside the key, by identity only" 1 "under the key's directory" \
+  rk python3 -I -c '
+import os.path, sys
+os.path.commonpath = lambda paths: ""
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$R/beside.txt"
 cmp -s blob.txt "$R/beside.txt" || fail "a refused --rewrap changed a file beside the key"
 # A symlinked key path guards the directory it names too (where .previous is
 # looked up), not only the one the key file is in.
@@ -1441,6 +1507,17 @@ rc=0; (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.s
 if [ "$rc" != 1 ] || ! grep -qF "has another hard link" "$S/err"; then
   fail "--retire -k.pem with another link: exit $rc, $(cat "$S/err")"
 fi
+# A key path with a quote in it: the hint's paths are quoted for a POSIX shell.
+mkdir -p "$S/q'; touch PWNED; echo '"; qk="$S/q'; touch PWNED; echo '/k.pem"; cp "$TMPKEY" "$qk"
+env HANDOFF_PRIVKEY="$qk" bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate on a key path with a quote failed"
+ln "$qk.previous" "$S/qbackup.pem"
+rc=0; env HANDOFF_PRIVKEY="$qk" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
+[ "$rc" = 1 ] || fail "--retire with a quoted path and another link: exit $rc"
+hint=$(sed -n 's/.*finds the other name with: \(find .* -samefile .*\) (or, where.*/\1/p' "$S/qerr")
+got=$(cd "$S" && sh -c "find() { printf '%s\n' \"\$4\"; }; $hint")
+[ "$got" = "$(cd "$S" && pwd -P)/q'; touch PWNED; echo '/k.pem.previous" ] && [ ! -e "$S/PWNED" ] || fail "the find hint's path isn't quoted: $hint"
+grep -qF -- "-xdev -inum " "$S/qerr" || fail "the find hint has no -inum form"
+rm -rf "$S/q'; touch PWNED; echo '" "$S/qbackup.pem"
 # A relative key path still gets an absolute path in the find hint.
 grep -qF -- "-samefile '$(cd "$S/dashlink" && pwd -P)/-k.pem.previous'" "$S/err" || fail "the find hint for a relative key isn't absolute: $(cat "$S/err")"
 # A key file named like a temporary key isn't swept by its own --rotate.
@@ -1457,7 +1534,7 @@ expect_refusal "--retire with another link to the old key" 1 "has another hard l
 # The refusal says how to find the other name: find from the disk's mount point.
 grep -qF -- "-xdev -samefile '$(cd "$S/tmpname" && pwd -P)/.handoff-new.pem.previous'" "$S/err" || fail "the link refusal doesn't give the find command: $(cat "$S/err")"
 mnt=$(sed -n "s/.*find '\([^']*\)' -xdev.*/\1/p" "$S/err")
-case "$S/" in "${mnt%/}"/*) [ -d "$mnt" ] ;; *) false ;; esac || fail "the link refusal's mount point ($mnt) doesn't hold the key"
+case "$S/" in "${mnt%/}/"*) [ -d "$mnt" ] ;; *) false ;; esac || fail "the link refusal's mount point ($mnt) doesn't hold the key"
 rm "$S/tmpname/backup.pem"
 # A find that fails is a refusal, not a pass.
 mkdir -p "$S/nofind"; ln -sf "$PY" "$S/nofind/python3"; ln -sf "$(command -v openssl)" "$S/nofind/openssl"
