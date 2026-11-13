@@ -371,10 +371,15 @@ case "$mode" in
       # field; a mount point with a space in it reads short, hence the
       # fallback wording).
       mnt=$(df -P -- "$q" 2>/dev/null | awk 'NR == 2 { print $NF }')
-      [ -d "$mnt" ] || mnt="<the mount point of $prev's disk>"
+      case $mnt in /*) [ -d "$mnt" ] || mnt= ;; *) mnt= ;; esac
       # Absolute, so the command works from any directory (sudo -i changes it).
       abs=$(cd -- "$(dirname -- "$prev")" && pwd -P)/${prev##*/} || abs=$prev
-      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; nothing was deleted. Report it to the user, who finds the other name with: find '$mnt' -xdev -samefile '$abs' (as root to see every directory), and removes it first (SETUP.md, Rotation step 5)" >&2
+      # shellcheck disable=SC2012  # ls -di is the portable inode read (find -printf is GNU's)
+      ino=$(ls -di -- "$q" 2>/dev/null | awk '{ print $1 }')
+      # Each path single-quoted for a POSIX shell: the user may run this as root.
+      sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+      if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
+      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; nothing was deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs") (or, where find has no -samefile, as BusyBox's: find $where -xdev -inum $ino), as root to see every directory, and removes it first (SETUP.md, Rotation step 5)" >&2
       exit 1
     fi
     # Not atomic with the check above: an ln made in between (the lock is
