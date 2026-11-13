@@ -1302,6 +1302,19 @@ expect_refusal "--retire --yes --YES" 2 "--YES isn't a KEY" \
   rk bash ../agent-setup.sh --retire --yes --YES
 expect_refusal "--rotate --YES" 2 "--YES isn't a KEY" \
   rk bash ../agent-setup.sh --rotate --YES
+# Each KEY the hint covers, typed on the command line; not one from
+# HANDOFF_PRIVKEY, which nobody typed as a confirmation.
+for k in yes -yes y; do
+  (cd "$S" && expect_refusal "--retire $k" 1 "no key file at $k (the confirmation is spelled --yes)" \
+    env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire "$k")
+done
+(cd "$S" && env HANDOFF_PRIVKEY=yes bash "$OLDPWD/../agent-setup.sh" --retire >/dev/null 2>"$S/err") || true
+if ! grep -qxF "no key file at yes" "$S/err"; then fail "HANDOFF_PRIVKEY=yes got the confirmation hint: $(cat "$S/err")"; fi
+expect_refusal "--retire --y" 2 "the confirmation is spelled --yes" \
+  rk bash ../agent-setup.sh --retire --y
+expect_refusal "--retire KEY --yes (the reason)" 2 "--yes goes right after --retire, before KEY" \
+  rk bash ../agent-setup.sh --retire "$R/k.pem" --yes
+[ -e "$R/k.pem.previous" ] || fail "a misplaced confirmation deleted the previous key"
 # --retire --yes deletes the previous key; old blobs stop opening, new ones don't.
 rk bash ../agent-setup.sh --retire --yes >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--retire --yes failed"; }
 [ ! -e "$R/k.pem.previous" ] || fail "--retire left the previous key"
@@ -1596,6 +1609,12 @@ rk env POSIXLY_CORRECT=1 bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" \
 [ "$(stat -c %a "$R/k.pem")" = 600 ] && [ -f "$R/k.pem.previous" ] || fail "--rotate under POSIX option parsing left the wrong state"
 # --retire also removes a temporary file that is another link to the old key
 # (a setup killed between its ln and its cleanup): its data doesn't survive.
+ln "$R/k.pem.previous" "$R/.handoff-new.Linked"
+# Without --yes too, as the docs say: the leftover link goes, the old key stays.
+rc=0; rk bash ../agent-setup.sh --retire >/dev/null 2>"$R/err" || rc=$?
+[ "$rc" = 1 ] && [ ! -e "$R/.handoff-new.Linked" ] && [ -f "$R/k.pem.previous" ] \
+  || fail "--retire without --yes and a linked leftover: exit $rc, $(cat "$R/err")"
+grep -qF "another link to the previous key" "$R/err" || fail "--retire without --yes didn't report the link it removed"
 ln "$R/k.pem.previous" "$R/.handoff-setup.Linked"
 rk bash ../agent-setup.sh --retire --yes >/dev/null 2>"$R/err" || fail "--retire with a linked leftover failed: $(cat "$R/err")"
 [ ! -e "$R/.handoff-setup.Linked" ] || fail "--retire left another link to the old key"

@@ -43,6 +43,7 @@ new=""
 lock=""
 # --retire's confirmation: set only by --yes on the command line.
 yes=""
+key_given=0
 
 # The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
 # dropped, in any case, as consume.py does: a stray or planted openssl config
@@ -227,7 +228,16 @@ case "${1-}" in
       # --* KEY is, and -k.pem stays a KEY.
       if [ "${1-}" = --yes ]; then yes=1; shift; fi
     fi
-    [ $# -le 1 ] || { echo "usage: agent-setup.sh $syntax" >&2; exit 2; }
+    if [ $# -gt 1 ]; then
+      if [ "$mode" = --retire ] && [ "$2" = --yes ] && [ $# -eq 2 ]; then
+        echo "usage: agent-setup.sh $syntax (--yes goes right after --retire, before KEY)" >&2
+      else
+        echo "usage: agent-setup.sh $syntax" >&2
+      fi
+      exit 2
+    fi
+    # The KEY came from the command line (for --retire's misspelling hint).
+    key_given=$#
     if [ $# -eq 1 ] && [ -z "$1" ]; then
       echo "agent-setup.sh: $mode was given an empty KEY" >&2; exit 2
     fi
@@ -239,7 +249,7 @@ case "${1-}" in
           echo "usage: agent-setup.sh $syntax (--yes goes only right after --retire)" >&2
         fi
         exit 2 ;;
-      (--yes=*|--[Yy][Ee][Ss])
+      (--yes=*|--[Yy][Ee][Ss]|--[Yy]|--[Yy][Ee])
         if [ "$mode" = --retire ] && [ -z "$yes" ]; then
           echo "usage: agent-setup.sh $syntax (the confirmation is spelled --yes, right after --retire)" >&2
         else
@@ -371,9 +381,10 @@ case "$mode" in
     # --yes) is "no key file", not "no rotation to retire", which would read
     # as the old key being gone.
     if [ ! -f "$key" ]; then
-      # A hint only when --yes wasn't given: then the KEY may be a typo of it.
-      case "$yes:$key" in
-        :-[Yy]|:-[Yy][Ee][Ss]|:[Yy][Ee][Ss]) echo "no key file at $key (the confirmation is spelled --yes)" >&2 ;;
+      # A hint only for a KEY typed on the command line (not HANDOFF_PRIVKEY)
+      # when --yes wasn't given: then the KEY may be a typo of it.
+      case "$yes:$key_given:$key" in
+        :1:-[Yy]|:1:-[Yy][Ee][Ss]|:1:[Yy]|:1:[Yy][Ee][Ss]) echo "no key file at $key (the confirmation is spelled --yes)" >&2 ;;
         *) echo "no key file at $key" >&2 ;;
       esac
       exit 1
@@ -432,7 +443,7 @@ case "$mode" in
       echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user in a direct conversational turn. In a compromise response your notes record (the user's go-ahead, given directly), run it at Compromise step 2 or 4." >&2
       exit 1
     fi
-    # Not atomic with the check above: an ln made in between (the lock is
+    # Not atomic with the hard-link check above: an ln made in between (the lock is
     # advisory) keeps the old key on disk. That takes a deliberate actor with
     # the key directory's write access, which can copy the key anyway.
     rm -f -- "$prev"
