@@ -17,8 +17,10 @@
 #   agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY,
 #                                       the old one kept as KEY.previous;
 #                                       during one, shows the new key again
-#   agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous;
+#   agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous;
 #                                       blobs still made for it stop opening
+#                                       (without --yes, it says what it would
+#                                       delete, deletes nothing, and exits 1)
 # Exit codes: 0 done (or, for --rotate during a rotation, shown), 1 refused
 # or failed (the reason on stderr), 2 a usage error.
 #
@@ -37,6 +39,8 @@ unset CDPATH
 # SIGKILL; the next run removes a key left behind): never inherited.
 new=""
 lock=""
+# --retire's confirmation: set only by --yes on the command line.
+yes=""
 
 # The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
 # dropped, in any case, as consume.py does: a stray or planted openssl config
@@ -199,7 +203,8 @@ usage() {
   echo "       agent-setup.sh --public-key [KEY]   print an existing key's public key and fingerprint" >&2
   echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY, the old one kept as KEY.previous;" >&2
   echo "                                           during one, shows the new key again (exit 0)" >&2
-  echo "       agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous (blobs still made for it stop opening)" >&2
+  echo "       agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous (blobs still made for it stop opening);" >&2
+  echo "                                           without --yes, says what it would delete and deletes nothing (exit 1)" >&2
 }
 
 # Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
@@ -211,19 +216,27 @@ usage() {
 case "${1-}" in
   --fingerprint|--public-key|--rotate|--retire)
     mode=$1
-    [ $# -le 2 ] || { echo "usage: agent-setup.sh $mode [KEY]" >&2; exit 2; }
-    if [ $# -eq 2 ] && [ -z "$2" ]; then
+    shift
+    syntax="$mode [KEY]"
+    if [ "$mode" = --retire ]; then
+      syntax="--retire --yes [KEY]"
+      # Only right after --retire: a KEY of "--yes" is refused below as any
+      # --* KEY is, and -k.pem stays a KEY.
+      if [ "${1-}" = --yes ]; then yes=1; shift; fi
+    fi
+    [ $# -le 1 ] || { echo "usage: agent-setup.sh $syntax" >&2; exit 2; }
+    if [ $# -eq 1 ] && [ -z "$1" ]; then
       echo "agent-setup.sh: $mode was given an empty KEY" >&2; exit 2
     fi
-    case "${2-}" in
-      (--*) echo "usage: agent-setup.sh $mode [KEY] (one mode at a time; $2 isn't a KEY)" >&2; exit 2 ;;
+    case "${1-}" in
+      (--yes) echo "usage: agent-setup.sh $syntax (--yes goes only right after --retire)" >&2; exit 2 ;;
+      (--*) echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2; exit 2 ;;
     esac
-    if [ $# -eq 1 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
+    if [ $# -eq 0 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
       echo "agent-setup.sh: HANDOFF_KEY_DIR applies only to generating a key; for $mode, set HANDOFF_PRIVKEY=<dir>/handoff-priv.pem as the wrappers do" >&2
       exit 2
     fi
     need_openssl
-    shift
     resolve_key "$@"
     ;;
   "") mode=generate ;;
@@ -332,8 +345,10 @@ case "$mode" in
     ;;
   --retire)
     # Deletes KEY.previous: blobs still made for it no longer open. SETUP.md
-    # says when (every label's rewrap reported the previous key's blob
-    # replaced); this checks only that a rotation finished.
+    # says when (Rotation step 5: every label in the setup record probed ok
+    # with the current key, or written off); this checks only that a rotation
+    # finished, and asks for --yes, since nothing here can tell whether a
+    # label's stored blob still needs the old key (issue #4).
     prev="$key.previous"
     no_symlinks
     if [ ! -e "$prev" ]; then
@@ -382,6 +397,13 @@ case "$mode" in
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
       echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; nothing was deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes it first (SETUP.md, Rotation step 5)" >&2
+      exit 1
+    fi
+    # Last, so every other refusal comes first: a hard link to resolve shows
+    # up before the confirmation, not after it.
+    if [ -z "$yes" ]; then
+      echo "agent-setup.sh: --retire deletes the previous key $prev (SHA256:$prev_fp), and a blob still made for it never opens again; it was not deleted." >&2
+      echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user. In a compromise response, run it at once (SETUP.md, Compromise)." >&2
       exit 1
     fi
     # Not atomic with the check above: an ln made in between (the lock is
