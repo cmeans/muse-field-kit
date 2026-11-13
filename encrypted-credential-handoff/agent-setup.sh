@@ -17,8 +17,12 @@
 #   agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY,
 #                                       the old one kept as KEY.previous;
 #                                       during one, shows the new key again
-#   agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous;
+#   agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous;
 #                                       blobs still made for it stop opening
+#                                       (without --yes, it says what it would
+#                                       delete, keeps the old key, removing
+#                                       only a leftover temporary link to it,
+#                                       and exits 1)
 # Exit codes: 0 done (or, for --rotate during a rotation, shown), 1 refused
 # or failed (the reason on stderr), 2 a usage error.
 #
@@ -37,6 +41,9 @@ unset CDPATH
 # SIGKILL; the next run removes a key left behind): never inherited.
 new=""
 lock=""
+# --retire's confirmation: set only by --yes on the command line.
+yes=""
+key_given=0
 
 # The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
 # dropped, in any case, as consume.py does: a stray or planted openssl config
@@ -199,7 +206,9 @@ usage() {
   echo "       agent-setup.sh --public-key [KEY]   print an existing key's public key and fingerprint" >&2
   echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY, the old one kept as KEY.previous;" >&2
   echo "                                           during one, shows the new key again (exit 0)" >&2
-  echo "       agent-setup.sh --retire [KEY]       end a rotation: delete KEY.previous (blobs still made for it stop opening)" >&2
+  echo "       agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous (blobs still made for it stop opening);" >&2
+  echo "                                           without --yes, says what it would delete and keeps the old key, removing only" >&2
+  echo "                                           a leftover temporary link to it (exit 1)" >&2
 }
 
 # Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
@@ -211,19 +220,51 @@ usage() {
 case "${1-}" in
   --fingerprint|--public-key|--rotate|--retire)
     mode=$1
-    [ $# -le 2 ] || { echo "usage: agent-setup.sh $mode [KEY]" >&2; exit 2; }
-    if [ $# -eq 2 ] && [ -z "$2" ]; then
+    shift
+    syntax="$mode [KEY]"
+    if [ "$mode" = --retire ]; then
+      syntax="--retire --yes [KEY]"
+      # Only right after --retire: a KEY of "--yes" is refused below as any
+      # --* KEY is, and -k.pem stays a KEY.
+      if [ "${1-}" = --yes ]; then yes=1; shift; fi
+    fi
+    if [ $# -gt 1 ]; then
+      if [ "$mode" = --retire ] && [ "$2" = --yes ] && [ $# -eq 2 ] && [ -n "$yes" ]; then
+        echo "usage: agent-setup.sh $syntax (--yes given twice)" >&2
+      elif [ "$mode" = --retire ] && [ "$2" = --yes ] && [ $# -eq 2 ]; then
+        echo "usage: agent-setup.sh $syntax (--yes goes right after --retire, before KEY)" >&2
+      else
+        echo "usage: agent-setup.sh $syntax" >&2
+      fi
+      exit 2
+    fi
+    # The KEY came from the command line (for --retire's misspelling hint).
+    key_given=$#
+    if [ $# -eq 1 ] && [ -z "$1" ]; then
       echo "agent-setup.sh: $mode was given an empty KEY" >&2; exit 2
     fi
-    case "${2-}" in
-      (--*) echo "usage: agent-setup.sh $mode [KEY] (one mode at a time; $2 isn't a KEY)" >&2; exit 2 ;;
+    case "${1-}" in
+      (--yes)
+        if [ -n "$yes" ]; then
+          echo "usage: agent-setup.sh $syntax (--yes given twice)" >&2
+        else
+          echo "usage: agent-setup.sh $syntax (--yes goes only right after --retire)" >&2
+        fi
+        exit 2 ;;
+      (--yes=*|--[Yy][Ee][Ss]|--[Yy]|--[Yy][Ee])
+        if [ "$mode" = --retire ] && [ -z "$yes" ]; then
+          echo "usage: agent-setup.sh $syntax (the confirmation is spelled --yes, right after --retire)" >&2
+        else
+          echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2
+        fi
+        exit 2 ;;
+      (--*) echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2; exit 2 ;;
     esac
-    if [ $# -eq 1 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
+    if [ $# -eq 0 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
       echo "agent-setup.sh: HANDOFF_KEY_DIR applies only to generating a key; for $mode, set HANDOFF_PRIVKEY=<dir>/handoff-priv.pem as the wrappers do" >&2
       exit 2
     fi
     need_openssl
-    shift
     resolve_key "$@"
     ;;
   "") mode=generate ;;
@@ -332,15 +373,28 @@ case "$mode" in
     ;;
   --retire)
     # Deletes KEY.previous: blobs still made for it no longer open. SETUP.md
-    # says when (every label's rewrap reported the previous key's blob
-    # replaced); this checks only that a rotation finished.
+    # says when (Rotation step 5: every label in the setup record probed ok
+    # with the current key, or written off); this checks only that a rotation
+    # finished, and asks for --yes, since nothing here can tell whether a
+    # label's stored blob still needs the old key (issue #4).
     prev="$key.previous"
     no_symlinks
+    # The key first, as the other modes check it: a mistyped KEY (-y for
+    # --yes) is "no key file", not "no rotation to retire", which would read
+    # as the old key being gone.
+    if [ ! -f "$key" ]; then
+      # A hint only for a KEY typed on the command line (not HANDOFF_PRIVKEY)
+      # when --yes wasn't given: then the KEY may be a typo of it.
+      case "$yes:$key_given:$key" in
+        :1:-[Yy]|:1:-[Yy][Ee]|:1:-[Yy][Ee][Ss]|:1:[Yy]|:1:[Yy][Ee]|:1:[Yy][Ee][Ss]) echo "no key file at $key (the confirmation is spelled --yes)" >&2 ;;
+        *) echo "no key file at $key" >&2 ;;
+      esac
+      exit 1
+    fi
     if [ ! -e "$prev" ]; then
       echo "agent-setup.sh: no $prev: no rotation to retire" >&2; exit 1
     fi
     [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
-    [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
     trap cleanup EXIT
     lock_dir "$(dirname -- "$key")"
     key_fingerprint "$key"
@@ -381,10 +435,17 @@ case "$mode" in
       sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
-      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; nothing was deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes it first (SETUP.md, Rotation step 5)" >&2
+      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes it first (SETUP.md, Rotation step 5)" >&2
       exit 1
     fi
-    # Not atomic with the check above: an ln made in between (the lock is
+    # Last, so every other refusal comes first: a hard link to resolve shows
+    # up before the confirmation, not after it.
+    if [ -z "$yes" ]; then
+      echo "agent-setup.sh: --retire deletes the previous key $prev (SHA256:$prev_fp), and a blob still made for it never opens again; it was not deleted." >&2
+      echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user in a direct conversational turn. In a compromise response your notes record (the user's go-ahead, given directly), run it at Compromise step 2 or 4." >&2
+      exit 1
+    fi
+    # Not atomic with the hard-link check above: an ln made in between (the lock is
     # advisory) keeps the old key on disk. That takes a deliberate actor with
     # the key directory's write access, which can copy the key anyway.
     rm -f -- "$prev"

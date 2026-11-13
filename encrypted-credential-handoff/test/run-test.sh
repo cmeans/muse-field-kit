@@ -1262,31 +1262,84 @@ grep -qF -- "-----BEGIN PUBLIC KEY-----" "$R/out" || fail "--rotate during a rot
 ln -s "$R/k.pem" "$R/link.pem"
 expect_refusal "--rotate through a symlink" 1 "is a symlink" \
   env HANDOFF_PRIVKEY="$R/link.pem" bash ../agent-setup.sh --rotate
-expect_refusal "--retire through a symlink" 1 "is a symlink" \
-  env HANDOFF_PRIVKEY="$R/link.pem" bash ../agent-setup.sh --retire
+# The refusals before the confirmation run with --yes: without it a run keeps
+# .previous whatever the guard does, so only --yes shows the guard holds.
+expect_refusal "--retire --yes through a symlink" 1 "is a symlink" \
+  env HANDOFF_PRIVKEY="$R/link.pem" bash ../agent-setup.sh --retire --yes
 [ -e "$R/k.pem.previous" ] || fail "a refused --retire deleted the previous key"
 rm "$R/link.pem"
-# --retire deletes the previous key; old blobs stop opening, new ones don't.
-rk bash ../agent-setup.sh --retire >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--retire failed"; }
+# --retire without --yes keeps the old key, names it and its
+# fingerprint, and points at step 5's last pass (issue #4).
+old_fp=$(rk bash ../agent-setup.sh --fingerprint "$R/k.pem.previous" 2>/dev/null)
+expect_refusal "--retire without --yes" 1 "only once SETUP.md Rotation step 5's last pass is recorded" \
+  rk bash ../agent-setup.sh --retire
+[ -e "$R/k.pem.previous" ] || fail "--retire without --yes deleted the previous key"
+grep -qF "deletes the previous key $R/k.pem.previous ($old_fp)" "$S/err" \
+  || fail "--retire without --yes didn't name the old key and its fingerprint: $(cat "$S/err")"
+expect_refusal "--retire --yes given twice" 2 "--yes given twice" \
+  rk bash ../agent-setup.sh --retire --yes --yes
+expect_refusal "--yes with another mode" 2 "goes only right after --retire" \
+  rk bash ../agent-setup.sh --rotate --yes
+expect_refusal "--retire KEY --yes (misordered)" 2 "usage: agent-setup.sh --retire --yes [KEY]" \
+  rk bash ../agent-setup.sh --retire "$R/k.pem" --yes
+[ -e "$R/k.pem.previous" ] || fail "a refused --retire --yes deleted the previous key"
+# A caller's yes= can't confirm: only --yes on the command line does.
+expect_refusal "--retire with yes=1 in the environment" 1 "only once SETUP.md Rotation step 5's last pass is recorded" \
+  rk env yes=1 bash ../agent-setup.sh --retire
+[ -e "$R/k.pem.previous" ] || fail "a caller's yes= confirmed --retire"
+# A mistyped confirmation (-y) is a KEY with no key file, not "no rotation".
+(cd "$S" && expect_refusal "--retire -y" 1 "no key file at -y (the confirmation is spelled --yes)" \
+  env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire -y)
+expect_refusal "--retire --YES" 2 "the confirmation is spelled --yes" \
+  rk bash ../agent-setup.sh --retire --YES
+expect_refusal "--retire --yes=1" 2 "the confirmation is spelled --yes" \
+  rk bash ../agent-setup.sh --retire --yes=1
+[ -e "$R/k.pem.previous" ] || fail "a mistyped confirmation deleted the previous key"
+# With --yes given, a stray -y or --YES isn't called a misspelling of it.
+(cd "$S" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire --yes -y >/dev/null 2>"$S/err") || true
+if ! grep -qxF "no key file at -y" "$S/err"; then fail "--retire --yes -y gave the confirmation hint: $(cat "$S/err")"; fi
+expect_refusal "--retire --yes --YES" 2 "--YES isn't a KEY" \
+  rk bash ../agent-setup.sh --retire --yes --YES
+expect_refusal "--rotate --YES" 2 "--YES isn't a KEY" \
+  rk bash ../agent-setup.sh --rotate --YES
+# Each KEY the hint covers, typed on the command line; not one from
+# HANDOFF_PRIVKEY, which nobody typed as a confirmation.
+for k in yes -yes y ye -ye; do
+  (cd "$S" && expect_refusal "--retire $k" 1 "no key file at $k (the confirmation is spelled --yes)" \
+    env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire "$k")
+done
+(cd "$S" && env HANDOFF_PRIVKEY=yes bash "$OLDPWD/../agent-setup.sh" --retire >/dev/null 2>"$S/err") || true
+if ! grep -qxF "no key file at yes" "$S/err"; then fail "HANDOFF_PRIVKEY=yes got the confirmation hint: $(cat "$S/err")"; fi
+for y in --y --ye; do
+  expect_refusal "--retire $y" 2 "the confirmation is spelled --yes" \
+    rk bash ../agent-setup.sh --retire "$y"
+done
+expect_refusal "--retire --yes KEY --yes" 2 "(--yes given twice)" \
+  rk bash ../agent-setup.sh --retire --yes "$R/k.pem" --yes
+expect_refusal "--retire KEY --yes (the reason)" 2 "--yes goes right after --retire, before KEY" \
+  rk bash ../agent-setup.sh --retire "$R/k.pem" --yes
+[ -e "$R/k.pem.previous" ] || fail "a misplaced confirmation deleted the previous key"
+# --retire --yes deletes the previous key; old blobs stop opening, new ones don't.
+rk bash ../agent-setup.sh --retire --yes >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--retire --yes failed"; }
 [ ! -e "$R/k.pem.previous" ] || fail "--retire left the previous key"
 expect_refusal "an old blob after --retire" 1 "decryption failed" \
   rk python3 ../consume.py --label example --check --blob-file blob.txt
 rk python3 ../consume.py --label example --check --blob-file "$ST/new.txt" >/dev/null || fail "the rewrapped blob stopped opening after --retire"
-expect_refusal "--retire with no rotation" 1 "no rotation to retire" \
-  rk bash ../agent-setup.sh --retire
+expect_refusal "--retire --yes with no rotation" 1 "no rotation to retire" \
+  rk bash ../agent-setup.sh --retire --yes
 # An interrupted --rotate (stopped after keeping the old key, before the new
 # one replaced it): both names are the old key. --retire refuses, and a
 # re-run of --rotate finishes it.
 ln "$R/k.pem" "$R/k.pem.previous"
-expect_refusal "--retire before an interrupted rotation finished" 1 "the rotation didn't finish" \
-  rk bash ../agent-setup.sh --retire
+expect_refusal "--retire --yes before an interrupted rotation finished" 1 "the rotation didn't finish" \
+  rk bash ../agent-setup.sh --retire --yes
 [ -e "$R/k.pem.previous" ] || fail "a refused --retire deleted the previous key"
 rk bash ../agent-setup.sh --rotate >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "a re-run --rotate failed"; }
 grep -qF "resuming an interrupted rotation" "$R/err" || fail "a re-run --rotate didn't say it resumed"
 [ ! "$R/k.pem.previous" -ef "$R/k.pem" ] || fail "a re-run --rotate didn't make a new key"
 [ "$(rk bash ../agent-setup.sh --fingerprint "$R/k.pem.previous" 2>/dev/null)" = "$new_fp" ] \
   || fail "a re-run --rotate lost the key it was rotating from"
-rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire after the resumed rotation failed"
+rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after the resumed rotation failed"
 # A key generation that fails leaves the old key in place and no temporary
 # file: a fake openssl that fails genpkey and passes everything else on.
 mkdir -p "$S/nogen"; ln -sf "$PY" "$S/nogen/python3"
@@ -1357,7 +1410,7 @@ rc=0; rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt
 [ ! -e "$ST/x.txt" ] || fail "--out still wrote a file"
 # A copied (not hard-linked) .previous holding the current key resumes and
 # rotates, read by fingerprint; one holding another key is a rotation under way.
-rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire for the copy checks failed"
+rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire for the copy checks failed"
 cur=$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)
 cp -p "$R/k.pem" "$R/k.pem.previous"
 rk bash ../agent-setup.sh --rotate >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--rotate with a copied .previous failed"; }
@@ -1365,13 +1418,15 @@ grep -qF "resuming an interrupted rotation" "$R/err" || fail "a copied .previous
 [ "$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)" != "$cur" ] || fail "a copied .previous made --rotate rotate nothing"
 [ "$(rk bash ../agent-setup.sh --fingerprint "$R/k.pem.previous" 2>/dev/null)" = "$cur" ] || fail "the copied .previous isn't the old key after --rotate"
 cp -p "$R/k.pem" "$R/k.pem.previous"
-expect_refusal "--retire with a .previous holding the current key" 1 "holds the current key: the rotation didn't finish" \
-  rk bash ../agent-setup.sh --retire
+expect_refusal "--retire --yes with a .previous holding the current key" 1 "holds the current key: the rotation didn't finish" \
+  rk bash ../agent-setup.sh --retire --yes
+[ -f "$R/k.pem.previous" ] || fail "a refused --retire --yes deleted a .previous holding the current key"
 rm "$R/k.pem.previous"; mkdir "$R/k.pem.previous"
 expect_refusal "--rotate with a directory at .previous" 1 "is not a regular file" \
   rk bash ../agent-setup.sh --rotate
-expect_refusal "--retire with a directory at .previous" 1 "is not a regular file" \
-  rk bash ../agent-setup.sh --retire
+expect_refusal "--retire --yes with a directory at .previous" 1 "is not a regular file" \
+  rk bash ../agent-setup.sh --retire --yes
+[ -d "$R/k.pem.previous" ] || fail "a refused --retire --yes removed a directory at .previous"
 rmdir "$R/k.pem.previous"
 # One --rotate or --retire at a time: a held lock refuses, and a temporary key
 # a killed run left is removed by the next one.
@@ -1386,12 +1441,12 @@ rk bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" || { cat "$R/err" >&2; 
 grep -qF "removed a temporary key a killed --rotate left behind: $R/.handoff-new.Leftov" "$R/err" || fail "the leftover temporary key wasn't reported"
 [ ! -e "$R/.handoff-new.Leftov" ] || fail "the leftover temporary key wasn't removed"
 [ ! -e "$R/.handoff-lock" ] || fail "--rotate left its lock behind"
-rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire after the lock checks failed"
+rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after the lock checks failed"
 [ ! -e "$R/.handoff-lock" ] || fail "--retire left its lock behind"
 # A key path that starts with "-" is a path, not an option.
 mkdir -p "$R/dash"; cp "$TMPKEY" "$R/dash/-k.pem"
 (cd "$R/dash" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -k.pem >/dev/null 2>&1 \
-  && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire -k.pem >/dev/null 2>&1) \
+  && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire --yes -k.pem >/dev/null 2>&1) \
   || fail "--rotate / --retire on a key path starting with - failed"
 [ ! -e "$R/dash/-k.pem.previous" ] || fail "--retire on a key path starting with - left the previous key"
 # Two --rotate runs at once: the second, started while the first is
@@ -1420,7 +1475,7 @@ won=$(sed -n 's/^new public key fingerprint: //p' "$R/race-a")
   || fail "the first --rotate's key isn't the current key after a refused second run"
 # --rewrap refuses a half-done rotation: both names holding one key (linked
 # or copied), a blob "for the current key" would be for the key being retired.
-rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire before the half-done checks failed"
+rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire before the half-done checks failed"
 printf '%s\n' "$cur_blob" > "$ST/cur.txt"
 for how in ln cp traditional; do
   case "$how" in
@@ -1437,13 +1492,13 @@ done
 # unwritable key directory is reported as that.
 rk bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate before the --retire lock check failed"
 mkdir "$R/.handoff-lock"
-expect_refusal "--retire while another holds the lock" 1 "another --rotate or --retire is running" \
-  rk bash ../agent-setup.sh --retire
+expect_refusal "--retire --yes while another holds the lock" 1 "another --rotate or --retire is running" \
+  rk bash ../agent-setup.sh --retire --yes
 [ -e "$R/k.pem.previous" ] || fail "a refused --retire deleted the previous key"
 rmdir "$R/.handoff-lock"
 if [ "$(id -u)" != 0 ]; then
   chmod 500 "$R"
-  rc=0; rk bash ../agent-setup.sh --retire >"$S/out" 2>"$S/err" || rc=$?
+  rc=0; rk bash ../agent-setup.sh --retire --yes >"$S/out" 2>"$S/err" || rc=$?
   chmod 700 "$R"
   if [ "$rc" != 1 ] || ! grep -qF "cannot create the lock in $R" "$S/err" || grep -qF "is running" "$S/err"; then
     fail "an unwritable key directory was reported as a held lock: exit $rc, $(cat "$S/err")"
@@ -1452,7 +1507,7 @@ if [ "$(id -u)" != 0 ]; then
 fi
 # A caller's $new or $lock can't make --retire delete something.
 printf 'keep\n' > "$R/victim"
-rk env new="$R/victim" lock="$R/victim" bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire with new= and lock= set failed"
+rk env new="$R/victim" lock="$R/victim" bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire with new= and lock= set failed"
 [ -f "$R/victim" ] || fail "--retire deleted a file named by the caller's \$new or \$lock"
 # Two blobs appended into one file are named as that, not "not base64".
 rk bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate before the concatenation check failed"
@@ -1465,11 +1520,11 @@ rc=0; rk python3 ../consume.py --label example --check --blob-file "$ST/one.txt"
 if [ "$rc" != 1 ] || ! grep -qF "not valid base64" "$S/err" || grep -qF "concatenated" "$S/err"; then
   fail "one damaged blob was called several concatenated: exit $rc, $(cat "$S/err")"
 fi
-rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire after the redirect checks failed"
+rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after the redirect checks failed"
 # A key directory starting with "-" works for --rotate and first setup.
 mkdir -p "$R/dash2/-d"; cp "$TMPKEY" "$R/dash2/-d/k.pem"
 (cd "$R/dash2" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -d/k.pem >/dev/null 2>&1 \
-  && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire -d/k.pem >/dev/null 2>&1 \
+  && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire --yes -d/k.pem >/dev/null 2>&1 \
   && env -u HANDOFF_PRIVKEY HANDOFF_KEY_DIR=-g bash "$OLDPWD/../agent-setup.sh" >/dev/null 2>&1) \
   || fail "a key directory starting with - failed"
 [ -f "$R/dash2/-g/handoff-priv.pem" ] || fail "first setup in a directory starting with - wrote no key"
@@ -1513,7 +1568,7 @@ for mode in plain rotating; do
   rc=0; out=$(rk ../consume.py --label example --blob "$now_blob" -- sh -c 'echo ran' 2>&-) || rc=$?
   [ "$rc" = 0 ] && [ "$out" = ran ] || fail "run mode with stderr closed under the launcher ($mode): exit $rc, stdout $(printf '%q' "$out")"
 done
-rk bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire after the closed-stderr check failed"
+rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after the closed-stderr check failed"
 # A directory named like a temporary key stops --rotate's sweep with a report.
 mkdir "$R/.handoff-new.dir"
 expect_refusal "--rotate with a directory named like a temporary key" 1 "is not a temporary key file" \
@@ -1558,8 +1613,14 @@ rk env POSIXLY_CORRECT=1 bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" \
 [ "$(stat -c %a "$R/k.pem")" = 600 ] && [ -f "$R/k.pem.previous" ] || fail "--rotate under POSIX option parsing left the wrong state"
 # --retire also removes a temporary file that is another link to the old key
 # (a setup killed between its ln and its cleanup): its data doesn't survive.
+ln "$R/k.pem.previous" "$R/.handoff-new.Linked"
+# Without --yes too, as the docs say: the leftover link goes, the old key stays.
+rc=0; rk bash ../agent-setup.sh --retire >/dev/null 2>"$R/err" || rc=$?
+[ "$rc" = 1 ] && [ ! -e "$R/.handoff-new.Linked" ] && [ -f "$R/k.pem.previous" ] \
+  || fail "--retire without --yes and a linked leftover: exit $rc, $(cat "$R/err")"
+grep -qF "another link to the previous key" "$R/err" || fail "--retire without --yes didn't report the link it removed"
 ln "$R/k.pem.previous" "$R/.handoff-setup.Linked"
-rk bash ../agent-setup.sh --retire >/dev/null 2>"$R/err" || fail "--retire with a linked leftover failed: $(cat "$R/err")"
+rk bash ../agent-setup.sh --retire --yes >/dev/null 2>"$R/err" || fail "--retire with a linked leftover failed: $(cat "$R/err")"
 [ ! -e "$R/.handoff-setup.Linked" ] || fail "--retire left another link to the old key"
 grep -qF "another link to the previous key" "$R/err" || fail "--retire didn't report the link it removed"
 # KEY turning into a directory during --rotate: refused, the new key removed,
@@ -1588,13 +1649,13 @@ mkdir -p "$S/spell"; cp "$TMPKEY" "$S/spell/.handoff-new.pem"
 [ -f "$S/spell/.handoff-new.pem" ] && [ -f "$S/spell/.handoff-new.pem.previous" ] || fail "a relative key path was swept"
 (cd "$S/spell" && env HANDOFF_PRIVKEY="$S//spell//.handoff-new.pem" bash "$OLDPWD/../agent-setup.sh" --rotate >/dev/null 2>&1) || true
 [ -f "$S/spell/.handoff-new.pem" ] && [ -f "$S/spell/.handoff-new.pem.previous" ] || fail "a doubled-slash key path was swept"
-(cd "$S/spell" && env HANDOFF_PRIVKEY=.handoff-new.pem bash "$OLDPWD/../agent-setup.sh" --retire >/dev/null 2>&1) || fail "--retire of a relative key failed"
+(cd "$S/spell" && env HANDOFF_PRIVKEY=.handoff-new.pem bash "$OLDPWD/../agent-setup.sh" --retire --yes >/dev/null 2>&1) || fail "--retire of a relative key failed"
 [ -f "$S/spell/.handoff-new.pem" ] && [ ! -e "$S/spell/.handoff-new.pem.previous" ] || fail "--retire of a relative key removed the wrong file"
 # The hard-link guard holds for a key path starting with -.
 mkdir -p "$S/dashlink"; cp "$TMPKEY" "$S/dashlink/-k.pem"
 (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -k.pem >/dev/null 2>&1) || fail "--rotate -k.pem failed"
 ln -- "$S/dashlink/-k.pem.previous" "$S/dashlink/backup.pem"
-rc=0; (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire -k.pem >/dev/null 2>"$S/err") || rc=$?
+rc=0; (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire --yes -k.pem >/dev/null 2>"$S/err") || rc=$?
 if [ "$rc" != 1 ] || ! grep -qF "has another hard link" "$S/err"; then
   fail "--retire -k.pem with another link: exit $rc, $(cat "$S/err")"
 fi
@@ -1633,6 +1694,10 @@ ln "$S/tmpname/.handoff-new.pem.previous" "$S/tmpname/backup.pem"
 expect_refusal "--retire with another link to the old key" 1 "has another hard link" \
   env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire
 [ -f "$S/tmpname/.handoff-new.pem.previous" ] || fail "a refused --retire deleted the previous key"
+# The same with --yes: the guard, not the missing confirmation, keeps it.
+expect_refusal "--retire --yes with another link to the old key" 1 "has another hard link" \
+  env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire --yes
+[ -f "$S/tmpname/.handoff-new.pem.previous" ] || fail "a refused --retire --yes deleted the previous key"
 # The refusal says how to find the other name: find from the disk's mount point.
 grep -qF -- "-xdev -samefile '$(cd "$S/tmpname" && pwd -P)/.handoff-new.pem.previous'" "$S/err" || fail "the link refusal doesn't give the find command: $(cat "$S/err")"
 mnt=$(sed -n "s/.*find '\([^']*\)' -xdev.*/\1/p" "$S/err")
@@ -1641,8 +1706,8 @@ rm "$S/tmpname/backup.pem"
 # A find that fails is a refusal, not a pass.
 mkdir -p "$S/nofind"; ln -sf "$PY" "$S/nofind/python3"; ln -sf "$(command -v openssl)" "$S/nofind/openssl"
 printf '#!/bin/sh\nexit 1\n' > "$S/nofind/find"; chmod 755 "$S/nofind/find"
-expect_refusal "--retire whose link check fails" 1 "couldn't check" \
-  env PATH="$S/nofind:/usr/bin:/bin" HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire
+expect_refusal "--retire --yes whose link check fails" 1 "couldn't check" \
+  env PATH="$S/nofind:/usr/bin:/bin" HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire --yes
 [ -f "$S/tmpname/.handoff-new.pem.previous" ] || fail "--retire whose link check failed deleted the previous key"
 # A mount point df reports as not absolute (a space in it, cut short) isn't
 # used: the hint says where to look in words instead.
@@ -1652,7 +1717,7 @@ ln "$S/tmpname/.handoff-new.pem.previous" "$S/tmpname/backup2.pem"
 rc=0; env PATH="$S/reldf:/usr/bin:/bin" HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
 rm "$S/tmpname/backup2.pem"
 if [ "$rc" != 1 ] || ! grep -qF "find <the mount point of its disk> -xdev" "$S/qerr"; then fail "a relative mount point from df was used in the hint: $(cat "$S/qerr")"; fi
-env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire >/dev/null 2>&1 || fail "--retire after removing the other link failed"
+env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after removing the other link failed"
 # A misordered flag isn't taken as KEY; the lock message gives the exact rmdir.
 expect_refusal "--rotate --fingerprint" 2 "one mode at a time" \
   bash ../agent-setup.sh --rotate --fingerprint
