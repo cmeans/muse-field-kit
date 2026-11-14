@@ -17,17 +17,16 @@
 # directory is the one in the path this script was run by, not resolved
 # through a symlink: for a symlink ~/bin/handoff.sh, the key goes in ~/bin.
 #
-# Usage:
-#   handoff.sh [--to NAME]                 # paste or type JSON, then Enter and Ctrl-D
-#   handoff.sh [--to NAME] FILE            # read JSON from FILE
-#   handoff.sh [--to NAME] --fingerprint   # print the key's fingerprint and exit
-#   handoff.sh --help                      # print this usage and exit
-# NAME (default muse) picks the key file handoff-NAME.pem beside this script.
+# Usage: handoff.sh --help (the usage() text below is the one copy).
 #
 # stdout is ONLY the base64 ciphertext; all prompts go to stderr, so
 #   handoff.sh secrets.json > blob.txt
 # yields a clean blob.
 set -euo pipefail
+
+# Limits, kept equal to their copies in agent-setup.sh and consume.py:
+MAX_KEY_BYTES=16384   # consume.py's MAX_KEY_FILE; an RSA-2048 PEM key is about 450 bytes public, 1.7 KB private
+MAX_NAME=64           # NAME's length cap: keeps handoff-NAME.pem far under any file system's 255-byte name limit
 
 # The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
 # dropped, in any case, as consume.py does: a stray or planted openssl config
@@ -57,8 +56,9 @@ Usage:
   handoff.sh [--to NAME] FILE            read JSON from FILE
   handoff.sh [--to NAME] --fingerprint   print the key's fingerprint and exit
   handoff.sh --help                      print this usage and exit
-NAME (default muse; letters, digits, _ and -) picks the agent's public key
-file, handoff-NAME.pem, in this script's directory.
+NAME (default muse; up to 64 letters, digits, _ and -, not starting with -)
+picks the agent's public key file, handoff-NAME.pem, in this script's
+directory.
 stdout is ONLY the base64 ciphertext; all prompts go to stderr.
 USAGE
 }
@@ -78,9 +78,9 @@ while [ $# -gt 0 ]; do
     --fingerprint) mode=fingerprint ;;
     --to=*) usage_error "write --to NAME, with a space" ;;
     --to)
-      # The next word is the NAME; one that looks like an option is a NAME left out.
+      # The next word is the NAME; a long option there is a NAME left out.
       [ $# -ge 2 ] || usage_error "--to needs a NAME"
-      case "$2" in -*) usage_error "--to needs a NAME" ;; esac
+      case "$2" in --*) usage_error "--to needs a NAME" ;; esac
       [ "$to_given" = 0 ] || usage_error "--to given more than once"
       to=$2; to_given=1; shift ;;
     --)
@@ -102,12 +102,14 @@ done
 
 # The name becomes part of a file name: plain ASCII letters, digits, _ and -
 # only (listed, not ranges, which can match more in some locales), so it
-# can't name another directory.
+# can't name another directory; not starting with -, so it never reads as an
+# option.
 case "$to" in
+  -*) usage_error "--to NAME can't start with - (got $(printf '%q' "$to"))" ;;
   ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*)
     usage_error "--to NAME takes only letters, digits, _ and - (got $(printf '%q' "$to"))" ;;
 esac
-[ "${#to}" -le 64 ] || usage_error "--to NAME is at most 64 characters"
+[ "${#to}" -le "$MAX_NAME" ] || usage_error "--to NAME is at most $MAX_NAME characters"
 
 # --- the agent's public key, from handoff-NAME.pem beside this script ------
 # The key is public: what matters is that it's the agent's (the fingerprint
@@ -122,6 +124,12 @@ case "$src" in
   *) dir=. ;;
 esac
 case "$dir" in /*|.|./*) ;; *) dir=./$dir ;; esac   # shown as a path, never like an option
+# Run as bash <(cat handoff.sh) or bash /dev/stdin, the path is a descriptor's,
+# and its directory isn't where the user keeps the key.
+case "$dir" in
+  /dev|/dev/fd|/proc/*/fd)
+    echo "handoff.sh: run handoff.sh by its path: its key file is found beside it" >&2; exit 1 ;;
+esac
 keyfile=${dir%/}/handoff-$to.pem
 
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
@@ -130,10 +138,14 @@ if [ ! -e "$keyfile" ]; then
   no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
 fi
 [ -f "$keyfile" ] || no_key "$keyfile is not a regular file"
-# A large non-key file makes openssl's decoder very slow: refuse it.
-size=$( { wc -c < "$keyfile"; } 2>/dev/null ) || no_key "cannot read $keyfile"
-[ "$size" -le 16384 ] || no_key "$keyfile is over 16384 bytes; not a public key file"
-PUBKEY=$(<"$keyfile") || no_key "cannot read $keyfile"
+# One bounded read, and the size checked on what was read: a large non-key
+# file makes openssl's decoder very slow, and a file swapped after the check
+# above can't bring that back.
+# (The x keeps $(...) from dropping trailing newlines before they're counted.)
+raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" && printf x; } 2>/dev/null ) || no_key "cannot read $keyfile"
+size=$(( $(printf '%s' "$raw" | LC_ALL=C wc -c) - 1 ))
+[ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$keyfile is over $MAX_KEY_BYTES bytes; not a public key file"
+PUBKEY=${raw%x}
 # A copy saved on Windows or by an editor can carry CRLF line endings or
 # trailing blanks: openssl reads those, so drop them before the line checks.
 PUBKEY=$(printf '%s\n' "$PUBKEY" | tr -d '\r' | sed 's/[[:blank:]]*$//')
@@ -148,7 +160,8 @@ if [ "$begins" != 1 ] || [ "$(count '-----BEGIN PUBLIC KEY-----')" != 1 ] \
 fi
 # RSA-2048 with e = 65537 only, as agent-setup.sh and consume.py check: its
 # public key in DER is 294 bytes, a fixed 33-byte header (its modulus field's
-# leading 00 means exactly 2048 bits), and the exponent 65537 at the end.
+# leading 00 means exactly 2048 bits), and the exponent 65537 at the end. In
+# hex, as od prints it, that's 588 characters (2 x 294).
 der=$(printf '%s\n' "$PUBKEY" | openssl pkey -pubin -outform DER 2>/dev/null | od -An -tx1 -v | tr -d ' \n') \
   || no_key "$keyfile is not a readable public key"
 case "$der" in
@@ -234,7 +247,7 @@ fi
 fp=$(fingerprint)
 echo "pubkey SHA256:$fp (from $keyfile)  <- compare with the fingerprint" >&2
 echo "   your agent reports for its key before trusting this output" >&2
-echo "--- paste everything below into chat with your agent ---" >&2
+echo "--- paste everything below into chat with $to (key file $keyfile) ---" >&2
 printf '%s' "$SECRET_JSON" | openssl pkeyutl -encrypt -pubin \
   -inkey <(printf '%s\n' "$PUBKEY") \
   -pkeyopt rsa_padding_mode:oaep \

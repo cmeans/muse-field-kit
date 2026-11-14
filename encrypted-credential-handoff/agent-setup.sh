@@ -35,6 +35,8 @@
 #                    refuse HANDOFF_KEY_DIR without HANDOFF_PRIVKEY (exit 2).
 set -euo pipefail
 umask 077
+
+MAX_KEY_BYTES=16384   # equal to consume.py's MAX_KEY_FILE and handoff.sh's MAX_KEY_BYTES
 # cd must never search the caller's CDPATH for a relative key directory.
 unset CDPATH
 # This run's temporary key and lock (cleanup removes them, except after a
@@ -115,7 +117,7 @@ fingerprint_of() {
     30820122300d06092a864886f70d01010105000382010f003082010a0282010100*0203010001) ;;
     *) der=bad ;;
   esac
-  if [ "${#der}" -ne 588 ]; then
+  if [ "${#der}" -ne 588 ]; then   # 294 DER bytes, as od's hex: 2 characters a byte
     echo "agent-setup.sh: the key at $1 is not an RSA-2048 key; this protocol uses RSA-2048 keys with e = 65537 (as this script makes)" >&2
     return 2
   fi
@@ -142,7 +144,7 @@ key_fingerprint() {  # FILE
   # A large non-key file makes openssl's decoder very slow: refuse it.
   local size rc=0
   size=$( { wc -c < "$1"; } 2>/dev/null ) || { echo "cannot read key file at $1" >&2; exit 1; }
-  [ "$size" -le 16384 ] || { echo "key file at $1 is over 16384 bytes; not an RSA-2048 key file" >&2; exit 1; }
+  [ "$size" -le "$MAX_KEY_BYTES" ] || { echo "key file at $1 is over $MAX_KEY_BYTES bytes; not an RSA-2048 key file" >&2; exit 1; }
   fp=$(fingerprint_of "$1") || rc=$?
   if [ "$rc" -ne 0 ]; then
     # 2: read, but not an RSA-2048 key (already said); else unreadable.

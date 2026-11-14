@@ -389,6 +389,11 @@ for k in ed25519 p256 rsa2052 rsa-e3 rsa-e65539; do
   expect_refusal "a $k key (agent-setup.sh --fingerprint)" 1 "is not an RSA-2048 key" \
     bash ../agent-setup.sh --fingerprint "$S/$k.pem"
   ! grep -q "could not read key" "$S/err" || fail "agent-setup.sh said it couldn't read a $k key it did read"
+  # handoff.sh's copy of the same check, on the key's public half.
+  mkdir -p "$S/hb"; cp ../handoff.sh "$S/hb/handoff.sh"
+  openssl pkey -in "$S/$k.pem" -pubout > "$S/hb/handoff-$k.pem"
+  expect_refusal "a $k key (handoff.sh)" 1 "is not an RSA-2048 public key with e = 65537" \
+    bash "$S/hb/handoff.sh" --to "$k" --fingerprint
 done
 # An unreadable key file is reported as unreadable, not as oversized (root
 # can read anything, so skip it there).
@@ -857,6 +862,7 @@ expect_refusal "handoff.sh with no key file" 1 "no key file for recipient 'muse'
   bash "$K/handoff.sh" <<<"$pay"
 expect_refusal "handoff.sh --fingerprint with no key file" 1 "no key file for recipient 'muse'" \
   bash "$K/handoff.sh" --fingerprint
+# A backstop only: the behavior above (no key file, no ciphertext) is the proof.
 ! grep -qx -e '-----BEGIN PUBLIC KEY-----' -e '-----END PUBLIC KEY-----' ../handoff.sh \
   || fail "handoff.sh still embeds a public key block"
 # --to NAME picks handoff-NAME.pem; --fingerprint names the file it read.
@@ -875,6 +881,8 @@ rm "$K/handoff-muse.pem"
 # Encrypting names the key file beside the fingerprint, and the blob round-trips.
 bash "$K/handoff.sh" --to other expected.json >"$S/blob4" 2>"$S/err" || { cat "$S/err" >&2; fail "handoff.sh --to other FILE failed"; }
 grep -qF "pubkey $want (from $K/handoff-other.pem)" "$S/err" || fail "the encrypt run didn't name its key file"
+grep -qF -- "--- paste everything below into chat with other (key file $K/handoff-other.pem) ---" "$S/err" \
+  || fail "the paste banner didn't name the recipient"
 out=$(HANDOFF_BLOB="$(cat "$S/blob4")" consume --label example -- python3 -c '
 import os
 print(os.environ["SERVICE_PASSWORD"])
@@ -895,6 +903,12 @@ cp test-dummy-pub.pem "$K/handoff-$(printf 'a%.0s' $(seq 64)).pem"
 expect_refusal "handoff.sh --to with no NAME" 2 "--to needs a NAME" bash "$K/handoff.sh" --to
 expect_refusal "handoff.sh --to followed by an option" 2 "--to needs a NAME" bash "$K/handoff.sh" --to --fingerprint
 expect_refusal "handoff.sh --to=NAME" 2 "write --to NAME, with a space" bash "$K/handoff.sh" --to=other --fingerprint
+expect_refusal "handoff.sh NAME starting with -" 2 "--to NAME can't start with -" \
+  bash "$K/handoff.sh" --to -muse --fingerprint
+expect_refusal "handoff.sh two FILEs, both after --" 2 "at most one FILE" \
+  bash "$K/handoff.sh" --to other -- expected.json expected.json </dev/null
+expect_refusal "handoff.sh through process substitution" 1 "run handoff.sh by its path" \
+  bash <(cat "$K/handoff.sh") --to other --fingerprint
 expect_refusal "handoff.sh on stdin, with no path" 1 "run handoff.sh by its path" \
   bash -s -- --fingerprint < "$K/handoff.sh"
 expect_refusal "handoff.sh --to twice" 2 "--to given more than once" \
@@ -959,6 +973,10 @@ expect_refusal "handoff.sh key file that is a symlink loop" 1 "handoff-loop.pem 
 { cat test-dummy-pub.pem; python3 -c 'import os,sys; sys.stdout.write("#" * (16384 - os.path.getsize("test-dummy-pub.pem") - 1) + "\n")'; } > "$K/handoff-max.pem"
 [ "$(wc -c < "$K/handoff-max.pem")" -eq 16384 ] || fail "test setup: handoff-max.pem isn't 16384 bytes"
 [ "$(bash "$K/handoff.sh" --to max --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a 16384-byte key file"
+# Trailing newlines count toward the limit too.
+{ cat test-dummy-pub.pem; python3 -c 'import sys; sys.stdout.write("\n" * 16384)'; } > "$K/handoff-nl.pem"
+expect_refusal "handoff.sh key file over 16384 bytes of trailing newlines" 1 "handoff-nl.pem is over 16384 bytes" \
+  bash "$K/handoff.sh" --to nl --fingerprint
 python3 -c 'import sys; sys.stdout.write("x" * 16385)' > "$K/handoff-big.pem"
 expect_refusal "handoff.sh key file over 16384 bytes" 1 "handoff-big.pem is over 16384 bytes" \
   bash "$K/handoff.sh" --to big --fingerprint
