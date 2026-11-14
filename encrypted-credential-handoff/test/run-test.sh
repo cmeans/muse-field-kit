@@ -909,6 +909,24 @@ expect_refusal "handoff.sh two FILEs, both after --" 2 "at most one FILE" \
   bash "$K/handoff.sh" --to other -- expected.json expected.json </dev/null
 expect_refusal "handoff.sh through process substitution" 1 "run handoff.sh by its path" \
   bash <(cat "$K/handoff.sh") --to other --fingerprint
+expect_refusal "handoff.sh as /dev/stdin" 1 "run handoff.sh by its path" \
+  bash /dev/stdin --to other --fingerprint < "$K/handoff.sh"
+# After --, the next argument is FILE even if it starts with -.
+cp expected.json "$K/-x.json"
+( cd "$K" && bash handoff.sh --to other -- -x.json </dev/null >"$S/blob5" 2>/dev/null ) || fail "handoff.sh -- -x.json failed"
+out=$(HANDOFF_BLOB="$(cat "$S/blob5")" consume --label example -- python3 -c '
+import os
+print(os.environ["SERVICE_PASSWORD"])
+')
+[ "$out" = "$P" ] || fail "the -- FILE blob did not round-trip"
+# Under another shell than bash, it says to run it with bash.
+other_sh=
+for s in zsh dash ksh mksh; do if command -v "$s" >/dev/null; then other_sh=$s; break; fi; done
+if [ -n "$other_sh" ]; then
+  expect_refusal "handoff.sh under $other_sh" 1 "run it with bash" "$other_sh" "$K/handoff.sh" --to other --fingerprint
+else
+  echo "skip: no zsh, dash, ksh or mksh, handoff.sh's bash check not tested"
+fi
 expect_refusal "handoff.sh on stdin, with no path" 1 "run handoff.sh by its path" \
   bash -s -- --fingerprint < "$K/handoff.sh"
 expect_refusal "handoff.sh --to twice" 2 "--to given more than once" \
@@ -934,6 +952,10 @@ grep -qxF "key file: ./hk/handoff-other.pem" "$S/err" || fail "bash hk/handoff.s
 # A copy with CRLF line endings or trailing blanks is still the one key.
 sed 's/$/\r/' test-dummy-pub.pem > "$K/handoff-crlf.pem"
 [ "$(bash "$K/handoff.sh" --to crlf --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a CRLF key file"
+{ printf '\357\273\277'; cat test-dummy-pub.pem; } > "$K/handoff-bom.pem"
+[ "$(bash "$K/handoff.sh" --to bom --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with a byte-order mark"
+{ printf '\357\273\277'; sed 's/$/\r/' test-dummy-pub.pem; } > "$K/handoff-bomcrlf.pem"
+[ "$(bash "$K/handoff.sh" --to bomcrlf --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with a byte-order mark and CRLF"
 sed 's/$/  /' test-dummy-pub.pem > "$K/handoff-blanks.pem"
 [ "$(bash "$K/handoff.sh" --to blanks --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with trailing blanks"
 # A key file that isn't one RSA-2048 public key is refused, never used.
@@ -977,6 +999,11 @@ expect_refusal "handoff.sh key file that is a symlink loop" 1 "handoff-loop.pem 
 { cat test-dummy-pub.pem; python3 -c 'import sys; sys.stdout.write("\n" * 16384)'; } > "$K/handoff-nl.pem"
 expect_refusal "handoff.sh key file over 16384 bytes of trailing newlines" 1 "handoff-nl.pem is over 16384 bytes" \
   bash "$K/handoff.sh" --to nl --fingerprint
+# And NULs, which bash's $(...) would otherwise drop before the count.
+{ cat test-dummy-pub.pem; head -c 16384 /dev/zero; } > "$K/handoff-nul.pem"
+expect_refusal "handoff.sh key file over 16384 bytes of NULs" 1 "handoff-nul.pem is over 16384 bytes" \
+  bash "$K/handoff.sh" --to nul --fingerprint
+! grep -q "null byte" "$S/err" || fail "handoff.sh let bash warn about NULs in the key file"
 python3 -c 'import sys; sys.stdout.write("x" * 16385)' > "$K/handoff-big.pem"
 expect_refusal "handoff.sh key file over 16384 bytes" 1 "handoff-big.pem is over 16384 bytes" \
   bash "$K/handoff.sh" --to big --fingerprint

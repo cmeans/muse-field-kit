@@ -22,11 +22,15 @@
 # stdout is ONLY the base64 ciphertext; all prompts go to stderr, so
 #   handoff.sh secrets.json > blob.txt
 # yields a clean blob.
+# Under zsh or sh, BASH_SOURCE and compgen don't exist: say so, rather than a
+# misleading refusal further down. (First, before options sh may not have.)
+[ -n "${BASH_VERSION-}" ] || { echo "handoff.sh: run it with bash (./handoff.sh, or bash handoff.sh)" >&2; exit 1; }
 set -euo pipefail
 
-# Limits, kept equal to their copies in agent-setup.sh and consume.py:
-MAX_KEY_BYTES=16384   # consume.py's MAX_KEY_FILE; an RSA-2048 PEM key is about 450 bytes public, 1.7 KB private
-MAX_NAME=64           # NAME's length cap: keeps handoff-NAME.pem far under any file system's 255-byte name limit
+# Kept equal to consume.py's MAX_KEY_FILE and agent-setup.sh's MAX_KEY_BYTES:
+MAX_KEY_BYTES=16384   # an RSA-2048 PEM key is about 450 bytes public, 1.7 KB private
+# NAME's length cap: keeps handoff-NAME.pem far under any file system's 255-byte name limit.
+MAX_NAME=64
 
 # The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
 # dropped, in any case, as consume.py does: a stray or planted openssl config
@@ -141,11 +145,13 @@ fi
 # One bounded read, and the size checked on what was read: a large non-key
 # file makes openssl's decoder very slow, and a file swapped after the check
 # above can't bring that back.
-# (The x keeps $(...) from dropping trailing newlines before they're counted.)
-raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" && printf x; } 2>/dev/null ) || no_key "cannot read $keyfile"
+# (The x keeps $(...) from dropping trailing newlines before they're counted,
+# and NULs, which $(...) would drop too, are counted as another byte.)
+raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" | LC_ALL=C tr '\000' '\001' && printf x; } 2>/dev/null ) || no_key "cannot read $keyfile"
 size=$(( $(printf '%s' "$raw" | LC_ALL=C wc -c) - 1 ))
 [ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$keyfile is over $MAX_KEY_BYTES bytes; not a public key file"
 PUBKEY=${raw%x}
+PUBKEY=${PUBKEY#$'\xef\xbb\xbf'}   # a UTF-8 byte-order mark, as some Windows editors save
 # A copy saved on Windows or by an editor can carry CRLF line endings or
 # trailing blanks: openssl reads those, so drop them before the line checks.
 PUBKEY=$(printf '%s\n' "$PUBKEY" | tr -d '\r' | sed 's/[[:blank:]]*$//')
