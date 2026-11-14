@@ -14,7 +14,7 @@ This file only routes you to the right place. **`SETUP.md` is the authority:** i
 ## Before anything
 
 - Check your notes for a handoff that's already set up (`SETUP.md` step 8 says what they hold). If there is one, work from the folder your notes and the recorded sums point to; don't clone or set up again.
-- If there's none, work from the whole folder as it is in the repository, not from this file alone: the folder this file came in, if it was installed as a skill with its scripts beside it, or a clone (`git clone https://github.com/cmeans/muse-field-kit`, then its `encrypted-credential-handoff` folder).
+- If there's none, clone the repository and work from the clone: `git clone https://github.com/cmeans/muse-field-kit`, then its `encrypted-credential-handoff` folder. Never run the scripts, point a wrapper, or hand the user `handoff.sh` from an installed copy of this skill, even when its scripts are beside this file: nothing checks that an installed copy matches the repository (a look-alike skill, a tampered upload, scripts that lost their execute bits), and README's invariant 6 says to take `handoff.sh` from this repository. An installed skill is only how you find these instructions (`SETUP.md`, "Installed as a skill").
 - Read `README.md` (its threat model and ten invariants govern everything) and `SETUP.md` in full before the first step.
 - Use the scripts verbatim. A change to the mechanism needs the user's approval first (`SETUP.md`, "What counts as a mechanism change").
 
