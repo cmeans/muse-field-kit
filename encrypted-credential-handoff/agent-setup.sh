@@ -5,7 +5,7 @@
 #
 # Generates an RSA-2048 keypair for the encrypted credential handoff:
 #   private key: ~/.config/handoff/handoff-priv.pem  (mode 0600, NEVER shared)
-#   public key:  printed at the end, for embedding in handoff.sh
+#   public key:  printed at the end, for the user to save as handoff-<name>.pem beside handoff.sh
 # Also prints the public key's SHA-256 fingerprint, which the human compares
 # before trusting any blob, and the consume-side key path to configure.
 #
@@ -35,6 +35,8 @@
 #                    refuse HANDOFF_KEY_DIR without HANDOFF_PRIVKEY (exit 2).
 set -euo pipefail
 umask 077
+
+MAX_KEY_BYTES=16384   # equal to consume.py's MAX_KEY_FILE and handoff.sh's MAX_KEY_BYTES
 # cd must never search the caller's CDPATH for a relative key directory.
 unset CDPATH
 # This run's temporary key and lock (cleanup removes them, except after a
@@ -115,7 +117,7 @@ fingerprint_of() {
     30820122300d06092a864886f70d01010105000382010f003082010a0282010100*0203010001) ;;
     *) der=bad ;;
   esac
-  if [ "${#der}" -ne 588 ]; then
+  if [ "${#der}" -ne 588 ]; then   # 294 DER bytes, as od's hex: 2 characters a byte
     echo "agent-setup.sh: the key at $1 is not an RSA-2048 key; this protocol uses RSA-2048 keys with e = 65537 (as this script makes)" >&2
     return 2
   fi
@@ -142,7 +144,7 @@ key_fingerprint() {  # FILE
   # A large non-key file makes openssl's decoder very slow: refuse it.
   local size rc=0
   size=$( { wc -c < "$1"; } 2>/dev/null ) || { echo "cannot read key file at $1" >&2; exit 1; }
-  [ "$size" -le 16384 ] || { echo "key file at $1 is over 16384 bytes; not an RSA-2048 key file" >&2; exit 1; }
+  [ "$size" -le "$MAX_KEY_BYTES" ] || { echo "key file at $1 is over $MAX_KEY_BYTES bytes; not an RSA-2048 key file" >&2; exit 1; }
   fp=$(fingerprint_of "$1") || rc=$?
   if [ "$rc" -ne 0 ]; then
     # 2: read, but not an RSA-2048 key (already said); else unreadable.
@@ -329,7 +331,7 @@ case "$mode" in
         PUB=$(pub_of "$key") \
           || { echo "could not derive the public key" >&2; exit 1; }
         echo "agent-setup.sh: a rotation is under way ($prev is the old key), and the new key is in place: nothing rotated." >&2
-        echo "If the user hasn't embedded this key in handoff.sh and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
+        echo "If the user hasn't saved this key as their handoff-<name>.pem and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
         echo "current (new) public key fingerprint: SHA256:$fp"
         echo
         printf '%s\n' "$PUB"
@@ -364,11 +366,11 @@ case "$mode" in
     echo "new public key fingerprint: SHA256:$fp"
     echo "report this fingerprint to the human; they compare it with handoff.sh's output"
     echo
-    echo "embed this public key in handoff.sh, in place of the old one:"
+    echo "the user replaces their handoff-<name>.pem (beside handoff.sh) with this public key:"
     echo
     printf '%s\n' "$PUB"
     echo
-    echo "next: SETUP.md Rotation step 3 (the user embeds this key in handoff.sh and confirms its fingerprint), then the rest of Rotation (or Compromise)"
+    echo "next: SETUP.md Rotation step 3 (the user replaces their handoff-<name>.pem with this key and confirms its fingerprint), then the rest of Rotation (or Compromise)"
     exit 0
     ;;
   --retire)
@@ -538,7 +540,7 @@ echo
 echo "public key fingerprint: SHA256:$FPR"
 echo "report this fingerprint to the human; they compare it with handoff.sh's output"
 echo
-echo "embed this public key in handoff.sh:"
+echo "the user saves this public key as handoff-<name>.pem beside handoff.sh (handoff-muse.pem for the default name; SETUP.md step 3):"
 echo
 printf '%s\n' "$PUB"
 echo
