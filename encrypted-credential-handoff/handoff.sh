@@ -144,18 +144,25 @@ keyfile=${dir%/}/handoff-$to.pem
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
 if [ ! -e "$keyfile" ]; then
   [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink that doesn't resolve to a file"
-  # A near miss beside it is named, from a short allow-list only: another
-  # separator or case (handoff_muse.pem, handoff-Muse.pem), or an editor's
-  # extra extension (handoff-muse.pem.txt, handoff-muse.pem.pem). Anything
+  # A near miss beside it is named, from a short allow-list only: a _ or . in
+  # place of the -, another case (handoff_muse.pem, handoff-Muse.pem), or an
+  # editor's extra extension (handoff-muse.pem.txt, handoff-muse.pem.pem). Anything
   # else, such as a kept old key (handoff-muse.pem.old, .2025-06-01), isn't
   # offered, and the hint asks for a check, never a rename on its own.
   near=
   restore=$(shopt -p nullglob nocaseglob || true)
   shopt -s nullglob nocaseglob
-  for f in "${dir%/}"/handoff?"$to".pem "${dir%/}"/handoff?"$to".pem.txt "${dir%/}"/handoff?"$to".pem.pem; do
+  for f in "${dir%/}"/handoff[-_.]"$to".pem "${dir%/}"/handoff[-_.]"$to".pem.txt "${dir%/}"/handoff[-_.]"$to".pem.pem; do
     if [ "$f" != "$keyfile" ] && [ -f "$f" ] && [ ! -L "$f" ]; then near=${f##*/}; break; fi
   done
   eval "$restore"
+  # Only NAME's case differs (--to Muse, with handoff-muse.pem there): the
+  # remedy is the other --to, not a rename the default run would then miss.
+  nm=${near#handoff-}; nm=${nm%.pem}
+  lc() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
+  if [ -n "$near" ] && [ "$near" = "handoff-$nm.pem" ] && [ "$nm" != "$to" ] && [ "$(lc "$nm")" = "$(lc "$to")" ]; then
+    no_key "no key file for recipient '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. Names are case-sensitive: did you mean --to $(printf '%q' "$nm")?"
+  fi
   [ -z "$near" ] || no_key "no key file for recipient '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current public key, rename it to handoff-$to.pem, then compare --fingerprint with the fingerprint the agent reports"
   no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
 fi
