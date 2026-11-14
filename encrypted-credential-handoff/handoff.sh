@@ -144,16 +144,19 @@ keyfile=${dir%/}/handoff-$to.pem
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
 if [ ! -e "$keyfile" ]; then
   [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink that doesn't resolve to a file"
-  # A near miss beside it (handoff_muse.pem, handoff-Muse.pem, handoff-muse.pem.txt) is named.
+  # A near miss beside it is named, from a short allow-list only: another
+  # separator or case (handoff_muse.pem, handoff-Muse.pem), or an editor's
+  # extra extension (handoff-muse.pem.txt, handoff-muse.pem.pem). Anything
+  # else, such as a kept old key (handoff-muse.pem.old, .2025-06-01), isn't
+  # offered, and the hint asks for a check, never a rename on its own.
   near=
   restore=$(shopt -p nullglob nocaseglob || true)
   shopt -s nullglob nocaseglob
-  for f in "${dir%/}"/handoff?"$to".pem*; do
-    case "${f##*/}" in *.old|*.bak|*.previous|*.orig|*~) continue ;; esac   # a kept old key isn't a near miss
-    [ "$f" = "$keyfile" ] || { near=${f##*/}; break; }
+  for f in "${dir%/}"/handoff?"$to".pem "${dir%/}"/handoff?"$to".pem.txt "${dir%/}"/handoff?"$to".pem.pem; do
+    if [ "$f" != "$keyfile" ] && [ -f "$f" ] && [ ! -L "$f" ]; then near=${f##*/}; break; fi
   done
   eval "$restore"
-  [ -z "$near" ] || no_key "no key file for recipient '$to': $keyfile doesn't exist, but $near does. The key file must be named exactly handoff-$to.pem"
+  [ -z "$near" ] || no_key "no key file for recipient '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current public key, rename it to handoff-$to.pem, then compare --fingerprint with the fingerprint the agent reports"
   no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
 fi
 [ -f "$keyfile" ] || no_key "$keyfile is not a regular file"
@@ -166,8 +169,8 @@ raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" | LC_ALL=C tr '
 size=$(( $(printf '%s' "$raw" | LC_ALL=C wc -c) - 1 ))
 [ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$keyfile is over $MAX_KEY_BYTES bytes; not a public key file"
 PUBKEY=${raw%x}
-case "$(printf '%s' "$PUBKEY" | LC_ALL=C head -c 2 | od -An -tx1 | tr -d ' \n')" in
-  fffe|feff) no_key "$keyfile is saved as UTF-16: save it as UTF-8 or plain text" ;;
+case "$PUBKEY" in   # matched in place: a pipe to head -c 2 could break the writer's pipe
+  $'\xff\xfe'*|$'\xfe\xff'*) no_key "$keyfile is saved as UTF-16: save it as UTF-8 or plain text" ;;
 esac
 PUBKEY=${PUBKEY#$'\xef\xbb\xbf'}   # a UTF-8 byte-order mark, as some Windows editors save
 # A copy saved on Windows or by an editor, or copied from an indented block,

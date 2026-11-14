@@ -935,19 +935,31 @@ else
 fi
 # A near-miss key file name is named.
 mkdir -p "$S/hn"; cp ../handoff.sh "$S/hn/handoff.sh"
-# A kept old key (handoff-muse.pem.old and the like) isn't offered as a near miss.
-for old in handoff-muse.pem.old handoff-muse.pem.bak handoff-muse.pem~; do
-  rm -f "$S/hn/"handoff?muse.pem* "$S/hn/handoff-Muse.pem"
-  cp test-dummy-pub.pem "$S/hn/$old"
+# Only a short allow-list counts as a near miss; anything else (a kept old key
+# under any suffix, a directory, a symlink) gets the plain message.
+for old in handoff-muse.pem.old handoff-muse.pem.OLD handoff-muse.pem.bak handoff-muse.pem~ handoff-muse.pem.2025-06-01 handoff-muse.pem.save handoff-muse.pem.d handoff_muse.pem.lnk; do
+  rm -rf "$S/hn/"handoff?muse.pem* "$S/hn/"handoff?Muse.pem*
+  case "$old" in
+    *.d) mkdir "$S/hn/handoff-muse.pem.d"; old=handoff-muse.pem.d ;;
+    *.lnk) ln -s "$PWD/test-dummy-pub.pem" "$S/hn/handoff_muse.pem" ;;
+    *) cp test-dummy-pub.pem "$S/hn/$old" ;;
+  esac
   expect_refusal "handoff.sh with only $old beside it" 1 "handoff-muse.pem doesn't exist. Save the agent's public key there" \
     bash "$S/hn/handoff.sh" --fingerprint
 done
 for near in handoff_muse.pem handoff-Muse.pem handoff-muse.pem.txt; do
-  rm -f "$S/hn/"handoff?muse.pem* "$S/hn/handoff-Muse.pem"
+  rm -rf "$S/hn/"handoff?muse.pem* "$S/hn/"handoff?Muse.pem*
   cp test-dummy-pub.pem "$S/hn/$near"
-  expect_refusal "handoff.sh with $near beside it" 1 "but $near does. The key file must be named exactly handoff-muse.pem" \
+  expect_refusal "handoff.sh with $near beside it" 1 "but $near does. If that file is the agent's current public key, rename it to handoff-muse.pem, then compare --fingerprint" \
     bash "$S/hn/handoff.sh" --fingerprint
 done
+rm -rf "$S/hn/"handoff?muse.pem* "$S/hn/"handoff?Muse.pem*
+# A near-miss name is printed quoted (%q), so one holding a newline in place
+# of the separator can't forge a line of output.
+nl_name=$'handoff\nmuse.pem'
+cp test-dummy-pub.pem "$S/hn/$nl_name"
+expect_refusal "handoff.sh near-miss name with a newline" 1 "but \$'handoff\\nmuse.pem' does" bash "$S/hn/handoff.sh" --fingerprint
+rm -f "$S/hn/$nl_name"
 # After --, the next argument is FILE even if it starts with -.
 cp expected.json "$K/-x.json"
 ( cd "$K" && bash handoff.sh --to other -- -x.json </dev/null >"$S/blob5" 2>/dev/null ) || fail "handoff.sh -- -x.json failed"
