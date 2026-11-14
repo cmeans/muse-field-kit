@@ -907,10 +907,23 @@ expect_refusal "handoff.sh NAME starting with -" 2 "--to NAME can't start with -
   bash "$K/handoff.sh" --to -muse --fingerprint
 expect_refusal "handoff.sh two FILEs, both after --" 2 "at most one FILE" \
   bash "$K/handoff.sh" --to other -- expected.json expected.json </dev/null
-expect_refusal "handoff.sh through process substitution" 1 "run handoff.sh by its path" \
+expect_refusal "handoff.sh through process substitution" 1 "save handoff.sh to a file and run that file" \
   bash <(cat "$K/handoff.sh") --to other --fingerprint
-expect_refusal "handoff.sh as /dev/stdin" 1 "run handoff.sh by its path" \
+expect_refusal "handoff.sh as /dev/stdin" 1 "save handoff.sh to a file and run that file" \
   bash /dev/stdin --to other --fingerprint < "$K/handoff.sh"
+expect_refusal "handoff.sh as //dev/stdin" 1 "save handoff.sh to a file and run that file" \
+  bash //dev/stdin --to other --fingerprint < "$K/handoff.sh"
+# bash in POSIX mode (macOS's sh) has no <(...) before 5.1: refused up front.
+expect_refusal "handoff.sh under bash --posix" 1 "run it with bash (./handoff.sh, or bash handoff.sh), not sh" \
+  bash --posix "$K/handoff.sh" --to other expected.json
+# A near-miss key file name is named.
+mkdir -p "$S/hn"; cp ../handoff.sh "$S/hn/handoff.sh"
+for near in handoff_muse.pem handoff-Muse.pem handoff-muse.pem.txt; do
+  rm -f "$S/hn/"handoff?muse.pem* "$S/hn/handoff-Muse.pem"
+  cp test-dummy-pub.pem "$S/hn/$near"
+  expect_refusal "handoff.sh with $near beside it" 1 "but $near does. The key file must be named exactly handoff-muse.pem" \
+    bash "$S/hn/handoff.sh" --fingerprint
+done
 # After --, the next argument is FILE even if it starts with -.
 cp expected.json "$K/-x.json"
 ( cd "$K" && bash handoff.sh --to other -- -x.json </dev/null >"$S/blob5" 2>/dev/null ) || fail "handoff.sh -- -x.json failed"
@@ -927,7 +940,7 @@ if [ -n "$other_sh" ]; then
 else
   echo "skip: no zsh, dash, ksh or mksh, handoff.sh's bash check not tested"
 fi
-expect_refusal "handoff.sh on stdin, with no path" 1 "run handoff.sh by its path" \
+expect_refusal "handoff.sh on stdin, with no path" 1 "save handoff.sh to a file and run that file" \
   bash -s -- --fingerprint < "$K/handoff.sh"
 expect_refusal "handoff.sh --to twice" 2 "--to given more than once" \
   bash "$K/handoff.sh" --to other --to other --fingerprint
@@ -956,6 +969,11 @@ sed 's/$/\r/' test-dummy-pub.pem > "$K/handoff-crlf.pem"
 [ "$(bash "$K/handoff.sh" --to bom --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with a byte-order mark"
 { printf '\357\273\277'; sed 's/$/\r/' test-dummy-pub.pem; } > "$K/handoff-bomcrlf.pem"
 [ "$(bash "$K/handoff.sh" --to bomcrlf --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with a byte-order mark and CRLF"
+sed 's/^/    /' test-dummy-pub.pem > "$K/handoff-indented.pem"
+[ "$(bash "$K/handoff.sh" --to indented --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused an indented key file"
+python3 -c 'import sys; sys.stdout.buffer.write(open("test-dummy-pub.pem").read().encode("utf-16"))' > "$K/handoff-utf16.pem"
+expect_refusal "handoff.sh key file saved as UTF-16" 1 "handoff-utf16.pem is saved as UTF-16: save it as UTF-8 or plain text" \
+  bash "$K/handoff.sh" --to utf16 --fingerprint
 sed 's/$/  /' test-dummy-pub.pem > "$K/handoff-blanks.pem"
 [ "$(bash "$K/handoff.sh" --to blanks --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with trailing blanks"
 # A key file that isn't one RSA-2048 public key is refused, never used.

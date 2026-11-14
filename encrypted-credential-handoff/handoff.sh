@@ -25,6 +25,9 @@
 # Under zsh or sh, BASH_SOURCE and compgen don't exist: say so, rather than a
 # misleading refusal further down. (First, before options sh may not have.)
 [ -n "${BASH_VERSION-}" ] || { echo "handoff.sh: run it with bash (./handoff.sh, or bash handoff.sh)" >&2; exit 1; }
+# macOS's sh is bash in POSIX mode, which before bash 5.1 has no <(...), used
+# at the encrypt step: refuse it up front, not after the paste banner.
+if shopt -oq posix; then echo "handoff.sh: run it with bash (./handoff.sh, or bash handoff.sh), not sh" >&2; exit 1; fi
 set -euo pipefail
 
 # Kept equal to consume.py's MAX_KEY_FILE and agent-setup.sh's MAX_KEY_BYTES:
@@ -122,23 +125,31 @@ esac
 src=${BASH_SOURCE[0]-}
 # Fed on stdin or through bash -c, the script has no path, so no directory to
 # find the key in (and the working directory isn't a stand-in for it).
-[ -n "$src" ] || { echo "handoff.sh: run handoff.sh by its path: its key file is found beside it" >&2; exit 1; }
+no_path() { echo "handoff.sh: save handoff.sh to a file and run that file: its key file is found beside it" >&2; exit 1; }
+[ -n "$src" ] || no_path
 case "$src" in
   */*) dir=${src%/*}; [ -n "$dir" ] || dir=/ ;;
   *) dir=. ;;
 esac
 case "$dir" in /*|.|./*) ;; *) dir=./$dir ;; esac   # shown as a path, never like an option
 # Run as bash <(cat handoff.sh) or bash /dev/stdin, the path is a descriptor's,
-# and its directory isn't where the user keeps the key.
-case "$dir" in
-  /dev|/dev/fd|/proc/*/fd)
-    echo "handoff.sh: run handoff.sh by its path: its key file is found beside it" >&2; exit 1 ;;
-esac
+# and its directory isn't where the user keeps the key. Compared after
+# resolving, so //dev/fd or /dev/./fd is caught too.
+cdir=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || cdir=
+while case "$cdir" in //*) true ;; *) false ;; esac; do cdir=${cdir#/}; done   # bash keeps a leading //
+case "$cdir" in /dev|/dev/*|/proc|/proc/*) no_path ;; esac
 keyfile=${dir%/}/handoff-$to.pem
 
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
 if [ ! -e "$keyfile" ]; then
   [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink that doesn't resolve to a file"
+  # A near miss beside it (handoff_muse.pem, handoff-Muse.pem, handoff-muse.pem.txt) is named.
+  near=
+  restore=$(shopt -p nullglob nocaseglob || true)
+  shopt -s nullglob nocaseglob
+  for f in "${dir%/}"/handoff?"$to".pem*; do [ "$f" = "$keyfile" ] || { near=${f##*/}; break; }; done
+  eval "$restore"
+  [ -z "$near" ] || no_key "no key file for recipient '$to': $keyfile doesn't exist, but $near does. The key file must be named exactly handoff-$to.pem"
   no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
 fi
 [ -f "$keyfile" ] || no_key "$keyfile is not a regular file"
@@ -151,10 +162,14 @@ raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" | LC_ALL=C tr '
 size=$(( $(printf '%s' "$raw" | LC_ALL=C wc -c) - 1 ))
 [ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$keyfile is over $MAX_KEY_BYTES bytes; not a public key file"
 PUBKEY=${raw%x}
+case "$(printf '%s' "$PUBKEY" | LC_ALL=C head -c 2 | od -An -tx1 | tr -d ' \n')" in
+  fffe|feff) no_key "$keyfile is saved as UTF-16: save it as UTF-8 or plain text" ;;
+esac
 PUBKEY=${PUBKEY#$'\xef\xbb\xbf'}   # a UTF-8 byte-order mark, as some Windows editors save
-# A copy saved on Windows or by an editor can carry CRLF line endings or
-# trailing blanks: openssl reads those, so drop them before the line checks.
-PUBKEY=$(printf '%s\n' "$PUBKEY" | tr -d '\r' | sed 's/[[:blank:]]*$//')
+# A copy saved on Windows or by an editor, or copied from an indented block,
+# can carry CRLF line endings or leading or trailing blanks: drop them before
+# the line checks (the DER check and the fingerprint still gate the key).
+PUBKEY=$(printf '%s\n' "$PUBKEY" | tr -d '\r' | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//')
 count() { { grep -cxF -- "$1" <<<"$PUBKEY" || true; } }
 if grep -qF -- 'PRIVATE KEY' <<<"$PUBKEY"; then
   no_key "$keyfile holds a private key. Only the agent's public key belongs here: delete this file now. If it's the agent's handoff key, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
