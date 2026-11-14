@@ -10,7 +10,7 @@ Hand your Muse a service credential **without the plaintext ever entering the ch
 
 **Tested with:** Linux, OpenSSL 3.0 / 3.5, bash 5.x, Python 3.11 / 3.12, jq 1.7 / 1.8. Platform position in detail under “Platform.”
 
-**For your Muse:** `SKILL.md` routes each request (set up, stage a credential, rotate the key) to its step in `SETUP.md`, the instructions it follows. Muse finds a skill only once its folder is installed among its skills, not from a link to this repo, so the setup prompt below asks it to install this folder as one. The installed copy only points Muse back here: the scripts always run from a clone of this repository.
+**For your Muse:** `SKILL.md` routes each request (set up, stage a credential, rotate the key) to its step in `SETUP.md`, the instructions it follows. Muse finds a skill only once its folder is installed among its skills, not from a link to this repo, so the setup prompt below asks it to install this folder as one. The installed copy only points Muse back here: it reads the instructions and runs the scripts from a clone of this repository.
 
 ## Prompts for your Muse
 
