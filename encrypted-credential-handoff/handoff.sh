@@ -25,9 +25,10 @@
 # Under zsh or sh, BASH_SOURCE and compgen don't exist: say so, rather than a
 # misleading refusal further down. (First, before options sh may not have.)
 [ -n "${BASH_VERSION-}" ] || { echo "handoff.sh: run it with bash (./handoff.sh, or bash handoff.sh)" >&2; exit 1; }
-# macOS's sh is bash in POSIX mode, which before bash 5.1 has no <(...), used
-# at the encrypt step: refuse it up front, not after the paste banner.
-if shopt -oq posix; then echo "handoff.sh: run it with bash (./handoff.sh, or bash handoff.sh), not sh" >&2; exit 1; fi
+# macOS's sh is bash in POSIX mode (as is bash with POSIXLY_CORRECT or
+# SHELLOPTS=posix set), which before bash 5.1 has no <(...), used at the
+# encrypt step: leave POSIX mode, so it runs the same either way.
+set +o posix
 set -euo pipefail
 
 # Kept equal to consume.py's MAX_KEY_FILE and agent-setup.sh's MAX_KEY_BYTES:
@@ -45,15 +46,15 @@ for v in $(compgen -e); do
   case "$v" in [Oo][Pp][Ee][Nn][Ss][Ss][Ll]_*) unset "$v" ;; esac
 done
 
-command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
+command -v openssl >/dev/null || { echo "handoff.sh: openssl not found" >&2; exit 1; }
 
 # Fail closed on the wrong crypto tool, the same gate as agent-setup.sh and
 # consume.py: LibreSSL's pkeyutl OAEP behavior differs and is unverified for
 # this protocol. (The hint leaves out wrappers: this runs in the user's shell.)
-ssl_version=$(openssl version) || { echo "openssl version failed" >&2; exit 1; }
+ssl_version=$(openssl version) || { echo "handoff.sh: openssl version failed" >&2; exit 1; }
 case "$ssl_version" in
   "OpenSSL 3."*|"OpenSSL 4."*) ;;
-  *) echo "requires OpenSSL 3 or 4; found: ${ssl_version:-no version output}. Put one first on your PATH$(case "${OSTYPE-}" in (darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
+  *) echo "handoff.sh: requires OpenSSL 3 or 4; found: ${ssl_version:-no version output}. Put one first on your PATH$(case "${OSTYPE-}" in (darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
 esac
 
 usage() {
@@ -137,7 +138,7 @@ case "$dir" in /*|.|./*) ;; *) dir=./$dir ;; esac   # shown as a path, never lik
 # resolving, so //dev/fd or /dev/./fd is caught too.
 cdir=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || cdir=
 while case "$cdir" in //*) true ;; *) false ;; esac; do cdir=${cdir#/}; done   # bash keeps a leading //
-case "$cdir" in /dev|/dev/*|/proc|/proc/*) no_path ;; esac
+case "$cdir" in /dev|/dev/fd|/proc/*/fd) no_path ;; esac
 keyfile=${dir%/}/handoff-$to.pem
 
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
@@ -147,7 +148,10 @@ if [ ! -e "$keyfile" ]; then
   near=
   restore=$(shopt -p nullglob nocaseglob || true)
   shopt -s nullglob nocaseglob
-  for f in "${dir%/}"/handoff?"$to".pem*; do [ "$f" = "$keyfile" ] || { near=${f##*/}; break; }; done
+  for f in "${dir%/}"/handoff?"$to".pem*; do
+    case "${f##*/}" in *.old|*.bak|*.previous|*.orig|*~) continue ;; esac   # a kept old key isn't a near miss
+    [ "$f" = "$keyfile" ] || { near=${f##*/}; break; }
+  done
   eval "$restore"
   [ -z "$near" ] || no_key "no key file for recipient '$to': $keyfile doesn't exist, but $near does. The key file must be named exactly handoff-$to.pem"
   no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
@@ -179,6 +183,10 @@ if [ "$begins" != 1 ] || [ "$(count '-----BEGIN PUBLIC KEY-----')" != 1 ] \
    || [ "$(count '-----END PUBLIC KEY-----')" != 1 ]; then
   no_key "$keyfile must hold exactly one public key (one -----BEGIN PUBLIC KEY----- block), as agent-setup.sh prints it"
 fi
+# From here on only the key block itself goes to openssl: openssl stops reading
+# at its END line, so text after it in a pipe could kill the writer (SIGPIPE,
+# fatal under pipefail) on a small pipe.
+PUBKEY=$(printf '%s\n' "$PUBKEY" | sed -n '/^-----BEGIN PUBLIC KEY-----$/,/^-----END PUBLIC KEY-----$/p')
 # RSA-2048 with e = 65537 only, as agent-setup.sh and consume.py check: its
 # public key in DER is 294 bytes, a fixed 33-byte header (its modulus field's
 # leading 00 means exactly 2048 bits), and the exponent 65537 at the end. In
@@ -216,7 +224,7 @@ fi
 # the terminal in character mode for `read -d ''`, where Ctrl-D is just
 # another byte and the script would wait forever.
 if [ "$file_given" = 1 ]; then
-  [ -r "$file" ] || { echo "cannot read $file" >&2; exit 1; }
+  [ -r "$file" ] || { echo "handoff.sh: cannot read $file" >&2; exit 1; }
   SECRET_JSON=$(<"$file")       # note: plaintext is already on disk in this path
 elif [ -t 0 ]; then
   {
@@ -236,7 +244,7 @@ else
   SECRET_JSON=$(cat)            # piped input: no terminal to manage
 fi
 
-[ -n "${SECRET_JSON//[[:space:]]/}" ] || { echo "empty, aborting" >&2; exit 1; }
+[ -n "${SECRET_JSON//[[:space:]]/}" ] || { echo "handoff.sh: empty, aborting" >&2; exit 1; }
 
 # --- validate ---------------------------------------------------------
 if command -v jq >/dev/null; then
@@ -249,7 +257,7 @@ if command -v jq >/dev/null; then
     'length==1 and (.[0]|type)=="object"
      and (.[0].svc|type)=="string" and (.[0].svc|length)>0
      and (.[0]|all(.[]; type=="string"))' >/dev/null 2>&1 \
-    || { echo "input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2; exit 1; }
+    || { echo "handoff.sh: input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2; exit 1; }
 else
   echo "warning: jq not found — skipping JSON validation" >&2
 fi
@@ -257,7 +265,7 @@ fi
 # RSA-2048 + OAEP(SHA-256) ceiling: 256 - 2*32 - 2 = 190 bytes.
 n=$(printf '%s' "$SECRET_JSON" | wc -c)
 if [ "$n" -gt 190 ]; then
-  echo "payload is ${n} bytes; RSA-2048/OAEP-SHA256 max is 190 bytes." >&2
+  echo "handoff.sh: payload is ${n} bytes; RSA-2048/OAEP-SHA256 max is 190 bytes." >&2
   echo "Shorten the JSON. (Larger payloads need a different, reviewed" >&2
   echo "construction — see README.md, Variations.)" >&2
   exit 1

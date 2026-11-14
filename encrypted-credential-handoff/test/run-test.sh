@@ -913,11 +913,35 @@ expect_refusal "handoff.sh as /dev/stdin" 1 "save handoff.sh to a file and run t
   bash /dev/stdin --to other --fingerprint < "$K/handoff.sh"
 expect_refusal "handoff.sh as //dev/stdin" 1 "save handoff.sh to a file and run that file" \
   bash //dev/stdin --to other --fingerprint < "$K/handoff.sh"
-# bash in POSIX mode (macOS's sh) has no <(...) before 5.1: refused up front.
-expect_refusal "handoff.sh under bash --posix" 1 "run it with bash (./handoff.sh, or bash handoff.sh), not sh" \
-  bash --posix "$K/handoff.sh" --to other expected.json
+# bash in POSIX mode (macOS's sh, or POSIXLY_CORRECT / SHELLOPTS=posix set)
+# leaves POSIX mode, so the encrypt step's <(...) works on bash before 5.1 too.
+for how in "bash --posix" "env POSIXLY_CORRECT=1 bash" "env SHELLOPTS=posix bash"; do
+  $how "$K/handoff.sh" --to other expected.json >"$S/blob6" 2>"$S/err" \
+    || { cat "$S/err" >&2; fail "handoff.sh failed under $how"; }
+  out=$(HANDOFF_BLOB="$(cat "$S/blob6")" consume --label example -- python3 -c '
+import os
+print(os.environ["SERVICE_PASSWORD"])
+')
+  [ "$out" = "$P" ] || fail "the blob made under $how did not round-trip"
+done
+# A real file under /dev/shm is not a descriptor: it runs.
+if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+  SH=$(mktemp -d /dev/shm/handoff-test.XXXXXX)
+  cp ../handoff.sh "$SH/handoff.sh"; cp test-dummy-pub.pem "$SH/handoff-muse.pem"
+  [ "$(bash "$SH/handoff.sh" --fingerprint 2>/dev/null)" = "$want" ] || { rm -rf "$SH"; fail "handoff.sh refused to run from /dev/shm"; }
+  rm -rf "$SH"
+else
+  echo "skip: no writable /dev/shm, handoff.sh's run from it not tested"
+fi
 # A near-miss key file name is named.
 mkdir -p "$S/hn"; cp ../handoff.sh "$S/hn/handoff.sh"
+# A kept old key (handoff-muse.pem.old and the like) isn't offered as a near miss.
+for old in handoff-muse.pem.old handoff-muse.pem.bak handoff-muse.pem~; do
+  rm -f "$S/hn/"handoff?muse.pem* "$S/hn/handoff-Muse.pem"
+  cp test-dummy-pub.pem "$S/hn/$old"
+  expect_refusal "handoff.sh with only $old beside it" 1 "handoff-muse.pem doesn't exist. Save the agent's public key there" \
+    bash "$S/hn/handoff.sh" --fingerprint
+done
 for near in handoff_muse.pem handoff-Muse.pem handoff-muse.pem.txt; do
   rm -f "$S/hn/"handoff?muse.pem* "$S/hn/handoff-Muse.pem"
   cp test-dummy-pub.pem "$S/hn/$near"
@@ -974,6 +998,9 @@ sed 's/^/    /' test-dummy-pub.pem > "$K/handoff-indented.pem"
 python3 -c 'import sys; sys.stdout.buffer.write(open("test-dummy-pub.pem").read().encode("utf-16"))' > "$K/handoff-utf16.pem"
 expect_refusal "handoff.sh key file saved as UTF-16" 1 "handoff-utf16.pem is saved as UTF-16: save it as UTF-8 or plain text" \
   bash "$K/handoff.sh" --to utf16 --fingerprint
+python3 -c 'import sys; sys.stdout.buffer.write(b"\xfe\xff" + open("test-dummy-pub.pem").read().encode("utf-16-be"))' > "$K/handoff-utf16be.pem"
+expect_refusal "handoff.sh key file saved as UTF-16 big-endian" 1 "handoff-utf16be.pem is saved as UTF-16" \
+  bash "$K/handoff.sh" --to utf16be --fingerprint
 sed 's/$/  /' test-dummy-pub.pem > "$K/handoff-blanks.pem"
 [ "$(bash "$K/handoff.sh" --to blanks --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with trailing blanks"
 # A key file that isn't one RSA-2048 public key is refused, never used.
@@ -1012,7 +1039,7 @@ expect_refusal "handoff.sh key file that is a symlink loop" 1 "handoff-loop.pem 
 # Exactly 16384 bytes is still accepted (the limit, not one past it).
 { cat test-dummy-pub.pem; python3 -c 'import os,sys; sys.stdout.write("#" * (16384 - os.path.getsize("test-dummy-pub.pem") - 1) + "\n")'; } > "$K/handoff-max.pem"
 [ "$(wc -c < "$K/handoff-max.pem")" -eq 16384 ] || fail "test setup: handoff-max.pem isn't 16384 bytes"
-[ "$(bash "$K/handoff.sh" --to max --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a 16384-byte key file"
+[ "$(bash "$K/handoff.sh" --to max --fingerprint 2>"$S/err")" = "$want" ] || { cat "$S/err" >&2; fail "handoff.sh refused a 16384-byte key file"; }
 # Trailing newlines count toward the limit too.
 { cat test-dummy-pub.pem; python3 -c 'import sys; sys.stdout.write("\n" * 16384)'; } > "$K/handoff-nl.pem"
 expect_refusal "handoff.sh key file over 16384 bytes of trailing newlines" 1 "handoff-nl.pem is over 16384 bytes" \
