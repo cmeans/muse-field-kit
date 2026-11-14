@@ -329,7 +329,7 @@ case "$mode" in
         PUB=$(pub_of "$key") \
           || { echo "could not derive the public key" >&2; exit 1; }
         echo "agent-setup.sh: a rotation is under way ($prev is the old key), and the new key is in place: nothing rotated." >&2
-        echo "If the user hasn't embedded this key in handoff.sh and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4." >&2
+        echo "If the user hasn't embedded this key in handoff.sh and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
         echo "current (new) public key fingerprint: SHA256:$fp"
         echo
         printf '%s\n' "$PUB"
@@ -442,7 +442,7 @@ case "$mode" in
     # up before the confirmation, not after it.
     if [ -z "$yes" ]; then
       echo "agent-setup.sh: --retire deletes the previous key $prev (SHA256:$prev_fp), and a blob still made for it never opens again; it was not deleted." >&2
-      echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user in a direct conversational turn. In a compromise response your notes record (the user's go-ahead, given directly), run it at Compromise step 2 or 4." >&2
+      echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user in a direct conversational turn, and no blob stored since that pass began (SETUP.md Rotation step 5). In a compromise response your notes record (the user's go-ahead, given directly), run it at Compromise step 2 or 4." >&2
       exit 1
     fi
     # Not atomic with the hard-link check above: an ln made in between (the lock is
