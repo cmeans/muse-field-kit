@@ -1700,6 +1700,17 @@ expect_refusal "--retire --yes with another link to the old key" 1 "has another 
 [ -f "$S/tmpname/.handoff-new.pem.previous" ] || fail "a refused --retire --yes deleted the previous key"
 # The refusal says how to find the other name: find from the disk's mount point.
 grep -qF -- "-xdev -samefile '$(cd "$S/tmpname" && pwd -P)/.handoff-new.pem.previous'" "$S/err" || fail "the link refusal doesn't give the find command: $(cat "$S/err")"
+# It says to remove the other name, not .previous, which find lists too.
+grep -qF "removes that other name first, not " "$S/err" || fail "the link refusal doesn't say to keep .previous: $(cat "$S/err")"
+grep -qF "(SETUP.md, Rotation: A hard-link refusal at the retire)" "$S/err" || fail "the link refusal doesn't point at SETUP's rule: $(cat "$S/err")"
+grep -qF "**A hard-link refusal at the retire.**" ../SETUP.md || fail "SETUP.md has no rule named as the link refusal says"
+# SETUP's Current-key probe counts two fixed strings of consume.py's run-mode
+# lines (the checks of its real output above pin them: "decrypted with the
+# previous key; rewrap it" and the whole current-key line). SETUP must name the
+# same strings, or the count is a false pass.
+for s in "opened with the current key (a rotation is under way)" "decrypted with the previous key;"; do
+  grep -qF "'$s'" ../SETUP.md || fail "SETUP.md's Current-key probe doesn't count: $s"
+done
 mnt=$(sed -n "s/.*find '\([^']*\)' -xdev.*/\1/p" "$S/err")
 case "$S/" in "${mnt%/}/"*) [ -d "$mnt" ] ;; *) false ;; esac || fail "the link refusal's mount point ($mnt) doesn't hold the key"
 rm "$S/tmpname/backup.pem"
