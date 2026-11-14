@@ -435,7 +435,7 @@ case "$mode" in
       sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
-      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes it first (SETUP.md, Rotation step 5)" >&2
+      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $prev, which the command lists too (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
       exit 1
     fi
     # Last, so every other refusal comes first: a hard link to resolve shows
