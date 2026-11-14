@@ -10,13 +10,13 @@ Hand your Muse a service credential **without the plaintext ever entering the ch
 
 **Tested with:** Linux, OpenSSL 3.0 / 3.5, bash 5.x, Python 3.11 / 3.12, jq 1.7 / 1.8. Platform position in detail under “Platform.”
 
-**For your Muse:** `SKILL.md` routes each request (set up, stage a credential, rotate the key) to its step in `SETUP.md`, the instructions it follows.
+**For your Muse:** `SKILL.md` routes each request (set up, stage a credential, rotate the key) to its step in `SETUP.md`, the instructions it follows. Muse finds a skill only once its folder is installed among its skills, not from a link to this repo, so the setup prompt below asks it to install this folder as one.
 
 ## Prompts for your Muse
 
 **Set it up:**
 
-> Set up the encrypted credential handoff from https://github.com/cmeans/muse-field-kit (folder `encrypted-credential-handoff`). Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Give me the public key to save as handoff-muse.pem beside my copy of handoff.sh, report its fingerprint computed from the private key file, and wait: I will confirm the fingerprint from my copy matches before we test with a dummy credential.
+> Set up the encrypted credential handoff from https://github.com/cmeans/muse-field-kit (folder `encrypted-credential-handoff`), and install that folder as one of your skills, so its SKILL.md brings you back to it for later requests. Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Give me the public key to save as handoff-muse.pem beside my copy of handoff.sh, report its fingerprint computed from the private key file, and wait: I will confirm the fingerprint from my copy matches before we test with a dummy credential.
 
 **Stage a new credential (once set up):**
 

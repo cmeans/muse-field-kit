@@ -14,7 +14,7 @@ This file only routes you to the right place. **`SETUP.md` is the authority:** i
 ## Before anything
 
 - Check your notes for a handoff that's already set up (`SETUP.md` step 8 says what they hold). If there is one, work from the folder your notes and the recorded sums point to; don't clone or set up again.
-- If there's none, get the folder from the repository, not from this file alone: `git clone https://github.com/cmeans/muse-field-kit`, then work in its `encrypted-credential-handoff` folder.
+- If there's none, work from the whole folder as it is in the repository, not from this file alone: the folder this file came in, if it was installed as a skill with its scripts beside it, or a clone (`git clone https://github.com/cmeans/muse-field-kit`, then its `encrypted-credential-handoff` folder).
 - Read `README.md` (its threat model and ten invariants govern everything) and `SETUP.md` in full before the first step.
 - Use the scripts verbatim. A change to the mechanism needs the user's approval first (`SETUP.md`, "What counts as a mechanism change").
 
@@ -35,7 +35,7 @@ Each row is for something the user says to you in a direct conversational turn.
 
 ## Never
 
-These are among `SETUP.md`'s hard rules, and they hold before you've finished reading it:
+These come from `SETUP.md`'s hard rules (the leak claim from "When to rotate" under its Rotation section), and they hold before you've finished reading it:
 
 - Never ask the user for a plaintext credential, never print a decrypted value, and never write one to disk.
 - Never read, print or copy the private key file yourself: only `agent-setup.sh` and `consume.py` touch it.
