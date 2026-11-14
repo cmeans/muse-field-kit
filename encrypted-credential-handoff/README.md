@@ -2,11 +2,15 @@
 
 Hand your Muse a service credential **without the plaintext ever entering the chat**.
 
-**What this is:** you encrypt a small JSON payload on your own machine with a public key whose private half lives only on your Muse's computer. You paste the resulting ciphertext into chat — ciphertext is safe to handle in the open. On the agent's side, decryption and use happen inside a single helper process: the plaintext is injected into the consuming tool's environment in memory and never written to disk. The helper itself never prints it; what reaches the agent is the consuming tool's own output, which is why each service is wired to a tool that doesn't print its credentials, and only that tool.
+1. **You encrypt** a small JSON payload, such as `{"svc": "example", "username": "…", "password": "…"}`, on your own machine with `handoff.sh`.
+2. **You paste the ciphertext** into chat. It's safe to handle in the open: the private key that opens it lives only on your Muse's computer.
+3. **At use time, a helper on Muse's side decrypts it in memory** and starts the one tool that needs it, with the values in that tool's environment. The plaintext is never written to disk, and the helper prints nothing derived from it. What reaches Muse is the tool's own output, which is why each credential is wired to a tool that doesn't print it, and only that tool.
 
 **Who it's for:** anyone whose agent needs credentials for *local tools* — MCP servers, CLIs — that take secrets as environment variables or config values, where the platform's browser-oriented saved logins can't reach. See “Why not a built-in vault?” below.
 
 **Tested with:** Linux, OpenSSL 3.0 / 3.5, bash 5.x, Python 3.11 / 3.12, jq 1.7 / 1.8. Platform position in detail under “Platform.”
+
+**For your Muse:** `SKILL.md` routes each request (set up, stage a credential, rotate the key) to its step in `SETUP.md`, the instructions it follows.
 
 ## Prompts for your Muse
 
@@ -139,6 +143,7 @@ A note on review, in the same spirit: the reviewers of this folder were AI agent
 - `agent-setup.sh` — the agent's side. Generates the keypair and prints the public key, the fingerprint, and the consume-side key path to use; `--fingerprint` recomputes an existing key's fingerprint, `--public-key` shows its public key again, and `--rotate` and `--retire` start and end a rotation.
 - `consume.py` — the consume-side template: fetch-side decryption in memory (with the previous key too, during a rotation), `svc` purpose-binding check, environment injection, a `--check` mode (field names and lengths only) for setup tests, and `--rewrap` for rotation.
 - `SETUP.md` — step-by-step instructions written for your Muse, including the hard rules, the precise definition of a mechanism change, and the rotation procedures.
+- `SKILL.md` — the skill file for your Muse: when to use the handoff, which `SETUP.md` step each request goes to, and the rules that hold from the start. It routes only; `SETUP.md` is the authority.
 - `test/` — a known-answer interop test: dummy keypair, a fixed blob, and its expected plaintext, so any port or variant can prove byte-compatibility.
 - `SECURITY.md` — how to report a flaw in this pattern or these scripts.
 - `CHANGELOG.md` — what ships in this folder, and later what changes.
