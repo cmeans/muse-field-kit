@@ -76,8 +76,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --fingerprint) mode=fingerprint ;;
+    --to=*) usage_error "write --to NAME, with a space" ;;
     --to)
+      # The next word is the NAME; one that looks like an option is a NAME left out.
       [ $# -ge 2 ] || usage_error "--to needs a NAME"
+      case "$2" in -*) usage_error "--to needs a NAME" ;; esac
       [ "$to_given" = 0 ] || usage_error "--to given more than once"
       to=$2; to_given=1; shift ;;
     --)
@@ -110,17 +113,20 @@ esac
 # The key is public: what matters is that it's the agent's (the fingerprint
 # check) and that it's the only key this script can use. There's no key in
 # the script and no fallback: without a usable key file, nothing is encrypted.
-src=${BASH_SOURCE[0]}
+src=${BASH_SOURCE[0]-}
+# Fed on stdin or through bash -c, the script has no path, so no directory to
+# find the key in (and the working directory isn't a stand-in for it).
+[ -n "$src" ] || { echo "handoff.sh: run handoff.sh by its path: its key file is found beside it" >&2; exit 1; }
 case "$src" in
   */*) dir=${src%/*}; [ -n "$dir" ] || dir=/ ;;
   *) dir=. ;;
 esac
 case "$dir" in /*|.|./*) ;; *) dir=./$dir ;; esac   # shown as a path, never like an option
-keyfile=$dir/handoff-$to.pem
+keyfile=${dir%/}/handoff-$to.pem
 
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
 if [ ! -e "$keyfile" ]; then
-  [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink to a missing file"
+  [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink that doesn't resolve to a file"
   no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
 fi
 [ -f "$keyfile" ] || no_key "$keyfile is not a regular file"

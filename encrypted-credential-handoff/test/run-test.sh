@@ -893,6 +893,10 @@ cp test-dummy-pub.pem "$K/handoff-$(printf 'a%.0s' $(seq 64)).pem"
 [ "$(bash "$K/handoff.sh" --to "$(printf 'a%.0s' $(seq 64))" --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "handoff.sh refused a 64-character name"
 expect_refusal "handoff.sh --to with no NAME" 2 "--to needs a NAME" bash "$K/handoff.sh" --to
+expect_refusal "handoff.sh --to followed by an option" 2 "--to needs a NAME" bash "$K/handoff.sh" --to --fingerprint
+expect_refusal "handoff.sh --to=NAME" 2 "write --to NAME, with a space" bash "$K/handoff.sh" --to=other --fingerprint
+expect_refusal "handoff.sh on stdin, with no path" 1 "run handoff.sh by its path" \
+  bash -s -- --fingerprint < "$K/handoff.sh"
 expect_refusal "handoff.sh --to twice" 2 "--to given more than once" \
   bash "$K/handoff.sh" --to other --to other --fingerprint
 expect_refusal "handoff.sh unknown option" 2 "unknown option --bogus" bash "$K/handoff.sh" --bogus
@@ -946,8 +950,15 @@ grep -q 'BEGIN CERTIFICATE' "$K/handoff-cert.pem" || fail "test setup: no certif
 expect_refusal "handoff.sh key file with a key and a certificate" 1 "must hold exactly one public key" \
   bash "$K/handoff.sh" --to cert --fingerprint
 ln -s "$K/nowhere.pem" "$K/handoff-dangling.pem"
-expect_refusal "handoff.sh key file that is a dangling symlink" 1 "handoff-dangling.pem is a symlink to a missing file" \
+expect_refusal "handoff.sh key file that is a dangling symlink" 1 "handoff-dangling.pem is a symlink that doesn't resolve to a file" \
   bash "$K/handoff.sh" --to dangling --fingerprint
+ln -s handoff-loop.pem "$K/handoff-loop.pem"
+expect_refusal "handoff.sh key file that is a symlink loop" 1 "handoff-loop.pem is a symlink that doesn't resolve to a file" \
+  bash "$K/handoff.sh" --to loop --fingerprint
+# Exactly 16384 bytes is still accepted (the limit, not one past it).
+{ cat test-dummy-pub.pem; python3 -c 'import os,sys; sys.stdout.write("#" * (16384 - os.path.getsize("test-dummy-pub.pem") - 1) + "\n")'; } > "$K/handoff-max.pem"
+[ "$(wc -c < "$K/handoff-max.pem")" -eq 16384 ] || fail "test setup: handoff-max.pem isn't 16384 bytes"
+[ "$(bash "$K/handoff.sh" --to max --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a 16384-byte key file"
 python3 -c 'import sys; sys.stdout.write("x" * 16385)' > "$K/handoff-big.pem"
 expect_refusal "handoff.sh key file over 16384 bytes" 1 "handoff-big.pem is over 16384 bytes" \
   bash "$K/handoff.sh" --to big --fingerprint
