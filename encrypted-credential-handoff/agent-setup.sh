@@ -5,7 +5,7 @@
 #
 # Generates an RSA-2048 keypair for the encrypted credential handoff:
 #   private key: ~/.config/handoff/handoff-priv.pem  (mode 0600, NEVER shared)
-#   public key:  printed at the end, for embedding in handoff.sh
+#   public key:  printed at the end, for the user to save as handoff-<name>.pem beside handoff.sh
 # Also prints the public key's SHA-256 fingerprint, which the human compares
 # before trusting any blob, and the consume-side key path to configure.
 #
@@ -329,7 +329,7 @@ case "$mode" in
         PUB=$(pub_of "$key") \
           || { echo "could not derive the public key" >&2; exit 1; }
         echo "agent-setup.sh: a rotation is under way ($prev is the old key), and the new key is in place: nothing rotated." >&2
-        echo "If the user hasn't embedded this key in handoff.sh and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
+        echo "If the user hasn't saved this key as their handoff-<name>.pem and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
         echo "current (new) public key fingerprint: SHA256:$fp"
         echo
         printf '%s\n' "$PUB"
@@ -364,11 +364,11 @@ case "$mode" in
     echo "new public key fingerprint: SHA256:$fp"
     echo "report this fingerprint to the human; they compare it with handoff.sh's output"
     echo
-    echo "embed this public key in handoff.sh, in place of the old one:"
+    echo "the user replaces their handoff-<name>.pem (beside handoff.sh) with this public key:"
     echo
     printf '%s\n' "$PUB"
     echo
-    echo "next: SETUP.md Rotation step 3 (the user embeds this key in handoff.sh and confirms its fingerprint), then the rest of Rotation (or Compromise)"
+    echo "next: SETUP.md Rotation step 3 (the user replaces their handoff-<name>.pem with this key and confirms its fingerprint), then the rest of Rotation (or Compromise)"
     exit 0
     ;;
   --retire)
@@ -538,7 +538,7 @@ echo
 echo "public key fingerprint: SHA256:$FPR"
 echo "report this fingerprint to the human; they compare it with handoff.sh's output"
 echo
-echo "embed this public key in handoff.sh:"
+echo "the user saves this public key as handoff-<name>.pem beside handoff.sh (handoff-muse.pem for the default name; SETUP.md step 3):"
 echo
 printf '%s\n' "$PUB"
 echo

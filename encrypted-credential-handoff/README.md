@@ -12,7 +12,7 @@ Hand your Muse a service credential **without the plaintext ever entering the ch
 
 **Set it up:**
 
-> Set up the encrypted credential handoff from https://github.com/cmeans/muse-field-kit (folder `encrypted-credential-handoff`). Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Give me the public key to embed in my copy of handoff.sh, report its fingerprint computed from the private key file, and wait: I will confirm the fingerprint from my copy matches before we test with a dummy credential.
+> Set up the encrypted credential handoff from https://github.com/cmeans/muse-field-kit (folder `encrypted-credential-handoff`). Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Give me the public key to save as handoff-muse.pem beside my copy of handoff.sh, report its fingerprint computed from the private key file, and wait: I will confirm the fingerprint from my copy matches before we test with a dummy credential.
 
 **Stage a new credential (once set up):**
 

@@ -68,6 +68,10 @@ usage_error() { echo "handoff.sh: $1" >&2; usage; exit 2; }
 to=muse
 to_given=0
 mode=encrypt
+file_given=0
+file=
+# Options may come before or after FILE; after --, the next argument is FILE
+# even if it starts with -.
 while [ $# -gt 0 ]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
@@ -76,14 +80,22 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || usage_error "--to needs a NAME"
       [ "$to_given" = 0 ] || usage_error "--to given more than once"
       to=$2; to_given=1; shift ;;
-    --) shift; break ;;
+    --)
+      shift
+      [ $# -le 1 ] || usage_error "at most one FILE"
+      if [ $# -eq 1 ]; then
+        [ "$file_given" = 0 ] || usage_error "at most one FILE"
+        file=$1; file_given=1; shift
+      fi
+      break ;;
     -?*) usage_error "unknown option $(printf '%q' "$1")" ;;
-    *) break ;;
+    *)
+      [ "$file_given" = 0 ] || usage_error "at most one FILE"
+      file=$1; file_given=1 ;;
   esac
   shift
 done
-[ $# -le 1 ] || usage_error "at most one FILE"
-[ "$mode" = encrypt ] || [ $# -eq 0 ] || usage_error "--fingerprint takes no FILE"
+[ "$mode" = encrypt ] || [ "$file_given" = 0 ] || usage_error "--fingerprint takes no FILE"
 
 # The name becomes part of a file name: plain ASCII letters, digits, _ and -
 # only (listed, not ranges, which can match more in some locales), so it
@@ -103,16 +115,22 @@ case "$src" in
   */*) dir=${src%/*}; [ -n "$dir" ] || dir=/ ;;
   *) dir=. ;;
 esac
-case "$dir" in /*) ;; *) dir=./$dir ;; esac   # a relative path never starts with -
+case "$dir" in /*|.|./*) ;; *) dir=./$dir ;; esac   # shown as a path, never like an option
 keyfile=$dir/handoff-$to.pem
 
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
-[ -e "$keyfile" ] || no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
+if [ ! -e "$keyfile" ]; then
+  [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink to a missing file"
+  no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
+fi
 [ -f "$keyfile" ] || no_key "$keyfile is not a regular file"
 # A large non-key file makes openssl's decoder very slow: refuse it.
 size=$( { wc -c < "$keyfile"; } 2>/dev/null ) || no_key "cannot read $keyfile"
 [ "$size" -le 16384 ] || no_key "$keyfile is over 16384 bytes; not a public key file"
 PUBKEY=$(<"$keyfile") || no_key "cannot read $keyfile"
+# A copy saved on Windows or by an editor can carry CRLF line endings or
+# trailing blanks: openssl reads those, so drop them before the line checks.
+PUBKEY=$(printf '%s\n' "$PUBKEY" | tr -d '\r' | sed 's/[[:blank:]]*$//')
 count() { { grep -cxF -- "$1" <<<"$PUBKEY" || true; } }
 if grep -qF -- 'PRIVATE KEY' <<<"$PUBKEY"; then
   no_key "$keyfile holds a private key. Only the agent's public key belongs here: delete this file now. If it's the agent's handoff key, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
@@ -157,9 +175,9 @@ fi
 # At a terminal this uses `stty -echo` + `cat`, not `read -d ''`: bash puts
 # the terminal in character mode for `read -d ''`, where Ctrl-D is just
 # another byte and the script would wait forever.
-if [ $# -ge 1 ]; then
-  [ -r "$1" ] || { echo "cannot read $1" >&2; exit 1; }
-  SECRET_JSON=$(<"$1")          # note: plaintext is already on disk in this path
+if [ "$file_given" = 1 ]; then
+  [ -r "$file" ] || { echo "cannot read $file" >&2; exit 1; }
+  SECRET_JSON=$(<"$file")       # note: plaintext is already on disk in this path
 elif [ -t 0 ]; then
   {
     echo "Paste or type the JSON, then press Enter and Ctrl-D."

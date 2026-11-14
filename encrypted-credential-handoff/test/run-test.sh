@@ -11,7 +11,7 @@
 #      the helper execs the command, so a TERM sent to the helper reaches
 #      the command and leaves no credentialed process behind;
 #   3. encrypt direction: a fresh blob produced by ../handoff.sh (with the
-#      dummy public key embedded in a scratch copy) decrypts through
+#      dummy public key saved beside a scratch copy) decrypts through
 #      ../consume.py to the same values;
 #   4. fingerprints agree: agent-setup.sh --fingerprint (on the key that
 #      $HANDOFF_PRIVKEY names) equals handoff.sh --fingerprint, for the
@@ -97,7 +97,7 @@ expect_refusal() {
 
 # Copy ../handoff.sh to $2, with the public key in $1 beside it as
 # handoff-muse.pem (the default recipient's key file).
-embed_pub() {
+install_handoff() {
   mkdir -p "$(dirname "$2")"
   cp ../handoff.sh "$2"
   cp "$1" "$(dirname "$2")/handoff-muse.pem"
@@ -195,7 +195,7 @@ done
 echo "ok"
 
 echo "== 3. reference encrypt (handoff.sh) -> reference decrypt =="
-embed_pub test-dummy-pub.pem "$S/hd/handoff.sh"
+install_handoff test-dummy-pub.pem "$S/hd/handoff.sh"
 bash "$S/hd/handoff.sh" < expected.json >"$S/blob2" 2>"$S/err"
 grep -q '^pubkey SHA256:' "$S/err" || fail "handoff.sh printed no fingerprint"
 no_dummy_in "$S/blob2" "$S/err"
@@ -279,7 +279,7 @@ HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh >"$S/setup-out" 2>"$S/setup-er
 [ "$(stat -c %a "$S/agent/handoff-priv.pem")" = 600 ] || fail "new key is not mode 600"
 sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p' "$S/setup-out" > "$S/agent-pub.pem"
 printed=$(sed -n 's/^public key fingerprint: //p' "$S/setup-out")
-embed_pub "$S/agent-pub.pem" "$S/ha/handoff.sh"
+install_handoff "$S/agent-pub.pem" "$S/ha/handoff.sh"
 from_handoff=$(bash "$S/ha/handoff.sh" --fingerprint)
 from_key=$(HANDOFF_PRIVKEY="$S/agent/handoff-priv.pem" bash ../agent-setup.sh --fingerprint 2>/dev/null)
 [ -n "$printed" ] && [ "$printed" = "$from_handoff" ] && [ "$from_key" = "$from_handoff" ] \
@@ -900,6 +900,24 @@ expect_refusal "handoff.sh --fingerprint with a FILE" 2 "--fingerprint takes no 
   bash "$K/handoff.sh" --to other --fingerprint expected.json
 expect_refusal "handoff.sh two FILEs" 2 "at most one FILE" \
   bash "$K/handoff.sh" --to other expected.json expected.json
+expect_refusal "handoff.sh two FILEs, the second after --" 2 "at most one FILE" \
+  bash "$K/handoff.sh" --to other expected.json -- expected.json
+# Options may follow FILE.
+bash "$K/handoff.sh" expected.json --to other >/dev/null 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "handoff.sh FILE --to NAME was refused"; }
+grep -qF "(from $K/handoff-other.pem)" "$S/err" || fail "handoff.sh FILE --to NAME didn't read handoff-other.pem"
+expect_refusal "handoff.sh FILE then --fingerprint" 2 "--fingerprint takes no FILE" \
+  bash "$K/handoff.sh" expected.json --fingerprint
+# Run by a relative path, the key file is named relative to the working directory.
+( cd "$K" && bash handoff.sh --to other --fingerprint ) 2>"$S/err" >/dev/null || fail "handoff.sh run as bash handoff.sh failed"
+grep -qxF "key file: ./handoff-other.pem" "$S/err" || fail "bash handoff.sh named its key file $(cat "$S/err")"
+( cd "$S" && bash hk/handoff.sh --to other --fingerprint ) 2>"$S/err" >/dev/null || fail "handoff.sh run as bash hk/handoff.sh failed"
+grep -qxF "key file: ./hk/handoff-other.pem" "$S/err" || fail "bash hk/handoff.sh named its key file $(cat "$S/err")"
+# A copy with CRLF line endings or trailing blanks is still the one key.
+sed 's/$/\r/' test-dummy-pub.pem > "$K/handoff-crlf.pem"
+[ "$(bash "$K/handoff.sh" --to crlf --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a CRLF key file"
+sed 's/$/  /' test-dummy-pub.pem > "$K/handoff-blanks.pem"
+[ "$(bash "$K/handoff.sh" --to blanks --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with trailing blanks"
 # A key file that isn't one RSA-2048 public key is refused, never used.
 mkdir "$K/handoff-dir.pem"
 expect_refusal "handoff.sh key file that is a directory" 1 "handoff-dir.pem is not a regular file" \
@@ -919,6 +937,17 @@ expect_refusal "handoff.sh damaged key file" 1 "handoff-damaged.pem is not a rea
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null | openssl pkey -pubout > "$K/handoff-ec.pem"
 expect_refusal "handoff.sh key file with an EC key" 1 "is not an RSA-2048 public key with e = 65537" \
   bash "$K/handoff.sh" --to ec --fingerprint
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:65539 2>/dev/null \
+  | openssl pkey -pubout > "$K/handoff-e65539.pem"
+expect_refusal "handoff.sh key file with e = 65539" 1 "is not an RSA-2048 public key with e = 65537" \
+  bash "$K/handoff.sh" --to e65539 --fingerprint
+{ cat test-dummy-pub.pem; openssl req -x509 -new -key "$TMPKEY" -subj /CN=x -days 1 2>/dev/null; } > "$K/handoff-cert.pem"
+grep -q 'BEGIN CERTIFICATE' "$K/handoff-cert.pem" || fail "test setup: no certificate made"
+expect_refusal "handoff.sh key file with a key and a certificate" 1 "must hold exactly one public key" \
+  bash "$K/handoff.sh" --to cert --fingerprint
+ln -s "$K/nowhere.pem" "$K/handoff-dangling.pem"
+expect_refusal "handoff.sh key file that is a dangling symlink" 1 "handoff-dangling.pem is a symlink to a missing file" \
+  bash "$K/handoff.sh" --to dangling --fingerprint
 python3 -c 'import sys; sys.stdout.write("x" * 16385)' > "$K/handoff-big.pem"
 expect_refusal "handoff.sh key file over 16384 bytes" 1 "handoff-big.pem is over 16384 bytes" \
   bash "$K/handoff.sh" --to big --fingerprint
@@ -949,9 +978,9 @@ old_fp=$(rk bash ../agent-setup.sh --fingerprint "$R/k.pem.previous" 2>/dev/null
 new_fp=$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)
 [ "$new_fp" != "$want" ] || fail "--rotate kept the old key as the current one"
 grep -qxF "new public key fingerprint: $new_fp" "$R/out" || fail "--rotate printed another fingerprint than the new key's"
-# The new public key it prints is the one handoff.sh embeds.
+# The new public key it prints is the one handoff.sh reads from its key file.
 sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p' "$R/out" > "$R/pub.pem"
-embed_pub "$R/pub.pem" "$R/handoff.sh"
+install_handoff "$R/pub.pem" "$R/handoff.sh"
 [ "$(bash "$R/handoff.sh" --fingerprint)" = "$new_fp" ] || fail "--rotate's public key isn't the new key's"
 ! compgen -G "$R/.handoff-new*" >/dev/null || fail "--rotate left a temporary key file"
 # An old blob still opens, through the previous key; run mode says to rewrap it.
