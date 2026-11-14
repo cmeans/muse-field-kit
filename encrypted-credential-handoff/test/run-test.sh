@@ -95,15 +95,12 @@ expect_refusal() {
   echo "ok (refused: $desc)"
 }
 
-# Write a copy of ../handoff.sh with the public key in $1 embedded, to $2.
+# Copy ../handoff.sh to $2, with the public key in $1 beside it as
+# handoff-muse.pem (the default recipient's key file).
 embed_pub() {
-  python3 - "$1" "$2" <<'PYEOF'
-import re, sys
-src = open("../handoff.sh").read()
-pub = open(sys.argv[1]).read().strip()
-block = re.search(r"read -r -d '' PUBKEY <<'EOF' \|\| true\n(.*?)EOF", src, re.S).group(1)
-open(sys.argv[2], "w").write(src.replace(block, pub + "\n"))
-PYEOF
+  mkdir -p "$(dirname "$2")"
+  cp ../handoff.sh "$2"
+  cp "$1" "$(dirname "$2")/handoff-muse.pem"
 }
 
 # Encrypt the JSON text in $1 to the dummy public key, straight through
@@ -198,8 +195,8 @@ done
 echo "ok"
 
 echo "== 3. reference encrypt (handoff.sh) -> reference decrypt =="
-embed_pub test-dummy-pub.pem "$S/handoff-dummy.sh"
-bash "$S/handoff-dummy.sh" < expected.json >"$S/blob2" 2>"$S/err"
+embed_pub test-dummy-pub.pem "$S/hd/handoff.sh"
+bash "$S/hd/handoff.sh" < expected.json >"$S/blob2" 2>"$S/err"
 grep -q '^pubkey SHA256:' "$S/err" || fail "handoff.sh printed no fingerprint"
 no_dummy_in "$S/blob2" "$S/err"
 out=$(HANDOFF_BLOB="$(cat "$S/blob2")" consume --label example -- python3 -c '
@@ -227,7 +224,7 @@ fi
 # 190 bytes is the RSA-2048/OAEP-SHA256 ceiling: exactly that must work.
 max=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "mk-Zq9" + "y" * 153}, separators=(",", ":")), end="")')
 [ "${#max}" = 190 ] || fail "test setup: maximum payload is ${#max} bytes, not 190"
-bash "$S/handoff-dummy.sh" <<<"$max" >"$S/blob3" 2>/dev/null || fail "handoff.sh refused a 190-byte payload"
+bash "$S/hd/handoff.sh" <<<"$max" >"$S/blob3" 2>/dev/null || fail "handoff.sh refused a 190-byte payload"
 out=$(HANDOFF_BLOB="$(cat "$S/blob3")" consume --label example -- python3 -c '
 import os
 print(len(os.environ["SERVICE_PASSWORD"]))
@@ -236,7 +233,7 @@ print(len(os.environ["SERVICE_PASSWORD"]))
 echo "ok"
 
 echo "== 4a. fingerprints agree on the dummy key; --fingerprint reads \$HANDOFF_PRIVKEY =="
-want=$(bash "$S/handoff-dummy.sh" --fingerprint)
+want=$(bash "$S/hd/handoff.sh" --fingerprint)
 # HANDOFF_KEY_DIR points somewhere with no key: the fingerprint must come
 # from $HANDOFF_PRIVKEY, the key the consume side actually uses.
 got=$(HANDOFF_KEY_DIR="$S/no-such-dir" bash ../agent-setup.sh --fingerprint 2>"$S/err")
@@ -282,8 +279,8 @@ HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh >"$S/setup-out" 2>"$S/setup-er
 [ "$(stat -c %a "$S/agent/handoff-priv.pem")" = 600 ] || fail "new key is not mode 600"
 sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p' "$S/setup-out" > "$S/agent-pub.pem"
 printed=$(sed -n 's/^public key fingerprint: //p' "$S/setup-out")
-embed_pub "$S/agent-pub.pem" "$S/handoff-agent.sh"
-from_handoff=$(bash "$S/handoff-agent.sh" --fingerprint)
+embed_pub "$S/agent-pub.pem" "$S/ha/handoff.sh"
+from_handoff=$(bash "$S/ha/handoff.sh" --fingerprint)
 from_key=$(HANDOFF_PRIVKEY="$S/agent/handoff-priv.pem" bash ../agent-setup.sh --fingerprint 2>/dev/null)
 [ -n "$printed" ] && [ "$printed" = "$from_handoff" ] && [ "$from_key" = "$from_handoff" ] \
   || fail "fingerprints disagree: setup $printed, handoff.sh $from_handoff, --fingerprint $from_key"
@@ -602,7 +599,7 @@ PYTHONPATH="$S/pp" sh ../consume.py --label example --check --blob-file blob.txt
 # The OpenSSL 4 wrapper passes agent-setup.sh's and handoff.sh's gates too.
 [ "$(PATH="$S/ssl4:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "agent-setup.sh refused OpenSSL 4"
-[ "$(PATH="$S/ssl4:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint)" = "$want" ] \
+[ "$(PATH="$S/ssl4:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint)" = "$want" ] \
   || fail "handoff.sh refused OpenSSL 4"
 expect_refusal "agent-setup.sh generation, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/fake-ssl:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/libressl-key" bash ../agent-setup.sh
@@ -611,10 +608,10 @@ expect_refusal "agent-setup.sh generation, not OpenSSL 3 or 4" 1 "requires OpenS
 mkdir -p "$S/libressl"
 printf '#!/bin/sh\necho "LibreSSL 3.8.2"\n' > "$S/libressl/openssl"; chmod 755 "$S/libressl/openssl"
 expect_refusal "handoff.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
-  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
+  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint
 [ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
 expect_refusal "handoff.sh encrypting, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
-  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" <<<'{"svc":"example","password":"mk-Zq9"}'
+  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/hd/handoff.sh" <<<'{"svc":"example","password":"mk-Zq9"}'
 [ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
 # An openssl version that fails silently is reported, not a bare exit.
 mkdir -p "$S/silent-ssl"; ln -sf "$PY" "$S/silent-ssl/python3"
@@ -622,10 +619,10 @@ printf '#!/bin/sh\nexit 1\n' > "$S/silent-ssl/openssl"; chmod 755 "$S/silent-ssl
 expect_refusal "agent-setup.sh, openssl version fails silently" 1 "openssl version failed" \
   env PATH="$S/silent-ssl:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
 expect_refusal "handoff.sh, openssl version fails silently" 1 "openssl version failed" \
-  env PATH="$S/silent-ssl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
+  env PATH="$S/silent-ssl:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint
 # handoff.sh runs in the user's shell, so its hint doesn't mention wrappers.
 expect_refusal "handoff.sh hint off wrappers" 1 "Put one first on your PATH" \
-  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
+  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint
 ! grep -q "wrapper" "$S/err" || fail "handoff.sh's hint mentions wrappers"
 # An openssl version that prints nothing but exits 0: "no version output",
 # in all three scripts.
@@ -634,7 +631,7 @@ printf '#!/bin/sh\nexit 0\n' > "$S/empty-ssl/openssl"; chmod 755 "$S/empty-ssl/o
 expect_refusal "agent-setup.sh, empty openssl version" 1 "found: no version output" \
   env PATH="$S/empty-ssl:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
 expect_refusal "handoff.sh, empty openssl version" 1 "found: no version output" \
-  env PATH="$S/empty-ssl:/usr/bin:/bin" bash "$S/handoff-dummy.sh" --fingerprint
+  env PATH="$S/empty-ssl:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint
 expect_refusal "consume.py, empty openssl version" 1 "found: no version output" \
   env PATH="$S/empty-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
 # openssl's error text: silent (no reason, no traceback), the readable line
@@ -662,7 +659,7 @@ ln -sf "$PY" "$S/libressl/python3"
 expect_refusal "agent-setup.sh hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
   env PATH="$S/libressl:/usr/bin:/bin" OSTYPE=darwin23 bash ../agent-setup.sh --fingerprint
 expect_refusal "handoff.sh hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
-  env PATH="$S/libressl:/usr/bin:/bin" OSTYPE=darwin23 bash "$S/handoff-dummy.sh" --fingerprint
+  env PATH="$S/libressl:/usr/bin:/bin" OSTYPE=darwin23 bash "$S/hd/handoff.sh" --fingerprint
 expect_refusal "consume.py hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
   env PATH="$S/libressl" python3 -I -c '
 import sys
@@ -723,12 +720,12 @@ env PATH="$S/ssl-env" OPENSSL_MODULES="$S/nowhere" openssl_x=1 python3 ../consum
 # case: through the fake openssl that fails on one...
 [ "$(env PATH="$S/ssl-env:/usr/bin:/bin" OPENSSL_MODULES="$S/nowhere" openssl_x=1 bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "an OPENSSL_* variable reached agent-setup.sh's openssl"
-[ "$(env PATH="$S/ssl-env:/usr/bin:/bin" OPENSSL_MODULES="$S/nowhere" openssl_x=1 bash "$S/handoff-dummy.sh" --fingerprint 2>/dev/null)" = "$want" ] \
+[ "$(env PATH="$S/ssl-env:/usr/bin:/bin" OPENSSL_MODULES="$S/nowhere" openssl_x=1 bash "$S/hd/handoff.sh" --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "an OPENSSL_* variable reached handoff.sh's openssl"
 # ...and a caller's OPENSSL_CONF that would break them.
 [ "$(OPENSSL_CONF="$S/evil.cnf" bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "a caller's OPENSSL_CONF reached agent-setup.sh's openssl"
-[ "$(OPENSSL_CONF="$S/evil.cnf" bash "$S/handoff-dummy.sh" --fingerprint)" = "$want" ] \
+[ "$(OPENSSL_CONF="$S/evil.cnf" bash "$S/hd/handoff.sh" --fingerprint)" = "$want" ] \
   || fail "a caller's OPENSSL_CONF reached handoff.sh's openssl"
 # The fstat re-check: a path that passed the stat check but is a FIFO by the
 # time it's opened (os.stat patched to report a regular file) is still
@@ -840,21 +837,99 @@ expect_refusal "agent-setup.sh --fingerprint, a public key" 1 "could not read ke
 long=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "mk-Zq9" + "x" * 154}, separators=(",", ":")), end="")')
 [ "${#long}" = 191 ] || fail "test setup: oversize payload is ${#long} bytes, not 191"
 expect_refusal "handoff.sh 191-byte payload" 1 "payload is 191 bytes" \
-  bash "$S/handoff-dummy.sh" <<<"$long"
+  bash "$S/hd/handoff.sh" <<<"$long"
 if command -v jq >/dev/null; then
   expect_refusal "handoff.sh non-object payload" 1 "must be a single JSON object" \
-    bash "$S/handoff-dummy.sh" <<<'["mk-Zq9"]'
+    bash "$S/hd/handoff.sh" <<<'["mk-Zq9"]'
   expect_refusal "handoff.sh two concatenated objects" 1 "must be a single JSON object" \
-    bash "$S/handoff-dummy.sh" <<<'{"svc":"example","password":"mk-Zq9"}{"svc":"example"}'
+    bash "$S/hd/handoff.sh" <<<'{"svc":"example","password":"mk-Zq9"}{"svc":"example"}'
   expect_refusal "handoff.sh payload without svc" 1 "must be a single JSON object" \
-    bash "$S/handoff-dummy.sh" <<<'{"password":"mk-Zq9"}'
+    bash "$S/hd/handoff.sh" <<<'{"password":"mk-Zq9"}'
 else
   echo "skip: jq not installed, handoff.sh shape refusals not tested"
 fi
-rc=0; bash ../handoff.sh --fingerprint >"$S/out" 2>/dev/null || rc=$?
-[ "$rc" != 0 ] && [ ! -s "$S/out" ] \
-  || fail "handoff.sh --fingerprint with the placeholder key: exit $rc, stdout $(cat "$S/out")"
-echo "ok (refused: handoff.sh --fingerprint with the placeholder key)"
+
+echo "== 5b. handoff.sh's key: handoff-NAME.pem beside the script, and nothing else =="
+K="$S/hk"; mkdir -p "$K"; cp ../handoff.sh "$K/handoff.sh"
+pay='{"svc":"example","password":"mk-Zq9"}'
+# No key file: no ciphertext, and no key in the script to fall back on.
+expect_refusal "handoff.sh with no key file" 1 "no key file for recipient 'muse': $K/handoff-muse.pem doesn't exist" \
+  bash "$K/handoff.sh" <<<"$pay"
+expect_refusal "handoff.sh --fingerprint with no key file" 1 "no key file for recipient 'muse'" \
+  bash "$K/handoff.sh" --fingerprint
+! grep -qx -e '-----BEGIN PUBLIC KEY-----' -e '-----END PUBLIC KEY-----' ../handoff.sh \
+  || fail "handoff.sh still embeds a public key block"
+# --to NAME picks handoff-NAME.pem; --fingerprint names the file it read.
+cp test-dummy-pub.pem "$K/handoff-other.pem"
+[ "$(bash "$K/handoff.sh" --to other --fingerprint 2>"$S/err")" = "$want" ] \
+  || fail "--to other didn't read handoff-other.pem"
+grep -qxF "key file: $K/handoff-other.pem" "$S/err" || fail "--fingerprint didn't name the key file it read"
+expect_refusal "handoff.sh --to a recipient with no key file" 1 "no key file for recipient 'nobody'" \
+  bash "$K/handoff.sh" --to nobody --fingerprint
+# With no --to, the recipient is muse.
+cp test-dummy-pub.pem "$K/handoff-muse.pem"
+[ "$(bash "$K/handoff.sh" --fingerprint 2>"$S/err")" = "$want" ] \
+  || fail "with no --to, handoff.sh didn't read handoff-muse.pem"
+grep -qxF "key file: $K/handoff-muse.pem" "$S/err" || fail "with no --to, handoff.sh didn't name handoff-muse.pem"
+rm "$K/handoff-muse.pem"
+# Encrypting names the key file beside the fingerprint, and the blob round-trips.
+bash "$K/handoff.sh" --to other expected.json >"$S/blob4" 2>"$S/err" || { cat "$S/err" >&2; fail "handoff.sh --to other FILE failed"; }
+grep -qF "pubkey $want (from $K/handoff-other.pem)" "$S/err" || fail "the encrypt run didn't name its key file"
+out=$(HANDOFF_BLOB="$(cat "$S/blob4")" consume --label example -- python3 -c '
+import os
+print(os.environ["SERVICE_PASSWORD"])
+')
+[ "$out" = "$P" ] || fail "the --to blob did not round-trip"
+# A name that isn't plain letters, digits, _ and -, or is too long, is a usage error.
+expect_refusal "handoff.sh --to a path" 2 "--to NAME takes only letters, digits, _ and -" \
+  bash "$K/handoff.sh" --to ../other --fingerprint
+expect_refusal "handoff.sh --to an empty name" 2 "--to NAME takes only letters, digits, _ and -" \
+  bash "$K/handoff.sh" --to '' --fingerprint
+expect_refusal "handoff.sh --to a non-ASCII name" 2 "--to NAME takes only letters, digits, _ and -" \
+  bash "$K/handoff.sh" --to "othér" --fingerprint
+expect_refusal "handoff.sh --to a 65-character name" 2 "--to NAME is at most 64 characters" \
+  bash "$K/handoff.sh" --to "$(printf 'a%.0s' $(seq 65))" --fingerprint
+cp test-dummy-pub.pem "$K/handoff-$(printf 'a%.0s' $(seq 64)).pem"
+[ "$(bash "$K/handoff.sh" --to "$(printf 'a%.0s' $(seq 64))" --fingerprint 2>/dev/null)" = "$want" ] \
+  || fail "handoff.sh refused a 64-character name"
+expect_refusal "handoff.sh --to with no NAME" 2 "--to needs a NAME" bash "$K/handoff.sh" --to
+expect_refusal "handoff.sh --to twice" 2 "--to given more than once" \
+  bash "$K/handoff.sh" --to other --to other --fingerprint
+expect_refusal "handoff.sh unknown option" 2 "unknown option --bogus" bash "$K/handoff.sh" --bogus
+expect_refusal "handoff.sh --fingerprint with a FILE" 2 "--fingerprint takes no FILE" \
+  bash "$K/handoff.sh" --to other --fingerprint expected.json
+expect_refusal "handoff.sh two FILEs" 2 "at most one FILE" \
+  bash "$K/handoff.sh" --to other expected.json expected.json
+# A key file that isn't one RSA-2048 public key is refused, never used.
+mkdir "$K/handoff-dir.pem"
+expect_refusal "handoff.sh key file that is a directory" 1 "handoff-dir.pem is not a regular file" \
+  bash "$K/handoff.sh" --to dir --fingerprint
+cp "$TMPKEY" "$K/handoff-priv.pem"
+expect_refusal "handoff.sh key file holding a private key" 1 "holds a private key. Only the agent's public key belongs here: delete this file now" \
+  bash "$K/handoff.sh" --to priv <<<"$pay"
+printf 'not a key\n' > "$K/handoff-junk.pem"
+expect_refusal "handoff.sh key file with no key" 1 "must hold exactly one public key" \
+  bash "$K/handoff.sh" --to junk --fingerprint
+cat test-dummy-pub.pem "$S/agent-pub.pem" > "$K/handoff-two.pem"
+expect_refusal "handoff.sh key file with two keys" 1 "must hold exactly one public key" \
+  bash "$K/handoff.sh" --to two <<<"$pay"
+{ echo '-----BEGIN PUBLIC KEY-----'; echo 'bm90IGEga2V5'; echo '-----END PUBLIC KEY-----'; } > "$K/handoff-damaged.pem"
+expect_refusal "handoff.sh damaged key file" 1 "handoff-damaged.pem is not a readable public key" \
+  bash "$K/handoff.sh" --to damaged --fingerprint
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null | openssl pkey -pubout > "$K/handoff-ec.pem"
+expect_refusal "handoff.sh key file with an EC key" 1 "is not an RSA-2048 public key with e = 65537" \
+  bash "$K/handoff.sh" --to ec --fingerprint
+python3 -c 'import sys; sys.stdout.write("x" * 16385)' > "$K/handoff-big.pem"
+expect_refusal "handoff.sh key file over 16384 bytes" 1 "handoff-big.pem is over 16384 bytes" \
+  bash "$K/handoff.sh" --to big --fingerprint
+# Run through a symlink, it reads the key beside the link, not the target.
+mkdir -p "$S/hl"; ln -s "$K/handoff.sh" "$S/hl/handoff.sh"
+expect_refusal "handoff.sh through a symlink, key only beside the target" 1 "$S/hl/handoff-other.pem doesn't exist" \
+  bash "$S/hl/handoff.sh" --to other --fingerprint
+cp test-dummy-pub.pem "$S/hl/handoff-other.pem"
+[ "$(bash "$S/hl/handoff.sh" --to other --fingerprint 2>/dev/null)" = "$want" ] \
+  || fail "handoff.sh through a symlink didn't read the key beside the link"
+echo "ok"
 
 echo "== 6. rotation: --rotate, the previous key, --rewrap, --retire =="
 # A copy of the dummy key, so blob.txt is a blob made for the key that

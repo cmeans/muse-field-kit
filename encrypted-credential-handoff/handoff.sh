@@ -9,15 +9,20 @@
 # in this shell's memory while the script runs and could in principle be
 # swapped out. That is the residual exposure; "shredding" is not claimed.
 #
-# SETUP: replace the placeholder public key below with the one printed by
-# agent-setup.sh on the agent's machine, and confirm the --fingerprint output
-# matches the fingerprint the agent reports for its key.
+# SETUP: save the public key printed by agent-setup.sh on the agent's machine
+# as handoff-<recipient>.pem in the same directory as this script (for an
+# agent called muse, the default: handoff-muse.pem), and confirm the
+# --fingerprint output matches the fingerprint the agent reports for its key.
+# At a rotation, replace that file; this script itself never changes. The
+# directory is the one in the path this script was run by, not resolved
+# through a symlink: for a symlink ~/bin/handoff.sh, the key goes in ~/bin.
 #
 # Usage:
-#   handoff.sh                 # paste or type JSON, then Enter and Ctrl-D
-#   handoff.sh FILE            # read JSON from FILE
-#   handoff.sh --fingerprint   # print pubkey fingerprint and exit
-#   handoff.sh --help          # print this usage and exit
+#   handoff.sh [--to NAME]                 # paste or type JSON, then Enter and Ctrl-D
+#   handoff.sh [--to NAME] FILE            # read JSON from FILE
+#   handoff.sh [--to NAME] --fingerprint   # print the key's fingerprint and exit
+#   handoff.sh --help                      # print this usage and exit
+# NAME (default muse) picks the key file handoff-NAME.pem beside this script.
 #
 # stdout is ONLY the base64 ciphertext; all prompts go to stderr, so
 #   handoff.sh secrets.json > blob.txt
@@ -45,40 +50,100 @@ case "$ssl_version" in
   *) echo "requires OpenSSL 3 or 4; found: ${ssl_version:-no version output}. Put one first on your PATH$(case "${OSTYPE-}" in (darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
 esac
 
-# The agent's long-lived handoff public key (encryption only — safe to share).
-# NOTE: `read -d ''` exits non-zero at EOF by design; `|| true` keeps
-# `set -e` from killing the script here.
-read -r -d '' PUBKEY <<'EOF' || true
------BEGIN PUBLIC KEY-----
-REPLACE WITH THE PUBLIC KEY PRINTED BY agent-setup.sh
------END PUBLIC KEY-----
-EOF
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  handoff.sh [--to NAME]                 paste or type JSON, then Enter and Ctrl-D
+  handoff.sh [--to NAME] FILE            read JSON from FILE
+  handoff.sh [--to NAME] --fingerprint   print the key's fingerprint and exit
+  handoff.sh --help                      print this usage and exit
+NAME (default muse; letters, digits, _ and -) picks the agent's public key
+file, handoff-NAME.pem, in this script's directory.
+stdout is ONLY the base64 ciphertext; all prompts go to stderr.
+USAGE
+}
+usage_error() { echo "handoff.sh: $1" >&2; usage; exit 2; }
+
+# --- arguments ----------------------------------------------------------
+to=muse
+to_given=0
+mode=encrypt
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --fingerprint) mode=fingerprint ;;
+    --to)
+      [ $# -ge 2 ] || usage_error "--to needs a NAME"
+      [ "$to_given" = 0 ] || usage_error "--to given more than once"
+      to=$2; to_given=1; shift ;;
+    --) shift; break ;;
+    -?*) usage_error "unknown option $(printf '%q' "$1")" ;;
+    *) break ;;
+  esac
+  shift
+done
+[ $# -le 1 ] || usage_error "at most one FILE"
+[ "$mode" = encrypt ] || [ $# -eq 0 ] || usage_error "--fingerprint takes no FILE"
+
+# The name becomes part of a file name: plain ASCII letters, digits, _ and -
+# only (listed, not ranges, which can match more in some locales), so it
+# can't name another directory.
+case "$to" in
+  ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*)
+    usage_error "--to NAME takes only letters, digits, _ and - (got $(printf '%q' "$to"))" ;;
+esac
+[ "${#to}" -le 64 ] || usage_error "--to NAME is at most 64 characters"
+
+# --- the agent's public key, from handoff-NAME.pem beside this script ------
+# The key is public: what matters is that it's the agent's (the fingerprint
+# check) and that it's the only key this script can use. There's no key in
+# the script and no fallback: without a usable key file, nothing is encrypted.
+src=${BASH_SOURCE[0]}
+case "$src" in
+  */*) dir=${src%/*}; [ -n "$dir" ] || dir=/ ;;
+  *) dir=. ;;
+esac
+case "$dir" in /*) ;; *) dir=./$dir ;; esac   # a relative path never starts with -
+keyfile=$dir/handoff-$to.pem
+
+no_key() { echo "handoff.sh: $1" >&2; exit 1; }
+[ -e "$keyfile" ] || no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
+[ -f "$keyfile" ] || no_key "$keyfile is not a regular file"
+# A large non-key file makes openssl's decoder very slow: refuse it.
+size=$( { wc -c < "$keyfile"; } 2>/dev/null ) || no_key "cannot read $keyfile"
+[ "$size" -le 16384 ] || no_key "$keyfile is over 16384 bytes; not a public key file"
+PUBKEY=$(<"$keyfile") || no_key "cannot read $keyfile"
+count() { { grep -cxF -- "$1" <<<"$PUBKEY" || true; } }
+if grep -qF -- 'PRIVATE KEY' <<<"$PUBKEY"; then
+  no_key "$keyfile holds a private key. Only the agent's public key belongs here: delete this file now. If it's the agent's handoff key, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
+fi
+begins=$( { grep -cF -- '-----BEGIN ' <<<"$PUBKEY" || true; } )
+if [ "$begins" != 1 ] || [ "$(count '-----BEGIN PUBLIC KEY-----')" != 1 ] \
+   || [ "$(count '-----END PUBLIC KEY-----')" != 1 ]; then
+  no_key "$keyfile must hold exactly one public key (one -----BEGIN PUBLIC KEY----- block), as agent-setup.sh prints it"
+fi
+# RSA-2048 with e = 65537 only, as agent-setup.sh and consume.py check: its
+# public key in DER is 294 bytes, a fixed 33-byte header (its modulus field's
+# leading 00 means exactly 2048 bits), and the exponent 65537 at the end.
+der=$(printf '%s\n' "$PUBKEY" | openssl pkey -pubin -outform DER 2>/dev/null | od -An -tx1 -v | tr -d ' \n') \
+  || no_key "$keyfile is not a readable public key"
+case "$der" in
+  30820122300d06092a864886f70d01010105000382010f003082010a0282010100*0203010001) ;;
+  *) der=bad ;;
+esac
+[ "${#der}" -eq 588 ] || no_key "$keyfile is not an RSA-2048 public key with e = 65537, as agent-setup.sh makes"
 
 fingerprint() {
   printf '%s\n' "$PUBKEY" | openssl pkey -pubin -outform DER \
     | openssl dgst -sha256 -binary | openssl base64
 }
 
-case "${1-}" in
-  --help|-h)
-    cat >&2 <<'USAGE'
-Usage:
-  handoff.sh                 paste or type JSON, then Enter and Ctrl-D
-  handoff.sh FILE            read JSON from FILE
-  handoff.sh --fingerprint   print pubkey fingerprint and exit
-  handoff.sh --help          print this usage and exit
-stdout is ONLY the base64 ciphertext; all prompts go to stderr.
-USAGE
-    exit 0
-    ;;
-esac
-
-if [ "${1-}" = "--fingerprint" ]; then
-  # Assign first, echo second: if the embedded key is a placeholder or
-  # damaged, `openssl pkey` fails — inside an echo argument that failure
+if [ "$mode" = fingerprint ]; then
+  # Assign first, echo second: inside an echo argument a failing pipeline
   # would be masked and the script would print the SHA-256 of empty input
   # and exit 0. As an assignment under `set -e` + pipefail, it exits 1.
   fp=$(fingerprint)
+  echo "key file: $keyfile" >&2
   echo "SHA256:$fp"
   exit 0
 fi
@@ -143,7 +208,7 @@ fi
 # --- encrypt (no plaintext ever touches disk) -------------------------
 # Pubkey via process substitution, secret via stdin pipe.
 fp=$(fingerprint)
-echo "pubkey SHA256:$fp  <- compare with the fingerprint" >&2
+echo "pubkey SHA256:$fp (from $keyfile)  <- compare with the fingerprint" >&2
 echo "   your agent reports for its key before trusting this output" >&2
 echo "--- paste everything below into chat with your agent ---" >&2
 printf '%s' "$SECRET_JSON" | openssl pkeyutl -encrypt -pubin \
