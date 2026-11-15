@@ -2,17 +2,21 @@
 
 Hand your Muse a service credential **without the plaintext ever entering the chat**.
 
-**What this is:** you encrypt a small JSON payload on your own machine with a public key whose private half lives only on your Muse's computer. You paste the resulting ciphertext into chat — ciphertext is safe to handle in the open. On the agent's side, decryption and use happen inside a single helper process: the plaintext is injected into the consuming tool's environment in memory and never written to disk. The helper itself never prints it; what reaches the agent is the consuming tool's own output, which is why each service is wired to a tool that doesn't print its credentials, and only that tool.
+1. **You encrypt** a small JSON payload, such as `{"svc": "example", "username": "…", "password": "…"}`, on your own machine with `handoff.sh`, to your Muse's public key.
+2. **You paste the ciphertext** into chat. It's safe to handle in the open: the private key that opens it lives only on your Muse's computer.
+3. **At use time, a helper on Muse's side decrypts it in memory** and replaces itself with the one tool that needs it, the values in that tool's environment: decryption and use happen in that single process. The plaintext is never written to disk, and the helper prints nothing derived from it. What reaches Muse is the tool's own output, which is why each credential is wired to a tool that doesn't print it, and only that tool.
 
-**Who it's for:** anyone whose agent needs credentials for *local tools* — MCP servers, CLIs — that take secrets as environment variables or config values, where the platform's browser-oriented saved logins can't reach. See “Why not a built-in vault?” below.
+**Who it's for:** anyone whose agent needs credentials for programs it runs on its own machine that read them from their environment — MCP servers, CLIs, scripts that call an API — where the platform's browser-oriented saved logins can't reach. Not for website sign-in, file-shaped secrets (SSH keys, client certificates), or a program that needs the credential in a config file or on stdin: this version delivers through the environment only. See “Why not a built-in vault?” below.
 
 **Tested with:** Linux, OpenSSL 3.0 / 3.5, bash 5.x, Python 3.11 / 3.12, jq 1.7 / 1.8. Platform position in detail under “Platform.”
+
+**For your Muse:** `SKILL.md` routes each request (set up, stage a credential, rotate the key) to its step in `SETUP.md`, the instructions it follows. Muse finds a skill only once its folder is installed among its skills, not from a link to this repo, so the setup prompt below asks it to install this folder as one. The installed copy only points Muse back here: it reads the instructions and runs the scripts from a clone of this repository.
 
 ## Prompts for your Muse
 
 **Set it up:**
 
-> Set up the encrypted credential handoff from https://github.com/cmeans/muse-field-kit (folder `encrypted-credential-handoff`). Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Give me the public key to save as handoff-muse.pem beside my copy of handoff.sh, report its fingerprint computed from the private key file, and wait: I will confirm the fingerprint from my copy matches before we test with a dummy credential.
+> Set up the encrypted credential handoff from https://github.com/cmeans/muse-field-kit (folder `encrypted-credential-handoff`): clone it and work from the clone. Also install that folder as one of your skills, so its SKILL.md brings you back to the clone for later requests; run nothing from the installed copy. Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Give me the public key to save as handoff-muse.pem beside my copy of handoff.sh, report its fingerprint computed from the private key file, and wait: I will confirm the fingerprint from my copy matches before we test with a dummy credential.
 
 **Stage a new credential (once set up):**
 
@@ -78,7 +82,7 @@ Saved-login and vault features are built for browser sign-in: the browser fills 
 
 Named precisely, and dated: as of November 2026, Muse's own credential machinery — the Secure Credentials Store for API-style credentials, and Sentinel credential surrogation for browser sign-in — declines username/password credentials (it supports `api_key` and OAuth-style flows), and saved website logins are consumed only by the browser's fill flow; no supported mechanism reads a stored value back for injection into a local process. That was verified against the platform's behavior in the author's setup in October 2026. If Meta ships a readback-for-local-tools path, this section should be revised and this pattern's reason to exist shrinks accordingly.
 
-This pattern fills exactly that gap, and only that gap. Use the platform's own flows wherever they fit. If you already run a secrets manager whose CLI starts a command with secrets in its environment (such as 1Password's `op run` or Bitwarden's `bws run`), prefer it, and use this pattern at most to hand over that tool's own access token.
+This pattern fills that gap for programs that read the credential from their environment, and only that gap: it writes no config file and feeds no program's stdin. Use the platform's own flows wherever they fit. If you already run a secrets manager whose CLI starts a command with secrets in its environment (such as 1Password's `op run` or Bitwarden's `bws run`), prefer it, and use this pattern at most to hand over that tool's own access token.
 
 ## Residual exposure (stated plainly)
 
@@ -139,6 +143,7 @@ A note on review, in the same spirit: the reviewers of this folder were AI agent
 - `agent-setup.sh` — the agent's side. Generates the keypair and prints the public key, the fingerprint, and the consume-side key path to use; `--fingerprint` recomputes an existing key's fingerprint, `--public-key` shows its public key again, and `--rotate` and `--retire` start and end a rotation.
 - `consume.py` — the consume-side template: fetch-side decryption in memory (with the previous key too, during a rotation), `svc` purpose-binding check, environment injection, a `--check` mode (field names and lengths only) for setup tests, and `--rewrap` for rotation.
 - `SETUP.md` — step-by-step instructions written for your Muse, including the hard rules, the precise definition of a mechanism change, and the rotation procedures.
+- `SKILL.md` — the skill file for your Muse: when to use the handoff, which `SETUP.md` step each request goes to, and the rules that hold from the start. It routes only; `SETUP.md` is the authority.
 - `test/` — a known-answer interop test: dummy keypair, a fixed blob, and its expected plaintext, so any port or variant can prove byte-compatibility.
 - `SECURITY.md` — how to report a flaw in this pattern or these scripts.
 - `CHANGELOG.md` — what ships in this folder, and later what changes.

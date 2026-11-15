@@ -20,7 +20,7 @@ More folders are added as each piece is generalized from daily use into publisha
 
 ## Folder layout
 
-Every folder follows the same two-track layout: a `README.md` for humans, the source itself (scripts, skills, templates), a `SETUP.md` written for your Muse to follow, and copy-paste prompts in the README. Security-relevant folders also carry a `SECURITY.md`, a `CHANGELOG.md`, and tests. The mechanism ships as reviewed source, never as something the agent improvises; the prompts and SETUP.md carry the decisions, the sequence, and the guardrails around it. Improvements to a mechanism are welcome — as reviewed changes to this repo, not as silent local edits (each folder's SETUP.md defines exactly what counts as a mechanism change).
+Every folder follows the same two-track layout: a `README.md` for humans, the source itself (scripts, skills, templates), a `SETUP.md` written for your Muse to follow, a `SKILL.md` that routes your Muse's requests to it, and copy-paste prompts in the README. Security-relevant folders also carry a `SECURITY.md`, a `CHANGELOG.md`, and tests. The mechanism ships as reviewed source, never as something the agent improvises; the prompts and SETUP.md carry the decisions, the sequence, and the guardrails around it. Improvements to a mechanism are welcome — as reviewed changes to this repo, not as silent local edits (each folder's SETUP.md defines exactly what counts as a mechanism change).
 
 ## Assumptions the patterns are built on
 
