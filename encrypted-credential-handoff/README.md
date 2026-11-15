@@ -82,7 +82,7 @@ Saved-login and vault features are built for browser sign-in: the browser fills 
 
 Named precisely, and dated: as of November 2026, Muse's own credential machinery — the Secure Credentials Store for API-style credentials, and Sentinel credential surrogation for browser sign-in — declines username/password credentials (it supports `api_key` and OAuth-style flows), and saved website logins are consumed only by the browser's fill flow; no supported mechanism reads a stored value back for injection into a local process. That was verified against the platform's behavior in the author's setup in October 2026. If Meta ships a readback-for-local-tools path, this section should be revised and this pattern's reason to exist shrinks accordingly.
 
-This pattern fills exactly that gap, and only that gap. Use the platform's own flows wherever they fit. If you already run a secrets manager whose CLI starts a command with secrets in its environment (such as 1Password's `op run` or Bitwarden's `bws run`), prefer it, and use this pattern at most to hand over that tool's own access token.
+This pattern fills that gap for programs that read the credential from their environment, and only that gap: it writes no config file and feeds no program's stdin. Use the platform's own flows wherever they fit. If you already run a secrets manager whose CLI starts a command with secrets in its environment (such as 1Password's `op run` or Bitwarden's `bws run`), prefer it, and use this pattern at most to hand over that tool's own access token.
 
 ## Residual exposure (stated plainly)
 

@@ -1,6 +1,6 @@
 ---
 name: encrypted-credential-handoff
-description: "Use when the user wants to give you a password, token or API key for a program you run on your machine that reads it from its environment (an MCP server, a CLI, a script that calls an API), without the plaintext entering chat, touching disk, or ever being readable by you; when they paste a one-line base64 ciphertext made with handoff.sh; when they ask to set up or rotate the handoff key, or check its fingerprint; or when they say the handoff key may have leaked. Also use when the user offers to paste a plaintext secret; decline, and offer this instead."
+description: "Use when the user wants to give you a password, token or API key for a program you run on your machine that reads it from its environment (an MCP server, a CLI, a script that calls an API), without the plaintext entering chat, being written to disk, or reaching your context; when they paste a one-line base64 ciphertext made with handoff.sh; when they ask to set up or rotate the handoff key, or check its fingerprint; or when they say the handoff key may have leaked. Also use when the user offers to paste a plaintext secret; decline, and offer this instead."
 ---
 
 # Encrypted credential handoff
