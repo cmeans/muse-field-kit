@@ -1,6 +1,6 @@
 ---
 name: encrypted-credential-handoff
-description: "Use when the user wants to give you a password, token or API key for a local tool (an MCP server, a CLI) without pasting the plaintext into chat; when they paste a one-line base64 ciphertext made with handoff.sh; when they ask to set up or rotate the handoff key, or check its fingerprint; or when they say the handoff key may have leaked. Also use when the user offers to paste a plaintext secret; decline, and offer this instead."
+description: "Use when the user wants to give you a password, token or API key for a program you run on your machine that reads it from its environment (an MCP server, a CLI, a script that calls an API), without the plaintext entering chat, touching disk, or ever being readable by you; when they paste a one-line base64 ciphertext made with handoff.sh; when they ask to set up or rotate the handoff key, or check its fingerprint; or when they say the handoff key may have leaked. Also use when the user offers to paste a plaintext secret; decline, and offer this instead."
 ---
 
 # Encrypted credential handoff
@@ -10,6 +10,10 @@ Community skill, not an official Muse feature. Source (MIT): https://github.com/
 The user encrypts a small JSON payload on their own machine with `handoff.sh` and pastes the ciphertext to you. The private key that opens it lives only on your machine. At use time, the label's recorded wrapper hands the ciphertext to `consume.py`, which decrypts it in memory, checks its `svc` against the label, and replaces itself with the label's tool, the values in its environment. You never see the plaintext.
 
 This file only routes you to the right place. **`SETUP.md` is the authority:** its hard rules, its steps and its rotation procedure. If this file and `SETUP.md` ever seem to disagree, follow `SETUP.md` and tell the user about the difference.
+
+## Not for
+
+Not for website sign-in: the browser's own credential flow handles that, and this handoff cannot feed it. Not for file-shaped secrets (SSH keys, client certificates) or programs that need the credential in a config file or on stdin: this version delivers through the environment only. And never for a credential you would have to read yourself: if no program can consume it from its environment, this is the wrong tool.
 
 ## Before anything
 

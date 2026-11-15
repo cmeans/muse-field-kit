@@ -6,7 +6,7 @@ Hand your Muse a service credential **without the plaintext ever entering the ch
 2. **You paste the ciphertext** into chat. It's safe to handle in the open: the private key that opens it lives only on your Muse's computer.
 3. **At use time, a helper on Muse's side decrypts it in memory** and replaces itself with the one tool that needs it, the values in that tool's environment: decryption and use happen in that single process. The plaintext is never written to disk, and the helper prints nothing derived from it. What reaches Muse is the tool's own output, which is why each credential is wired to a tool that doesn't print it, and only that tool.
 
-**Who it's for:** anyone whose agent needs credentials for *local tools* — MCP servers, CLIs — that take secrets as environment variables or config values, where the platform's browser-oriented saved logins can't reach. See “Why not a built-in vault?” below.
+**Who it's for:** anyone whose agent needs credentials for programs it runs on its own machine that read them from their environment — MCP servers, CLIs, scripts that call an API — where the platform's browser-oriented saved logins can't reach. Not for website sign-in, file-shaped secrets (SSH keys, client certificates), or a program that needs the credential in a config file or on stdin: this version delivers through the environment only. See “Why not a built-in vault?” below.
 
 **Tested with:** Linux, OpenSSL 3.0 / 3.5, bash 5.x, Python 3.11 / 3.12, jq 1.7 / 1.8. Platform position in detail under “Platform.”
 
