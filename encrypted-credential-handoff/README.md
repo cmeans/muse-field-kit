@@ -168,7 +168,7 @@ RSA-2048 + OAEP-SHA256 is this folder's **reference implementation**, chosen bec
 The suite may be changed, deliberately, by the human, before setup — subject to two constraints:
 
 - **Only as an existing, reviewed tool used as-is**: for example the `age` CLI, or libsodium's `crypto_box_seal` through a maintained binding. Each preserves the invariants above (with the same absence of sender authentication, which is behavioral in every variant listed here).
-- **“Hybrid encryption, hand-rolled” is not a user-selectable variant.** A home-grown AES-GCM-plus-RSA construction is a mechanism change: it belongs upstream, as an issue or pull request against this repo, where it can be reviewed once for every adopter.
+- **“Hybrid encryption, hand-rolled” is not a user-selectable variant.** A home-grown AES-GCM-plus-RSA construction is a mechanism change: it belongs upstream, as an issue against this repo (`CONTRIBUTING.md` at the repo's root), where it can be reviewed once for every adopter.
 
 Two stronger variants worth knowing about: **signed blobs** (the human signs each payload with a key the agent can verify, removing the behavioral provenance invariant), and a **separate-account key holder** (a helper the agent can ask to decrypt-and-launch, but whose key file the agent's own account cannot read). Both are real designs; neither is in the reference implementation.
 

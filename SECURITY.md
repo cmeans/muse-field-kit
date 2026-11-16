@@ -46,7 +46,7 @@ Each security-relevant folder's own `SECURITY.md` says what its pattern claims t
 **In scope**
 
 - A way a folder's documented guarantees fail when its scripts are used as its `SETUP.md` says (for example, a credential reaching the chat, the agent's context or disk), or wording that overstates what is defended.
-- The scripts themselves: input that gets past a documented check, a credential in output or logs, a race that defeats a check.
+- The scripts themselves: input that gets past a documented check, a credential in output or logs, a race by another account that defeats a check.
 - This repository's GitHub Actions workflows: injection through `${{ github.event.* }}` expressions in `run:` blocks, token permissions, and anything that lets a pull request's content run with more than read access.
 - The integrity of what a release publishes.
 

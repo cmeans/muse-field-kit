@@ -40,7 +40,7 @@ body:
     id: ran
     attributes:
       label: What you ran
-      description: For example the folder's test suite (`test/run-test.sh`) and its last lines, or the setup steps you followed.
+      description: For example the folder's test suite (`test/run-test.sh`) and its last lines, or the setup steps you followed. On macOS, read issue #3 first; the suite isn't portable there yet.
       render: shell
     validations:
       required: true

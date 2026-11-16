@@ -37,7 +37,7 @@ These are my own builds and guides, written up and submitted by me. The shared-m
 
 ## Contributing, security and conduct
 
-Contributions come in as issues (bug reports, feature requests, platform test reports); pull requests are opened by collaborators. See [`CONTRIBUTING.md`](CONTRIBUTING.md). Security problems go through a private advisory, never an issue: [`SECURITY.md`](SECURITY.md). Everyone taking part follows the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+Contributions come in as issues (bug reports, feature requests, platform test reports); pull requests are opened by collaborators. See [`CONTRIBUTING.md`](CONTRIBUTING.md). An exploitable security flaw goes through a private advisory, never a public issue: [`SECURITY.md`](SECURITY.md). Everyone taking part follows the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## License
 

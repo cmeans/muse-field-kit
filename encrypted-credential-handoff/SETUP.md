@@ -31,7 +31,7 @@ Read `README.md` in this folder first — its threat model and its ten invariant
 
 ## What counts as a mechanism change
 
-Anything in this list is a **mechanism change**: it requires a written proposal to the user (what, why, which invariants it touches and how it preserves them), the user's explicit approval *before* it is applied, and a fresh dummy round-trip afterward. Approved changes to the shared scripts should also be offered upstream as an issue or pull request against this repository, so the review benefits every adopter.
+Anything in this list is a **mechanism change**: it requires a written proposal to the user (what, why, which invariants it touches and how it preserves them), the user's explicit approval *before* it is applied, and a fresh dummy round-trip afterward. Approved changes to the shared scripts should also be offered upstream as an issue against this repository (pull requests there are opened by its collaborators: `CONTRIBUTING.md` at the repo's root), so the review benefits every adopter.
 
 - Cryptographic calls, parameters, or suite
 - How input is read (echo handling, file/pipe paths)

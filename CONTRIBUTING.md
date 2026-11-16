@@ -11,23 +11,23 @@ So the way to contribute is an issue:
 - **[Bug report](../../issues/new?template=bug_report.yml):** something doesn't work as a folder's docs say.
 - **[Feature request](../../issues/new?template=feature_request.yml):** a new capability, or a change to how something works.
 - **[Platform test report](../../issues/new?template=platform_test_report.yml):** what happened when you ran a folder on a platform or tool version we don't test (macOS, Windows, a phone, an older `bash`).
-- **Security problems:** never an issue. See [`SECURITY.md`](SECURITY.md) for the private channel.
+- **Security problems:** an exploitable flaw never goes in a public issue; report it privately as [`SECURITY.md`](SECURITY.md) says. (Hardening work that isn't embargoed is tracked as issues with the `security` label.)
 
 A good issue is specific: the folder, its version, your platform, what you ran, what you expected and what happened, and output with any secret removed. A proposed fix in the issue (a diff, or the exact wording) is welcome; the maintainer's side turns an agreed fix into a pull request and credits you in it.
 
-Why not outside pull requests: the scripts here handle credentials, and every change to them is reviewed in several rounds before it merges (below). Taking changes as issues keeps outside code from running in this repository's CI and keeps every mechanism change on the review path the folders' `SETUP.md` files require.
+Why not outside pull requests: the scripts here handle credentials, and every change to them is reviewed in several rounds before it merges (below). Taking changes as issues keeps outside code from running in this repository's CI and keeps every mechanism change on the review path described below.
 
 ## License of contributions
 
 **By contributing (an issue's proposed fix, a diff, or text), you agree that it may be used under the [MIT License](LICENSE)**, the license of the rest of the project. You keep your copyright; you grant everyone the MIT License's permissions for what you contributed. Please don't attach extra terms (payment, bounty claims, restrictions on use): they have no effect, and the contribution will be asked to drop them.
 
-There are no bug bounties or paid contributions.
+There are no bug bounties or paid contributions. Sponsoring the maintainer through the repository's **Sponsor** button is separate: it supports the project as a whole and buys no change, priority or review.
 
 ## What changes need agreement first
 
 Some changes are decided before anyone writes them:
 
-- **Mechanism changes.** Each folder's `SETUP.md` says what counts as one (for `encrypted-credential-handoff`: the crypto, the payload schema, the wrappers' rules, what is recorded per label). These need the maintainer's agreement and the review of Muse, the agent the folder is written for, before a pull request.
+- **Mechanism changes.** Each folder's `SETUP.md` lists what counts as one (for `encrypted-credential-handoff`, its section "What counts as a mechanism change": for example the crypto, the payload schema, how input is read, key generation and permissions). These need the maintainer's agreement and the review of Muse, the agent the folder is written for, before a pull request.
 - **Designs and plans** for larger work are written and reviewed first, then implemented.
 - **New dependencies** for the people who use a folder: each costs every adopter an install, and is the maintainer's call. Test-only and CI-only tools are fine.
 
@@ -36,9 +36,9 @@ Some changes are decided before anyone writes them:
 1. **Branch from `main`.** One concern per pull request.
 2. **Run the checks locally** (below) and the folder's tests.
 3. **Open the PR** with a body that has a `## Summary` (what changed and why), a `## QA` checklist the reviewer can run (each item names the exact command or file and the expected result), and `Closes #N` for any issue it fixes. The pull request template has these sections.
-4. **Labels track the review.** CI runs on every push (`Awaiting CI`), then the PR is `Ready for QA`. QA reviews it and applies `QA Failed` with findings, or `Ready for QA Signoff`. Muse reviews it as the folder's user (`Muse Approved` or `Muse Failed`). The maintainer applies `QA Approved` last, and only then does it merge. A push removes the approvals and starts the round again. `Behind main` and `Merge conflict` are set automatically.
+4. **Labels track the review.** CI runs on every push (`Awaiting CI`), then the PR is `Ready for QA`. QA reviews it and applies `QA Failed` with findings, or `Ready for QA Signoff`. Muse reviews it as the folder's user (`Muse Approved` or `Muse Failed`). A PR merges only after the maintainer applies `QA Approved`. A push removes QA's labels and starts the round again; Muse's label is renewed by hand. `main` requires a branch to be up to date before it merges.
 5. **The exit bar:** a PR merges with no open High or Medium finding; Lows block only when marked blocking; the rest are filed as issues before signoff.
-6. **Squash merge.** The PR title becomes the commit subject and the body its message, so write both for someone reading `git log` a year from now.
+6. **Squash merge.** The squashed commit's message is built from the PR's own commit messages (and a single-commit PR's subject is that commit's), so write each commit message for someone reading `git log` a year from now.
 
 ## Local checks
 

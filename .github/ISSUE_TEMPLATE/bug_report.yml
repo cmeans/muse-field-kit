@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. **A security problem never goes here:** use a private advisory instead (SECURITY.md).
+        Thanks for reporting. **An exploitable security flaw never goes here:** report it privately instead (SECURITY.md).
         Never paste a credential, a private key or a real blob. Use the published test keys under the folder's `test/` directory to reproduce.
   - type: dropdown
     id: folder
