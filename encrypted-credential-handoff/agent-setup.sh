@@ -1,22 +1,25 @@
 #!/bin/bash
 # agent-setup.sh — run on the agent's machine (the computer that will
-# decrypt the blobs, e.g. your Muse's VM): once to make the keypair, and
-# again for fingerprints and rotations.
+# decrypt the blobs, e.g. your Muse's VM): once to make the identity, and
+# again for recipients and rotations.
 #
-# Generates an RSA-2048 keypair for the encrypted credential handoff:
-#   private key: ~/.config/handoff/handoff-priv.pem  (mode 0600, NEVER shared)
-#   public key:  printed at the end, for the user to save as handoff-<name>.pem beside handoff.sh
-# Also prints the public key's SHA-256 fingerprint, which the human compares
-# before trusting any blob, and the consume-side key path to configure.
+# Makes an age identity (X25519) for the encrypted credential handoff:
+#   identity:  ~/.config/handoff/handoff-identity.txt  (mode 0600, NEVER shared)
+#   recipient: printed at the end, for the user to save as handoff-<name>.age beside handoff.sh
+# The recipient is the identity's public key, one line (age1…). The human
+# compares the whole line with the one handoff.sh shows before trusting any
+# blob. The consume-side key path to configure is printed too.
 #
 # Usage:
-#   agent-setup.sh                      generate a new keypair
-#   agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint
-#   agent-setup.sh --public-key [KEY]   print an existing key's public key and
-#                                       fingerprint again (to give the user)
-#   agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY,
+#   agent-setup.sh                      make a new identity
+#   agent-setup.sh --fingerprint [KEY]  print an existing identity's recipient
+#                                       (the key file it read goes to stderr)
+#   agent-setup.sh --public-key [KEY]   print an existing identity's recipient
+#                                       again (to give the user), and where
+#                                       they save it
+#   agent-setup.sh --rotate [KEY]       start a rotation: a new identity at KEY,
 #                                       the old one kept as KEY.previous;
-#                                       during one, shows the new key again
+#                                       during one, shows the new recipient again
 #   agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous;
 #                                       blobs still made for it stop opening
 #                                       (without --yes, it says what it would
@@ -27,16 +30,20 @@
 # or failed (the reason on stderr), 2 a usage error.
 #
 # Environment:
-#   HANDOFF_KEY_DIR  where a NEW key is generated (default ~/.config/handoff).
-#   HANDOFF_PRIVKEY  which EXISTING key --fingerprint, --public-key, --rotate
-#                    and --retire use: the same variable, with the same default
-#                    (~/.config/handoff/handoff-priv.pem), that consume.py
-#                    decrypts with. A KEY argument overrides it. These modes
-#                    refuse HANDOFF_KEY_DIR without HANDOFF_PRIVKEY (exit 2).
+#   HANDOFF_KEY_DIR  where a NEW identity is made (default ~/.config/handoff).
+#   HANDOFF_PRIVKEY  which EXISTING identity --fingerprint, --public-key,
+#                    --rotate and --retire use: the same variable, with the same
+#                    default (~/.config/handoff/handoff-identity.txt), that
+#                    consume.py decrypts with. A KEY argument overrides it.
+#                    These modes refuse HANDOFF_KEY_DIR without HANDOFF_PRIVKEY
+#                    (exit 2).
+# Needs age-keygen (the age package) on the PATH. It runs with an environment
+# of PATH only, as consume.py's age does, and is given an identity on its
+# stdin, never as a path.
 set -euo pipefail
 umask 077
 
-MAX_KEY_BYTES=16384   # equal to consume.py's MAX_KEY_FILE and handoff.sh's MAX_KEY_BYTES
+MAX_KEY_BYTES=16384   # equal to consume.py's MAX_KEY_FILE
 # cd must never search the caller's CDPATH for a relative key directory.
 unset CDPATH
 # This run's temporary key and lock (cleanup removes them, except after a
@@ -47,15 +54,11 @@ lock=""
 yes=""
 key_given=0
 
-# The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
-# dropped, in any case, as consume.py does: a stray or planted openssl config
-# can't load a provider into the openssl processes this script runs. This
-# guards against a config, not against a caller who controls the environment
-# (LD_PRELOAD would still pass): that control is a clean environment, the
-# wrapper's env -i (SETUP.md step 7).
-for v in $(compgen -e); do
-  case "$v" in [Oo][Pp][Ee][Nn][Ss][Ss][Ll]_*) unset "$v" ;; esac
-done
+# The shapes of the lines of an age identity file, as consume.py's
+# AGE_SECRET_RE and AGE_RECIPIENT_RE spell them (bech32: 58 characters of the
+# alphabet, lowercase for a recipient; no range, so no locale changes them).
+SECRET_RE='^AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}$'
+RECIPIENT_RE='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
 
 # HOME is needed only for the default paths and for a leading ~: an absolute
 # HANDOFF_KEY_DIR, HANDOFF_PRIVKEY or KEY works without it, as in consume.py.
@@ -85,44 +88,130 @@ expand_home() {  # PATH WHAT
   esac
 }
 
-# The same gate as handoff.sh and consume.py, and the same hint as consume.py
-# (handoff.sh's leaves out wrappers): LibreSSL is
-# unverified here.
-need_openssl() {
-  command -v openssl >/dev/null || { echo "openssl not found" >&2; exit 1; }
-  local v
-  v=$(openssl version) || { echo "openssl version failed" >&2; exit 1; }
-  case "$v" in
-    "OpenSSL 3."*|"OpenSSL 4."*) ;;
-    *) echo "requires OpenSSL 3 or 4; found: ${v:-no version output}. Put one first in the PATH this runs with (in a wrapper, its PATH= line)$(case "${OSTYPE-}" in (darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
-  esac
+# The PATH age-keygen is looked for on, in the words of consume.py's
+# age_missing (long ones cut at 300 characters).
+path_was() {
+  local p=$PATH
+  [ "${#p}" -le 300 ] || p="${p:0:300}..."
+  printf "(PATH was '%s')" "$p"
 }
 
-# openssl's stderr stays visible: when the key can't be read, the cause
-# (permissions, a passphrase, a damaged file) is what the human needs.
-fingerprint_of() {
-  local pub
-  # First stage on its own: if the file isn't a readable private key, its
-  # error is the one that matters, without a second one from the next stage.
-  # -passin pass:: an encrypted key fails instead of prompting for a passphrase.
-  pub=$(openssl pkey -in "$1" -passin pass: -pubout) || return 1
-  # RSA-2048 with e = 65537 only, as consume.py checks: its public key in DER
-  # is 294 bytes, a fixed 33-byte header (its modulus field's leading 00 means
-  # exactly 2048 bits), and the exponent 65537 at the end. Returns 2 for a key
-  # of another type.
-  local der
-  # A failing openssl here is "could not read", not "another key type".
-  der=$(printf '%s\n' "$pub" | openssl pkey -pubin -outform DER | od -An -tx1 -v | tr -d ' \n') || return 1
-  case "$der" in
-    30820122300d06092a864886f70d01010105000382010f003082010a0282010100*0203010001) ;;
-    *) der=bad ;;
+# age-keygen is the one tool this script runs. The same refusal as
+# consume.py's age_missing.
+need_age() {
+  command -v age-keygen >/dev/null 2>&1 || {
+    echo "agent-setup.sh: age-keygen not found on this PATH (in a wrapper, its PATH= line); install age: README.md, Installing age $(path_was)" >&2
+    exit 1
+  }
+}
+
+# age-keygen with an environment of PATH only: none of the variables age reads
+# (AGE_PASSPHRASE and the rest, AGEDEBUG) may reach it. stdin passes through.
+age_keygen() {
+  env -i PATH="$PATH" age-keygen "$@"
+}
+
+# env's exit status for a command it found but couldn't run (126) or couldn't
+# find after all (127): the same refusal as consume.py's age_cannot_run.
+keygen_cannot_run() {  # RC
+  case "$1" in
+    126|127) echo "agent-setup.sh: cannot run age-keygen $(path_was)" >&2; return 0 ;;
   esac
-  if [ "${#der}" -ne 588 ]; then   # 294 DER bytes, as od's hex: 2 characters a byte
-    echo "agent-setup.sh: the key at $1 is not an RSA-2048 key; this protocol uses RSA-2048 keys with e = 65537 (as this script makes)" >&2
+  return 1
+}
+
+# The recipient of an identity file, printed on stdout; the reason for a
+# refusal on stderr, in consume.py's check_key words, never with a line of the
+# file in it. Returns 1 if the file can't be used at all (missing, a symlink,
+# loose, someone else's, unreadable, too big, or age-keygen won't run or load
+# it), 2 if it was read and isn't one plain age identity (an RSA key from
+# 0.1.0, another text, a plugin or post-quantum identity, a recipient, two
+# secret keys). The recipient is age-keygen -y's, never a comment's.
+recipient_of() {  # FILE
+  local f=$1 mode size nonul data line secrets=0 recipient=0 out rc=0
+  if [ -L "$f" ]; then
+    echo "key file at $f is a symbolic link; give the identity file itself. Refusing." >&2
+    return 1
+  fi
+  [ -f "$f" ] || { echo "no key file at $f" >&2; return 1; }
+  # Only group and other bits matter, as in consume.py: a setgid bit alone
+  # doesn't. GNU stat first, BSD's if that isn't understood.
+  mode=$(stat -c %a -- "$f" 2>/dev/null) || mode=$(stat -f %Lp -- "$f" 2>/dev/null) || mode=""
+  [ -n "$mode" ] || { echo "cannot read key file at $f" >&2; return 1; }
+  if [ $(( 8#$mode & 8#077 )) -ne 0 ]; then
+    echo "key file at $f is mode $mode; it must be owner-only (0600). Refusing." >&2
+    return 1
+  fi
+  [ -O "$f" ] || { echo "key file at $f is not owned by this user. Refusing." >&2; return 1; }
+  size=$( { wc -c < "$f"; } 2>/dev/null ) || { echo "cannot read key file at $f" >&2; return 1; }
+  size=${size//[[:space:]]/}
+  if [ "$size" -gt "$MAX_KEY_BYTES" ]; then
+    echo "key file at $f is over $MAX_KEY_BYTES bytes; not an age identity file" >&2
+    return 1
+  fi
+  data=$( { LC_ALL=C cat -- "$f"; } 2>/dev/null ) || { echo "cannot read key file at $f" >&2; return 1; }
+  # A NUL byte is never in an identity (bash would drop it): not one.
+  nonul=$( { LC_ALL=C tr -d '\000' < "$f" | wc -c; } 2>/dev/null ) || nonul=-1
+  nonul=${nonul//[[:space:]]/}
+  if [ "$nonul" != "$size" ]; then
+    echo "the file at $f is not an age identity file" >&2
     return 2
   fi
-  printf '%s\n' "$pub" | openssl pkey -pubin -outform DER \
-    | openssl dgst -sha256 -binary | openssl base64
+  case "$data" in
+    *"-----BEGIN RSA PRIVATE KEY-----"*|*"-----BEGIN PRIVATE KEY-----"*|*"-----BEGIN ENCRYPTED PRIVATE KEY-----"*)
+      echo "the key at $f is an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again (README.md)" >&2
+      return 2 ;;
+  esac
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case "$line" in "#"*) continue ;; esac
+    [ -n "${line//[[:space:]]/}" ] || continue
+    case "$line" in
+      AGE-PLUGIN-*)
+        echo "the identity at $f holds a plugin identity; only a plain age identity is supported" >&2
+        return 2 ;;
+      AGE-SECRET-KEY-PQ-1*)
+        echo "the identity at $f is a post-quantum identity; only a plain age identity is supported" >&2
+        return 2 ;;
+    esac
+    if [[ $line =~ $SECRET_RE ]]; then
+      secrets=$((secrets + 1))
+    elif [[ $line =~ $RECIPIENT_RE ]]; then
+      recipient=1
+    else
+      echo "the file at $f is not an age identity file" >&2
+      return 2
+    fi
+  done <<<"$data"
+  if [ "$secrets" -eq 0 ]; then
+    if [ "$recipient" -eq 1 ]; then
+      echo "the file at $f is not an age identity file; that is a recipient (public), not an identity" >&2
+    else
+      echo "the file at $f is not an age identity file" >&2
+    fi
+    return 2
+  fi
+  if [ "$secrets" -gt 1 ]; then
+    echo "the identity at $f holds $secrets secret keys; it must hold exactly one" >&2
+    return 2
+  fi
+  if [ "$recipient" -eq 1 ]; then
+    echo "the file at $f is not an age identity file" >&2
+    return 2
+  fi
+  # The text just checked goes to age-keygen on its stdin, so what it reads is
+  # what was checked. Its own text is not shown.
+  out=$(printf '%s\n' "$data" | age_keygen -y 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    keygen_cannot_run "$rc" && return 1
+    echo "cannot load the age identity at $f" >&2
+    return 1
+  fi
+  if ! [[ $out =~ $RECIPIENT_RE ]]; then
+    echo "cannot load the age identity at $f" >&2
+    return 1
+  fi
+  printf '%s\n' "$out"
 }
 
 # The key the consume side uses: KEY if given, else $HANDOFF_PRIVKEY, else
@@ -133,24 +222,14 @@ resolve_key() {  # [KEY]
   elif [ -n "${HANDOFF_PRIVKEY-}" ]; then
     key=$(expand_home "$HANDOFF_PRIVKEY" HANDOFF_PRIVKEY) || exit 1
   else
-    key="$(default_dir)/handoff-priv.pem" || exit 1
+    key="$(default_dir)/handoff-identity.txt" || exit 1
   fi
 }
 
-# The fingerprint of an existing key file, refusing what isn't a usable
-# RSA-2048 key. Sets $fp.
-key_fingerprint() {  # FILE
-  [ -f "$1" ] || { echo "no key file at $1" >&2; exit 1; }
-  # A large non-key file makes openssl's decoder very slow: refuse it.
-  local size rc=0
-  size=$( { wc -c < "$1"; } 2>/dev/null ) || { echo "cannot read key file at $1" >&2; exit 1; }
-  [ "$size" -le "$MAX_KEY_BYTES" ] || { echo "key file at $1 is over $MAX_KEY_BYTES bytes; not an RSA-2048 key file" >&2; exit 1; }
-  fp=$(fingerprint_of "$1") || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    # 2: read, but not an RSA-2048 key (already said); else unreadable.
-    [ "$rc" -eq 2 ] || echo "could not read key at $1" >&2
-    exit 1
-  fi
+# The recipient of an existing identity file, refusing what isn't a usable
+# one (recipient_of says why). Sets $rcpt.
+key_recipient() {  # FILE
+  rcpt=$(recipient_of "$1") || exit 1
 }
 
 # --rotate and --retire act on the names KEY and KEY.previous: through a
@@ -167,15 +246,26 @@ no_symlinks() {
   done
 }
 
-# The public key of a key file (already checked by key_fingerprint), in PEM.
-pub_of() {  # FILE
-  openssl pkey -in "$1" -passin pass: -pubout
+# Make a new identity at FILE, which must not exist (age-keygen makes it
+# itself and refuses to replace anything, a planted link included). Its own
+# text, "Public key: …" on success, is not shown; on failure it is, since the
+# human needs the cause. Returns age-keygen's status.
+make_identity() {  # FILE
+  local err rc=0
+  err=$(age_keygen -o "$1" 2>&1 >/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    keygen_cannot_run "$rc" || printf '%s\n' "$err" >&2
+    return 1
+  fi
 }
 
-# The fingerprint of FILE, or nothing (and the reason on stderr) if it isn't
-# a usable key: key_fingerprint in a subshell, so its exit doesn't end this one.
-fingerprint_or_fail() {  # FILE
-  ( key_fingerprint "$1" && printf '%s' "$fp" )
+# What the user needs to save the recipient. The bare line is the thing to
+# save, the whole of it; nothing here is derived from the secret.
+show_recipient() {  # RECIPIENT
+  echo "save it as handoff-<name>.age beside handoff.sh"
+  echo "(handoff-muse.age for the default name; SETUP.md step 3). The file holds this one line:"
+  echo
+  printf '%s\n' "$1"
 }
 
 # One --rotate or --retire at a time per key directory: a portable lock
@@ -203,19 +293,19 @@ cleanup() {
 }
 
 usage() {
-  echo "usage: agent-setup.sh                      generate a new keypair (once, at setup)" >&2
-  echo "       agent-setup.sh --fingerprint [KEY]  print an existing key's fingerprint" >&2
-  echo "       agent-setup.sh --public-key [KEY]   print an existing key's public key and fingerprint" >&2
-  echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new key at KEY, the old one kept as KEY.previous;" >&2
-  echo "                                           during one, shows the new key again (exit 0)" >&2
+  echo "usage: agent-setup.sh                      make a new identity (once, at setup)" >&2
+  echo "       agent-setup.sh --fingerprint [KEY]  print an existing identity's recipient" >&2
+  echo "       agent-setup.sh --public-key [KEY]   print an existing identity's recipient and where to save it" >&2
+  echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new identity at KEY, the old one kept as KEY.previous;" >&2
+  echo "                                           during one, shows the new recipient again (exit 0)" >&2
   echo "       agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous (blobs still made for it stop opening);" >&2
   echo "                                           without --yes, says what it would delete and keeps the old key, removing only" >&2
   echo "                                           a leftover temporary link to it (exit 1)" >&2
 }
 
-# Recompute the fingerprint of an EXISTING key, e.g. at comparison time.
-# The setup and SETUP.md rules require the fingerprint to come from the
-# key file itself, never from notes, and forbid the agent reading the key
+# Recompute the recipient of an EXISTING identity, e.g. at comparison time.
+# The setup and SETUP.md rules require the recipient to come from the key
+# file itself, never from notes, and forbid the agent reading the key
 # with general-purpose tools: this mode is the sanctioned path. It reads
 # the key the consume side uses ($HANDOFF_PRIVKEY), and says which file it
 # read, so that during rotation the old key can't be reported by mistake.
@@ -263,10 +353,10 @@ case "${1-}" in
       (--*) echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2; exit 2 ;;
     esac
     if [ $# -eq 0 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
-      echo "agent-setup.sh: HANDOFF_KEY_DIR applies only to generating a key; for $mode, set HANDOFF_PRIVKEY=<dir>/handoff-priv.pem as the wrappers do" >&2
+      echo "agent-setup.sh: HANDOFF_KEY_DIR applies only to generating a key; for $mode, set HANDOFF_PRIVKEY=<dir>/handoff-identity.txt as the wrappers do" >&2
       exit 2
     fi
-    need_openssl
+    need_age
     resolve_key "$@"
     ;;
   "") mode=generate ;;
@@ -281,9 +371,9 @@ esac
 
 case "$mode" in
   --fingerprint)
-    key_fingerprint "$key"
+    key_recipient "$key"
     echo "key file: $key" >&2
-    echo "SHA256:$fp"
+    echo "recipient: $rcpt"
     exit 0
     ;;
   --rotate)
@@ -294,7 +384,7 @@ case "$mode" in
     #   1. KEY.previous is a hard link to KEY (ln refuses to replace one);
     #   2. the new key, written and checked beside KEY, is renamed over KEY.
     # Between the two, both names hold the old key, and everything decrypts.
-    # Which state a rotation is in is read from the keys' fingerprints, not
+    # Which state a rotation is in is read from the keys' recipients, not
     # their inodes, so a copied .previous (a backup restore) reads the same.
     prev="$key.previous"
     no_symlinks
@@ -304,10 +394,10 @@ case "$mode" in
     # finished would otherwise take that run's new key for its own old one.
     trap cleanup EXIT
     # A TERM, HUP or INT ends the run through cleanup, after the running
-    # openssl exits (see first-time generation below).
+    # age-keygen exits (see first-time generation below).
     trap 'echo "agent-setup.sh: interrupted; run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1' INT TERM HUP
     lock_dir "$dir"
-    key_fingerprint "$key"
+    key_recipient "$key"
     for f in "$dir"/.handoff-new.*; do
       # A temporary key a killed --rotate left (the lock says none is running).
       [ -e "$f" ] || [ -L "$f" ] || continue
@@ -324,17 +414,15 @@ case "$mode" in
     done
     if [ -e "$prev" ]; then
       [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
-      prev_fp=$(fingerprint_or_fail "$prev") || exit 1
-      if [ "$prev_fp" != "$fp" ]; then
-        # The new key is in place: show its public half again, since an
+      prev_rcpt=$(recipient_of "$prev") || exit 1
+      if [ "$prev_rcpt" != "$rcpt" ]; then
+        # The new key is in place: show its recipient again, since an
         # interruption may have come before the user got it (SETUP step 3).
-        PUB=$(pub_of "$key") \
-          || { echo "could not derive the public key" >&2; exit 1; }
         echo "agent-setup.sh: a rotation is under way ($prev is the old key), and the new key is in place: nothing rotated." >&2
-        echo "If the user hasn't saved this key as their handoff-<name>.pem and confirmed its fingerprint, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
-        echo "current (new) public key fingerprint: SHA256:$fp"
+        echo "If the user hasn't saved this recipient as their handoff-<name>.age and confirmed it, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
+        echo "current (new) recipient: $rcpt"
         echo
-        printf '%s\n' "$PUB"
+        show_recipient "$rcpt"
         exit 0
       fi
       echo "note: resuming an interrupted rotation ($prev holds the current key)" >&2
@@ -342,35 +430,34 @@ case "$mode" in
       ln -- "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $prev (the key directory needs hard links, SETUP.md step 1); nothing changed" >&2; exit 1; }
     fi
     new=$(mktemp -- "$dir/.handoff-new.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
-    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
+    # mktemp made the name; age-keygen makes the file itself (and would not
+    # replace one), exclusively.
+    rm -f -- "$new"
+    make_identity "$new" \
       || { echo "key generation failed; the old key is unchanged, and $prev holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
     chmod -- 600 "$new"
-    # Checked before it replaces anything: genpkey can exit 0 after a short
+    # Checked before it replaces anything: age-keygen can exit 0 after a short
     # write (a full disk).
-    new_fp=$(fingerprint_or_fail "$new") \
+    new_rcpt=$(recipient_of "$new" 2>/dev/null) \
       || { echo "the new key didn't check out (a full disk?); the old key is unchanged, and $prev holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
     mv -f -- "$new" "$key"
     if [ -d "$key" ]; then
       # KEY became a directory meanwhile, and mv put the new key inside it.
-      rm -f -- "$key/${new##*/}"
+      rm -f "$key/${new##*/}"
       new=""
       echo "agent-setup.sh: $key is now a directory; the new key was removed, and the old key is $prev. Report it to the user." >&2
       exit 1
     fi
     new=""
-    fp=$new_fp
-    PUB=$(pub_of "$key") \
-      || { printf "the new key was written to %s, but its public key couldn't be derived; show it with: agent-setup.sh --public-key %q\n" "$key" "$key" >&2; exit 1; }
     echo "new key written to $key (mode 600); the old key is now $prev"
     echo
-    echo "new public key fingerprint: SHA256:$fp"
-    echo "report this fingerprint to the human; they compare it with handoff.sh's output"
+    echo "new recipient: $new_rcpt"
+    echo "report this recipient to the human; they compare it with handoff.sh's output"
     echo
-    echo "the user replaces their handoff-<name>.pem (beside handoff.sh) with this public key:"
+    echo "the user replaces their old recipient file with this one:"
+    show_recipient "$new_rcpt"
     echo
-    printf '%s\n' "$PUB"
-    echo
-    echo "next: SETUP.md Rotation step 3 (the user replaces their handoff-<name>.pem with this key and confirms its fingerprint), then the rest of Rotation (or Compromise)"
+    echo "next: SETUP.md Rotation step 3 (the user replaces their handoff-<name>.age with this recipient and confirms it), then the rest of Rotation (or Compromise)"
     exit 0
     ;;
   --retire)
@@ -399,9 +486,9 @@ case "$mode" in
     [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
     trap cleanup EXIT
     lock_dir "$(dirname -- "$key")"
-    key_fingerprint "$key"
-    prev_fp=$(fingerprint_or_fail "$prev") || exit 1
-    if [ "$prev_fp" = "$fp" ]; then
+    key_recipient "$key"
+    prev_rcpt=$(recipient_of "$prev") || exit 1
+    if [ "$prev_rcpt" = "$rcpt" ]; then
       echo "agent-setup.sh: $prev holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
       exit 1
     fi
@@ -443,7 +530,7 @@ case "$mode" in
     # Last, so every other refusal comes first: a hard link to resolve shows
     # up before the confirmation, not after it.
     if [ -z "$yes" ]; then
-      echo "agent-setup.sh: --retire deletes the previous key $prev (SHA256:$prev_fp), and a blob still made for it never opens again; it was not deleted." >&2
+      echo "agent-setup.sh: --retire deletes the previous key $prev (recipient $prev_rcpt), and a blob still made for it never opens again; it was not deleted." >&2
       echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user in a direct conversational turn, and no blob stored since that pass began (SETUP.md Rotation step 5). In a compromise response your notes record (the user's go-ahead, given directly), run it at Compromise step 2 or 4." >&2
       exit 1
     fi
@@ -451,31 +538,29 @@ case "$mode" in
     # advisory) keeps the old key on disk. That takes a deliberate actor with
     # the key directory's write access, which can copy the key anyway.
     rm -f -- "$prev"
-    echo "deleted the previous key $prev; the current key is $key (SHA256:$fp)"
+    echo "deleted the previous key $prev; the current key is $key (recipient $rcpt)"
     exit 0
     ;;
   --public-key)
     # The sanctioned way to show a key's public half again (a resumed setup
-    # or rotation needs it for the user; the public key isn't a secret),
+    # or rotation needs it for the user; the recipient isn't a secret),
     # from a key that passes the same checks as --fingerprint.
-    key_fingerprint "$key"
-    PUB=$(pub_of "$key") \
-      || { echo "could not derive the public key from $key" >&2; exit 1; }
+    key_recipient "$key"
     echo "key file: $key" >&2
-    echo "public key fingerprint: SHA256:$fp"
+    echo "recipient: $rcpt"
     echo
-    printf '%s\n' "$PUB"
+    show_recipient "$rcpt"
     exit 0
     ;;
 esac
 
-need_openssl
+need_age
 if [ -n "${HANDOFF_KEY_DIR-}" ]; then
   KEY_DIR=$(expand_home "$HANDOFF_KEY_DIR" HANDOFF_KEY_DIR) || exit 1
 else
   KEY_DIR=$(default_dir) || exit 1
 fi
-PRIV="$KEY_DIR/handoff-priv.pem"
+PRIV="$KEY_DIR/handoff-identity.txt"
 
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
@@ -498,16 +583,16 @@ fi
 # set HANDOFF_PRIVKEY to, from whatever directory they run in.
 case "$KEY_DIR" in /*) ;; *) KEY_DIR="./$KEY_DIR" ;; esac  # not cd's "-" or a search
 KEY_DIR=$(cd -- "$KEY_DIR" && pwd)
-PRIV="$KEY_DIR/handoff-priv.pem"
+PRIV="$KEY_DIR/handoff-identity.txt"
 
-# No stderr suppression: if key generation fails, the human needs the cause.
-# Written to a temporary file and checked first (genpkey can exit 0 after a
-# short write), then linked into place: ln never replaces a key that
-# appeared meanwhile, and a failed run leaves no file at $PRIV.
+# No stderr suppression of a failure: if key generation fails, the human needs
+# the cause. Written to a temporary file and checked first (age-keygen can
+# exit 0 after a short write), then linked into place: ln never replaces a key
+# that appeared meanwhile, and a failed run leaves no file at $PRIV.
 trap 'rm -f -- "$new"' EXIT
 # A TERM, HUP or INT ends the run through the EXIT trap, after the running
-# openssl exits: without these, bash would die at once and the EXIT trap
-# would run before genpkey wrote its file, leaving a private key behind.
+# age-keygen exits: without these, bash would die at once and the EXIT trap
+# would run before age-keygen wrote its file, leaving a private key behind.
 trap 'echo "agent-setup.sh: interrupted; run it again (if it then refuses, the key was written: --public-key shows it)" >&2; exit 1' INT TERM HUP
 for f in "$KEY_DIR"/.handoff-setup.*; do
   # A temporary key a killed (SIGKILL) setup left behind: never a live key.
@@ -516,10 +601,11 @@ for f in "$KEY_DIR"/.handoff-setup.*; do
   echo "note: removed a temporary key a killed (or concurrent) setup left behind: $f" >&2
 done
 new=$(mktemp -- "$KEY_DIR/.handoff-setup.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$new" \
-  || { echo "key generation failed" >&2; exit 1; }
+# mktemp made the name; age-keygen makes the file itself, exclusively.
+rm -f -- "$new"
+make_identity "$new" || { echo "key generation failed" >&2; exit 1; }
 chmod -- 600 "$new"
-FPR=$(fingerprint_or_fail "$new") \
+RCPT=$(recipient_of "$new" 2>/dev/null) \
   || { echo "the new key didn't check out (a full disk?); nothing was written" >&2; exit 1; }
 ln -- "$new" "$PRIV" || {
   echo "could not link the new key into place at $PRIV; nothing was written (the key directory needs hard links, SETUP.md step 1, or a key appeared meanwhile)" >&2
@@ -532,21 +618,16 @@ if [ ! "$PRIV" -ef "$new" ]; then
   exit 1
 fi
 
-PUB=$(pub_of "$PRIV") \
-  || { printf "the key was written to %s, but its public key couldn't be derived; show it with: agent-setup.sh --public-key %q\n" "$PRIV" "$PRIV" >&2; exit 1; }
-
-echo "private key written to $PRIV (mode 600) — never copy it off this machine"
+echo "identity written to $PRIV (mode 600) — never copy it off this machine"
 echo
-echo "public key fingerprint: SHA256:$FPR"
-echo "report this fingerprint to the human; they compare it with handoff.sh's output"
+echo "recipient: $RCPT"
+echo "report this recipient to the human; they compare it with handoff.sh's output"
 echo
-echo "the user saves this public key as handoff-<name>.pem beside handoff.sh (handoff-muse.pem for the default name; SETUP.md step 3):"
-echo
-printf '%s\n' "$PUB"
+show_recipient "$RCPT"
 echo
 echo "consume side: the decrypt helper reads \$HANDOFF_PRIVKEY"
-echo "(default ~/.config/handoff/handoff-priv.pem)."
+echo "(default ~/.config/handoff/handoff-identity.txt)."
 echo "this key lives at: $PRIV"
-if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-priv.pem" ]; then
+if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-identity.txt" ]; then
   printf 'non-default location: set HANDOFF_PRIVKEY=%q wherever the helper runs\n' "$PRIV"
 fi
