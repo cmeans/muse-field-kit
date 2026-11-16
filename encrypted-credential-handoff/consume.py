@@ -227,6 +227,13 @@ def age_missing(tool: str) -> "SystemExit":
                 f"install age: README.md, Installing age (PATH was {path!r})")
 
 
+def age_cannot_run(tool: str, e: OSError) -> "SystemExit":
+    path = age_env()["PATH"]
+    if len(path) > 300:
+        path = path[:300] + "..."
+    return fail(f"cannot run {tool}: {e.strerror} (PATH was {path!r})")
+
+
 def check_age() -> str:
     """Return `age --version`'s first line, or refuse if age can't run."""
     try:
@@ -237,7 +244,7 @@ def check_age() -> str:
     except FileNotFoundError:
         raise age_missing("age") from None
     except OSError as e:
-        raise fail(f"cannot run age: {e.strerror}") from None
+        raise age_cannot_run("age", e) from None
     lines = out.stdout.decode("utf-8", "replace").strip().splitlines()
     if out.returncode != 0 or not lines:
         raise fail("age --version failed; install a working age: README.md, Installing age")
@@ -369,7 +376,9 @@ def check_key(privkey: str) -> str:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         text = None
-    if text is not None and "-----BEGIN " in text and "PRIVATE KEY-----" in text:
+    if text is not None and any(
+            f"-----BEGIN {kind}-----" in text
+            for kind in ("RSA PRIVATE KEY", "PRIVATE KEY", "ENCRYPTED PRIVATE KEY")):
         raise fail(f"the key at {privkey} is an RSA key from 0.1.0; 0.2.0 uses age: "
                    "a 0.1.0 install sets up again (README.md)")
     not_identity = f"the file at {privkey} is not an age identity file"
@@ -409,6 +418,8 @@ def check_key(privkey: str) -> str:
         )
     except FileNotFoundError:
         raise age_missing("age-keygen") from None
+    except OSError as e:
+        raise age_cannot_run("age-keygen", e) from None
     out = proc.stdout.decode("utf-8", "replace").strip()
     if proc.returncode != 0 or not AGE_RECIPIENT_RE.fullmatch(out):
         # age-keygen's own text is not shown.
@@ -435,6 +446,8 @@ def age_decrypt(raw: bytes, identity: str) -> "bytes | None":
         )
     except FileNotFoundError:
         raise age_missing("age") from None
+    except OSError as e:
+        raise age_cannot_run("age", e) from None
     if proc.returncode != 0:
         return None
     return proc.stdout
@@ -661,6 +674,8 @@ def rewrap(plaintext: bytes, current: str) -> str:
         )
     except FileNotFoundError:
         raise age_missing("age") from None
+    except OSError as e:
+        raise age_cannot_run("age", e) from None
     if proc.returncode != 0 or not proc.stdout.startswith(AGE_MAGIC):
         raise fail("re-encrypting to the current key failed")
     back = age_decrypt(proc.stdout, current)

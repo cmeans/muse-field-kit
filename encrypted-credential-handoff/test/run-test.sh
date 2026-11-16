@@ -440,7 +440,7 @@ expect_refusal "blob file not text" 1 "as text" \
   consume --label example --check --blob-file "$S/not-text.txt"
 expect_refusal "age not installed" 1 "age not found" \
   env -i PATH=/nonexistent HANDOFF_PRIVKEY="$TMPKEY" "$PY" ../consume.py --label example --check --blob-file blob-age.txt
-grep -qF "PATH=" "$S/err" || fail "the age-not-found message doesn't say which PATH to fix"
+grep -qF "PATH was '/nonexistent'" "$S/err" || fail "the age-not-found message doesn't name the PATH it searched"
 expect_refusal "input not base64" 1 "not valid base64" \
   consume --label example --check --blob '!!not base64!!'
 python3 -c '
@@ -1048,7 +1048,9 @@ expect_refusal "arbitrary text at the identity path" 1 "is not an age identity f
 mkdir -p "$S/envstub"
 printf '#!/bin/sh\nenv >"%s/age-env"\nexec %s "$@"\n' "$S" "$(command -v "$AGE")" >"$S/envstub/age"
 chmod 755 "$S/envstub/age"
-rm -f "$S/age-env"
+printf '#!/bin/sh\nenv >"%s/keygen-env"\nexec %s "$@"\n' "$S" "$(command -v "$AGE_KEYGEN")" >"$S/envstub/age-keygen"
+chmod 755 "$S/envstub/age-keygen"
+rm -f "$S/age-env" "$S/keygen-env"
 env PATH="$S/envstub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" \
   AGE_PASSPHRASE=x AGE_PASSPHRASE_FD=3 AGE_PASSPHRASE_WORK_FACTOR=5 AGE_PASSPHRASE_MAX_WORK_FACTOR=5 AGEDEBUG=1 \
   python3 ../consume.py --label example --check --blob-file blob-age.txt >"$S/out" 2>"$S/err" \
@@ -1056,8 +1058,30 @@ env PATH="$S/envstub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" \
 [ -s "$S/age-env" ] || fail "the stub age didn't run"
 for v in AGE_PASSPHRASE AGE_PASSPHRASE_FD AGE_PASSPHRASE_WORK_FACTOR AGE_PASSPHRASE_MAX_WORK_FACTOR AGEDEBUG; do
   ! grep -q "^$v=" "$S/age-env" || fail "$v reached age"
+  ! grep -q "^$v=" "$S/keygen-env" || fail "$v reached age-keygen"
+done
+# Nothing beyond PATH and what sh itself sets.
+for f in age-env keygen-env; do
+  [ -s "$S/$f" ] || fail "the stub for $f didn't run"
+  extra=$(grep -v '^\(PATH\|PWD\|OLDPWD\|SHLVL\|_\)=' "$S/$f" || true)
+  [ -z "$extra" ] || fail "$f: unexpected variables reached the tool: $(printf '%s' "$extra" | cut -d= -f1 | tr '\n' ' ')"
 done
 ! grep -q "^HANDOFF_" "$S/age-env" || fail "a HANDOFF_ variable reached age"
+# age present, age-keygen missing or not executable: a clear refusal, no traceback.
+mkdir -p "$S/onlyage" "$S/nx"
+ln -sf "$(command -v "$AGE")" "$S/onlyage/age"
+expect_refusal "age-keygen missing from PATH" 1 "age-keygen not found" \
+  env PATH="$S/onlyage" HANDOFF_PRIVKEY="$TMPKEY" "$PY" ../consume.py --label example --check --blob-file blob-age.txt
+printf '#!/bin/sh\nexit 0\n' >"$S/nx/age-keygen"; chmod 644 "$S/nx/age-keygen"
+expect_refusal "age-keygen not executable" 1 "cannot run age-keygen" \
+  env PATH="$S/nx:$S/onlyage" HANDOFF_PRIVKEY="$TMPKEY" "$PY" ../consume.py --label example --check --blob-file blob-age.txt
+grep -qF "PATH was '$S/nx:$S/onlyage'" "$S/err" || fail "the refusal doesn't name the PATH it searched"
+# Only RSA-type PEM blocks are called 0.1.0 keys; any other block is just not an identity.
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nZmFrZSBib2R5\n-----END OPENSSH PRIVATE KEY-----\n' >"$S/id-openssh.txt"
+chmod 600 "$S/id-openssh.txt"
+expect_refusal "an OpenSSH-style key block at the identity path" 1 "is not an age identity file" \
+  env HANDOFF_PRIVKEY="$S/id-openssh.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+! grep -q "0.1.0" "$S/err" || fail "an OpenSSH key was called a 0.1.0 key"
 echo "ok"
 fi
 
