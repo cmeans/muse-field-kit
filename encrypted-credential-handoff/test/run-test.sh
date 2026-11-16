@@ -1420,7 +1420,11 @@ refused_before_prompt() { # DESC MESSAGE ENV... (the command runs handoff.sh)
   expect_refusal "$desc" 1 "$msg" env "$@" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
   ! grep -q 'Paste or type' "$S/err" || fail "$desc: a prompt came before the refusal"
   if command -v script >/dev/null; then
-    out=$(timeout 20 script -qec "$(printf '%q ' env "$@" "$BASH_BIN" "$K/handoff.sh")" /dev/null </dev/null 2>&1) || true
+    if [ "$(uname -s)" = Darwin ]; then   # BSD script: script -q FILE COMMAND...
+      out=$(timeout 20 script -q /dev/null env "$@" "$BASH_BIN" "$K/handoff.sh" </dev/null 2>&1) || true
+    else   # util-linux script: script -qec STRING FILE
+      out=$(timeout 20 script -qec "$(printf '%q ' env "$@" "$BASH_BIN" "$K/handoff.sh")" /dev/null </dev/null 2>&1) || true
+    fi
     printf '%s' "$out" | grep -qF -- "$msg" || fail "$desc (terminal): no refusal: $out"
     ! printf '%s' "$out" | grep -q 'Paste or type' || fail "$desc (terminal): a prompt came before the refusal"
   fi
@@ -1429,6 +1433,8 @@ mkdir -p "$S/nojq" "$S/stubjq" "$S/onlyjq"
 refused_before_prompt "handoff.sh without jq" "jq not found" PATH="$S/nojq"
 printf '#!/bin/sh\necho jq-1.5\n' >"$S/stubjq/jq"; chmod 755 "$S/stubjq/jq"
 refused_before_prompt "handoff.sh with jq 1.5" "jq 1.6 or newer is required; found jq-1.5" PATH="$S/stubjq:$PATH"
+printf '#!/bin/sh\necho jq-0.9\n' >"$S/stubjq/jq"
+refused_before_prompt "handoff.sh with jq 0.9" "jq 1.6 or newer is required; found jq-0.9" PATH="$S/stubjq:$PATH"
 printf '#!/bin/sh\necho gibberish\n' >"$S/stubjq/jq"
 refused_before_prompt "handoff.sh with an unreadable jq version" "found gibberish" PATH="$S/stubjq:$PATH"
 printf '#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.6; else exec %s "$@"; fi\n' "$(command -v jq)" >"$S/stubjq/jq"
@@ -1442,6 +1448,34 @@ refused_before_prompt "handoff.sh without age" "age not found" PATH="$S/onlyjq"
 # --fingerprint needs age too.
 expect_refusal "handoff.sh --fingerprint without age" 1 "age not found" \
   env PATH="$S/nojq" "$BASH_BIN" "$K/handoff.sh" --fingerprint
+# age runs with an environment of only PATH: a stub age logs its environment
+# and arguments, then runs the real one. The caller's age variables and an
+# exported SECRET_JSON must not reach it (or anything else handoff.sh runs).
+mkdir -p "$S/agestub"
+printf '#!/bin/sh\n{ env; echo "ARGV: $*"; } >>"%s/age-env"\nexec %s "$@"\n' "$S" "$(command -v age)" >"$S/agestub/age"
+chmod 755 "$S/agestub/age"
+rm -f "$S/age-env"
+env PATH="$S/agestub:$PATH" AGE_PASSPHRASE=x AGE_PASSPHRASE_FD=3 AGE_PASSPHRASE_WORK_FACTOR=5 AGE_PASSPHRASE_MAX_WORK_FACTOR=5 AGEDEBUG=1 SECRET_JSON=leak \
+  bash "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "handoff.sh failed with age variables set"; }
+[ -s "$S/age-env" ] || fail "the stub age didn't run"
+extra=$(grep -v '^\(PATH\|PWD\|OLDPWD\|SHLVL\|_\|ARGV\)[=:]' "$S/age-env" || true)
+[ -z "$extra" ] || fail "unexpected variables reached age: $(printf '%s' "$extra" | cut -d= -f1 | tr '\n' ' ')"
+! grep -q -e leak -e mk-Zq9 "$S/age-env" || fail "the secret reached age's environment or arguments"
+# The caller's own xtrace (SHELLOPTS=xtrace, bash -x) never prints the secret.
+env SHELLOPTS=xtrace "$BASH_BIN" "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "handoff.sh failed under SHELLOPTS=xtrace"; }
+! grep -q mk-Zq9 "$S/err" || fail "SHELLOPTS=xtrace printed the secret"
+"$BASH_BIN" -x "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "handoff.sh failed under bash -x"; }
+! grep -q mk-Zq9 "$S/err" || fail "bash -x printed the secret"
+# A failing age is reported with its version: at the up-front recipient check,
+# and at the encrypt step (a stub that takes an empty stdin and fails on data).
+mkdir -p "$S/badage"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\nexit 1\n' >"$S/badage/age"
+chmod 755 "$S/badage/age"
+expect_refusal "handoff.sh with an age that rejects the recipient" 1 "is not a valid age recipient: age v9.9.9-test did not accept it" \
+  env PATH="$S/badage:$PATH" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\n[ "$(wc -c)" = 0 ]\n' >"$S/badage/age"
+expect_refusal "handoff.sh with an age that fails to encrypt" 1 "age failed to encrypt (age v9.9.9-test)" \
+  env PATH="$S/badage:$PATH" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
 echo "ok"
 fi
 

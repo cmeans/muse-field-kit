@@ -32,7 +32,10 @@
 # Leave POSIX mode if bash was started in it (macOS's sh, POSIXLY_CORRECT or
 # SHELLOPTS=posix), so the script runs the same either way.
 set +o posix
+set +x   # SHELLOPTS=xtrace or bash -x would print the secret
 set -euo pipefail
+# A SECRET_JSON exported by the caller would sit in every child's environment:
+unset SECRET_JSON blob
 
 # Kept equal to consume.py's MAX_KEY_FILE and agent-setup.sh's MAX_KEY_BYTES
 # (a recipient file is 63 bytes; the same bound keeps the three alike):
@@ -121,7 +124,7 @@ if [ "$mode" = encrypt ]; then
   jq_version=$(jq --version 2>/dev/null) || jq_version=
   jq_re='^jq-([0-9]+)\.([0-9]+)'
   if [[ "$jq_version" =~ $jq_re ]] \
-     && { [ "${BASH_REMATCH[1]}" -gt 1 ] || [ "${BASH_REMATCH[2]}" -ge 6 ]; }; then
+     && { [ "${BASH_REMATCH[1]}" -gt 1 ] || { [ "${BASH_REMATCH[1]}" -eq 1 ] && [ "${BASH_REMATCH[2]}" -ge 6 ]; }; }; then
     :
   else
     echo "handoff.sh: jq 1.6 or newer is required; found ${jq_version:-no version output}. Install a newer jq (README.md, Installing age, lists it beside age)" >&2
@@ -130,6 +133,10 @@ if [ "$mode" = encrypt ]; then
 fi
 command -v age >/dev/null 2>&1 \
   || { echo "handoff.sh: age not found. Install it (README.md, Installing age)" >&2; exit 1; }
+# Read once, for the messages when age fails. Every age run gets an
+# environment of only PATH (never AGE_PASSPHRASE, AGEDEBUG and the like).
+age_version=$(env -i PATH="${PATH-}" age --version 2>/dev/null | head -n 1) || age_version=
+[ -n "$age_version" ] || age_version="(version unknown)"
 
 # --- the agent's recipient, from handoff-NAME.age beside this script --------
 # The recipient is public: what matters is that it's the agent's (the user
@@ -215,8 +222,8 @@ recipient_re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
   || no_key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
 # The bech32 checksum: age itself rejects a recipient that fails it. Asked
 # now, on nothing, so a mistyped file is refused before the secret is typed.
-age -r "$RECIPIENT" </dev/null >/dev/null 2>&1 \
-  || no_key "$keyfile is not a valid age recipient (age rejects it; check for a typo): copy it again from the agent"
+env -i PATH="${PATH-}" age -r "$RECIPIENT" </dev/null >/dev/null 2>&1 \
+  || no_key "$keyfile is not a valid age recipient: age $age_version did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
 
 if [ "$mode" = fingerprint ]; then
   echo "key file: $keyfile" >&2
@@ -282,8 +289,8 @@ fi
 # stdin through a pipe, never on a command line. age writes the binary
 # format; base64 makes it one line (tr drops the line breaks that some
 # base64 programs add).
-blob=$(printf '%s' "$SECRET_JSON" | age -r "$RECIPIENT" | base64 | tr -d '\n') \
-  || { echo "handoff.sh: age failed to encrypt, aborting" >&2; exit 1; }
+blob=$(printf '%s' "$SECRET_JSON" | env -i PATH="${PATH-}" age -r "$RECIPIENT" | base64 | tr -d '\n') \
+  || { echo "handoff.sh: age failed to encrypt (age $age_version), aborting" >&2; exit 1; }
 echo "recipient: $RECIPIENT (from $keyfile)  <- compare with the recipient" >&2
 echo "   your agent reports for its key before trusting this output" >&2
 echo "--- paste everything below into chat with $to (recipient file $keyfile) ---" >&2
