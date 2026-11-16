@@ -10,7 +10,12 @@ Known-answer vectors for the encrypted credential handoff reference protocol (RS
 - `expected.json` — the plaintext payload: `{"svc":"example","username":"dummy-user-Qx7","password":"dummy-pass-K3z9w"}`. The two values differ on purpose, so a swapped mapping fails the test.
 - `blob.txt` — `expected.json` encrypted to the dummy public key, base64, one line.
 - `expected-check.txt` — the exact expected output of the reference `consume.py --label example --check` on `blob.txt`.
-- `run-test.sh` — runs the full check against the reference implementation in this folder.
+- `test-dummy-identity.txt` / `handoff-test.age` — the `age` dummy identity and its recipient (one line). Also a published throwaway: it protects nothing.
+- `blob-age.txt` — `expected.json` encrypted to that recipient by Go `age` 1.3.2: the binary age format (not `-a` armor), base64, one line.
+- `blob-age-rage.txt` — the same payload made by rage; its header carries a `-grease` stanza, which the header check must accept.
+- `vectors/` — blobs the reader must refuse, base64 on one line unless noted: `scrypt.txt`, `two-x25519.txt`, `grease-only.txt`, `plugin-stanza.txt`, `pq-stanza.txt`, `ssh-stanza.txt`, `unknown-stanza.txt`, `armored-b64.txt`, and `armored-raw.txt` (the raw multi-line `age -a` text, not base64). The hand-built ones have no valid MAC; the header check refuses them before `age` runs.
+- `make-vectors.sh` — how each age vector was made, with the tool versions and the SHA-256 of each. The suite never runs it (age's output is random, so a re-run changes every blob).
+- `run-test.sh` — runs the full check against the reference implementation in this folder. `HANDOFF_TEST_AGE` and `HANDOFF_TEST_AGE_KEYGEN` name the `age` binaries to test against; `HANDOFF_TEST_ONLY="3b 5a"` runs only the named sections (`1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7`) and prints `ran: <ids>`.
 
 ## Using these vectors for a port or variant
 

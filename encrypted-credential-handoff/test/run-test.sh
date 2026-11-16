@@ -20,6 +20,13 @@
 #      with nothing on stdout, no traceback and no dummy value in the
 #      output.
 #
+# Section ids (the "== ID." headings): 1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b
+# 6 7. HANDOFF_TEST_ONLY="3b 5a" runs only those and prints "ran: <ids>";
+# unset runs them all. The age vectors (test-dummy-identity.txt,
+# handoff-test.age, blob-age.txt, blob-age-rage.txt, vectors/) were made by
+# make-vectors.sh, which this suite never runs. HANDOFF_TEST_AGE and
+# HANDOFF_TEST_AGE_KEYGEN name the age binaries to test against.
+#
 # A port or variant implementation passes the interop bar by reproducing
 # steps 1-2 against these vectors with its own decrypt side, and step 3
 # with its own encrypt side feeding the reference decrypt side.
@@ -46,17 +53,42 @@ P=dummy-pass-K3z9w
 # so the leak check covers them too.
 MK=mk-Zq9
 
-# consume.py refuses group/other-readable keys on principle; the repo copy
-# of the dummy key is world-readable by design (it's a published vector),
-# so work on a locked-down copy. The scratch directory exists BEFORE the
-# trap is set: a trap that expands an unassigned variable under `set -u`
-# aborts itself and leaves the key copy behind.
+# consume.py refuses group/other-readable keys on principle; the repo copies
+# of the dummy keys are world-readable by design (they're published
+# vectors), so work on locked-down copies. The scratch directory exists
+# BEFORE the trap is set: a trap that expands an unassigned variable under
+# `set -u` aborts itself and leaves the key copy behind.
 S=$(mktemp -d)
 trap 'rm -rf "$S"' EXIT
-TMPKEY="$S/dummy-priv.pem"
-cp test-dummy-priv.pem "$TMPKEY"
+# TMPKEY is the age identity (the dummy key of 0.2.0). RSAKEY is the 0.1.0
+# RSA key: the sections that still test the RSA path use it, and keep doing so
+# until the task that removes them.
+TMPKEY="$S/dummy-identity.txt"
+cp test-dummy-identity.txt "$TMPKEY"
 chmod 600 "$TMPKEY"
-export HANDOFF_PRIVKEY="$TMPKEY"
+RSAKEY="$S/dummy-priv.pem"
+cp test-dummy-priv.pem "$RSAKEY"
+chmod 600 "$RSAKEY"
+export HANDOFF_PRIVKEY="$RSAKEY"
+
+# The age binaries the suite runs against: CI points these at a given version.
+AGE=${HANDOFF_TEST_AGE:-age}
+AGE_KEYGEN=${HANDOFF_TEST_AGE_KEYGEN:-age-keygen}
+command -v "$AGE" >/dev/null 2>&1 || { echo "FAIL: age not found ($AGE); install it or set HANDOFF_TEST_AGE" >&2; exit 1; }
+command -v "$AGE_KEYGEN" >/dev/null 2>&1 || { echo "FAIL: age-keygen not found ($AGE_KEYGEN); set HANDOFF_TEST_AGE_KEYGEN" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "FAIL: jq not found; install jq 1.6 or newer" >&2; exit 1; }
+age_version=$("$AGE" --version 2>&1 | head -n 1)
+echo "age: $age_version ($AGE)"
+echo "jq: $(jq --version 2>&1)"
+
+# HANDOFF_TEST_ONLY="3b 5a" runs only those sections (ids as in the
+# "== ID." headings: 1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7) and prints
+# "ran: <ids>" at the end; unset runs everything.
+RAN=
+section() {
+  [ -z "${HANDOFF_TEST_ONLY-}" ] || [[ " $HANDOFF_TEST_ONLY " == *" $1 "* ]] || return 1
+  RAN="$RAN${RAN:+ }$1"
+}
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -103,21 +135,49 @@ install_handoff() {
   cp "$1" "$(dirname "$2")/handoff-muse.pem"
 }
 
-# Encrypt the JSON text in $1 to the dummy public key, straight through
-# openssl (no validation), for payloads handoff.sh would never produce.
-enc() {
+# Encrypt the JSON text in $1 to the dummy public key with openssl (the
+# 0.1.0 RSA path, no validation), for payloads handoff.sh would never produce.
+enc_rsa() {
   printf '%s' "$1" | openssl pkeyutl -encrypt -pubin -inkey test-dummy-pub.pem \
     -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
     -pkeyopt rsa_mgf1_md:sha256 | openssl base64 -A
 }
 
+# Encrypt the text in $1 to the test recipient (handoff-test.age) with age,
+# straight through (no validation): binary format, base64 on one line.
+enc() {
+  printf '%s' "$1" | "$AGE" -r "$(cat handoff-test.age)" | base64 | tr -d '\n'
+}
+
+# What the sections after 3b need from 3a: handoff.sh installed beside the
+# dummy public key, the blob it wrote, and the key's fingerprint. Made on
+# demand, so a section can run alone under HANDOFF_TEST_ONLY.
+prep_shared() {
+  [ -f "$S/hd/handoff.sh" ] || install_handoff test-dummy-pub.pem "$S/hd/handoff.sh"
+  [ -s "$S/blob-3a.txt" ] || bash "$S/hd/handoff.sh" < expected.json >"$S/blob-3a.txt" 2>/dev/null
+  want=$(bash "$S/hd/handoff.sh" --fingerprint)
+}
+
+# What the sections after 4b need from it: a freshly generated key in
+# $S/agent and its public half in $S/agent-pub.pem. 4b makes these itself
+# (and so must find no key there); the others call this.
+prep_agent() {
+  [ -f "$S/agent-pub.pem" ] && return 0
+  HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh >"$S/setup-out" 2>"$S/setup-err" \
+    || { cat "$S/setup-err" >&2; fail "agent-setup.sh failed"; }
+  sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p' "$S/setup-out" > "$S/agent-pub.pem"
+}
+
+if section 1a; then
 echo "== 1a. reference decrypt, --check output =="
 consume --label example --check --blob-file blob.txt >"$S/out" 2>"$S/err"
 diff "$S/out" expected-check.txt || fail "--check output differs from expected-check.txt"
 [ ! -s "$S/err" ] || fail "--check wrote to stderr"
 no_dummy_in "$S/out"
 echo "ok"
+fi
 
+if section 1b; then
 # The command writes what it received to a file, and prints nothing, so
 # anything on stdout or stderr came from the helper itself.
 echo "== 1b. reference decrypt, injected environment, nothing from the helper =="
@@ -129,7 +189,9 @@ open(sys.argv[1], "w").write(os.environ["SERVICE_USERNAME"] + "\n" + os.environ[
 $P" ] || fail "unexpected env values"
 [ ! -s "$S/out" ] && [ ! -s "$S/err" ] || fail "the helper printed something in run mode"
 echo "ok"
+fi
 
+if section 1c; then
 echo "== 1c. per-invocation --env mapping =="
 # An inherited SERVICE_USERNAME must not survive the remapping either.
 out=$(SERVICE_USERNAME=inherited consume --label example --blob-file blob.txt --env username=CUSTOM_USER -- python3 -c '
@@ -142,7 +204,9 @@ print(os.environ["SERVICE_PASSWORD"] == os.environ.get("CUSTOM_USER"))
 False
 False" ] || fail "--env mapping not applied as expected"
 echo "ok"
+fi
 
+if section 1d; then
 echo "== 1d. mapped variables come from the payload only =="
 # A payload without a password must not run with one inherited from the
 # caller's environment.
@@ -150,13 +214,15 @@ echo "== 1d. mapped variables come from the payload only =="
 # mapped to CUSTOM_PASS): a nested wrapper's parent may have set it for
 # another service.
 out=$(SERVICE_PASSWORD=inherited CUSTOM_PASS=inherited consume --label example \
-  --blob "$(enc '{"svc":"example","username":"mk-Zq9-only-user"}')" --env password=CUSTOM_PASS -- python3 -c '
+  --blob "$(enc_rsa '{"svc":"example","username":"mk-Zq9-only-user"}')" --env password=CUSTOM_PASS -- python3 -c '
 import os
 print(os.environ["SERVICE_USERNAME"], os.environ.get("CUSTOM_PASS"), os.environ.get("SERVICE_PASSWORD"))
 ')
 [ "$out" = "mk-Zq9-only-user None None" ] || fail "an inherited credential variable reached the command: $out"
 echo "ok"
+fi
 
+if section 2a; then
 echo "== 2a. the command's stdin passes through untouched =="
 out=$(printf 'hello-stdin' | consume --label example --blob-file blob.txt -- python3 -c '
 import os, sys
@@ -166,7 +232,9 @@ print(sys.stdin.read())
 [ "$out" = "True
 hello-stdin" ] || fail "the command's stdin was consumed or altered"
 echo "ok"
+fi
 
+if section 2b; then
 echo "== 2b. the helper execs the command; TERM leaves nothing running =="
 # Both entry points: python3 directly, and the sh launcher on lines 1-3
 # (what ./consume.py runs), which must exec Python in its own place too.
@@ -193,20 +261,28 @@ time.sleep(60)
   ! kill -0 "$child" 2>/dev/null || fail "a process with the credential is still running ($launcher)"
 done
 echo "ok"
+fi
 
-echo "== 3. reference encrypt (handoff.sh) -> reference decrypt =="
+if section 3a; then
+echo "== 3a. reference encrypt (handoff.sh) writes a blob =="
 install_handoff test-dummy-pub.pem "$S/hd/handoff.sh"
-bash "$S/hd/handoff.sh" < expected.json >"$S/blob2" 2>"$S/err"
+bash "$S/hd/handoff.sh" < expected.json >"$S/blob-3a.txt" 2>"$S/err"
 grep -q '^pubkey SHA256:' "$S/err" || fail "handoff.sh printed no fingerprint"
-no_dummy_in "$S/blob2" "$S/err"
-out=$(HANDOFF_BLOB="$(cat "$S/blob2")" consume --label example -- python3 -c '
+no_dummy_in "$S/blob-3a.txt" "$S/err"
+echo "ok"
+fi
+
+if section 3b; then
+echo "== 3b. reference decrypt (consume.py) opens handoff.sh's blob =="
+prep_shared
+out=$(HANDOFF_BLOB="$(cat "$S/blob-3a.txt")" consume --label example -- python3 -c '
 import os
 print(os.environ["SERVICE_USERNAME"])
 print(os.environ["SERVICE_PASSWORD"])
 ')
 [ "$out" = "$U
 $P" ] || fail "handoff.sh blob did not round-trip"
-out=$(HANDOFF_BLOB="$(cat "$S/blob2")" consume --label example -- python3 -c '
+out=$(HANDOFF_BLOB="$(cat "$S/blob-3a.txt")" consume --label example -- python3 -c '
 import os
 print("HANDOFF_BLOB" in os.environ, "HANDOFF_PRIVKEY" in os.environ)
 ')
@@ -214,7 +290,7 @@ print("HANDOFF_BLOB" in os.environ, "HANDOFF_PRIVKEY" in os.environ)
 # The command gets SIGPIPE and SIGXFSZ at their defaults (Python ignores
 # both at startup, and an ignored signal stays ignored across exec).
 if [ -r /proc/self/status ]; then
-  ign=$(HANDOFF_BLOB="$(cat "$S/blob2")" consume --label example -- sh -c 'grep "^SigIgn:" /proc/self/status' | awk '{print $2}')
+  ign=$(HANDOFF_BLOB="$(cat "$S/blob-3a.txt")" consume --label example -- sh -c 'grep "^SigIgn:" /proc/self/status' | awk '{print $2}')
   mask=$((16#$ign))
   [ $(( (mask >> 12) & 1 )) = 0 ] && [ $(( (mask >> 24) & 1 )) = 0 ] \
     || fail "the command inherited SIGPIPE or SIGXFSZ ignored (SigIgn $ign)"
@@ -231,22 +307,25 @@ print(len(os.environ["SERVICE_PASSWORD"]))
 ')
 [ "$out" = 159 ] || fail "the 190-byte payload did not round-trip"
 echo "ok"
+fi
 
+if section 4a; then
 echo "== 4a. fingerprints agree on the dummy key; --fingerprint reads \$HANDOFF_PRIVKEY =="
+prep_shared
 want=$(bash "$S/hd/handoff.sh" --fingerprint)
 # HANDOFF_KEY_DIR points somewhere with no key: the fingerprint must come
 # from $HANDOFF_PRIVKEY, the key the consume side actually uses.
 got=$(HANDOFF_KEY_DIR="$S/no-such-dir" bash ../agent-setup.sh --fingerprint 2>"$S/err")
 [ "$got" = "$want" ] || fail "agent-setup.sh --fingerprint ($got) != handoff.sh --fingerprint ($want)"
-grep -qxF "key file: $TMPKEY" "$S/err" || fail "--fingerprint did not name the key file it read"
-got=$(env -u HANDOFF_PRIVKEY bash ../agent-setup.sh --fingerprint "$TMPKEY" 2>/dev/null)
+grep -qxF "key file: $RSAKEY" "$S/err" || fail "--fingerprint did not name the key file it read"
+got=$(env -u HANDOFF_PRIVKEY bash ../agent-setup.sh --fingerprint "$RSAKEY" 2>/dev/null)
 [ "$got" = "$want" ] || fail "agent-setup.sh --fingerprint KEY gave $got"
 # With HANDOFF_PRIVKEY unset, it falls back to consume.py's default: the two
 # must name the same key. (With HANDOFF_KEY_DIR set instead, it refuses:
 # that variable is for generation only, and silently ignoring it read the
 # wrong key.)
 mkdir -p "$S/home/.config/handoff"
-cp "$TMPKEY" "$S/home/.config/handoff/handoff-priv.pem"
+cp "$RSAKEY" "$S/home/.config/handoff/handoff-priv.pem"
 expect_refusal "--fingerprint with HANDOFF_KEY_DIR but no HANDOFF_PRIVKEY" 2 "HANDOFF_KEY_DIR applies only to generating a key" \
   env -u HANDOFF_PRIVKEY HOME="$S/home" HANDOFF_KEY_DIR="$S/no-such-dir" bash ../agent-setup.sh --fingerprint
 got=$(env -u HANDOFF_PRIVKEY -u HANDOFF_KEY_DIR HOME="$S/home" bash ../agent-setup.sh --fingerprint 2>"$S/err")
@@ -272,8 +351,11 @@ HANDOFF_PRIVKEY='~/.config/handoff/handoff-priv.pem' HOME="$S/home" python3 ../c
 got=$(HANDOFF_PRIVKEY='~/.config/handoff/handoff-priv.pem' HOME="$S/home" bash ../agent-setup.sh --fingerprint 2>/dev/null)
 [ "$got" = "$want" ] || fail "agent-setup.sh did not expand a literal ~ in HANDOFF_PRIVKEY"
 echo "ok"
+fi
 
+if section 4b; then
 echo "== 4b. a freshly generated key: setup output, --fingerprint and handoff.sh agree =="
+prep_shared
 HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh >"$S/setup-out" 2>"$S/setup-err" \
   || { cat "$S/setup-err" >&2; fail "agent-setup.sh failed"; }
 [ "$(stat -c %a "$S/agent/handoff-priv.pem")" = 600 ] || fail "new key is not mode 600"
@@ -307,14 +389,18 @@ env POSIXLY_CORRECT=1 HANDOFF_KEY_DIR="$S/posix-setup" bash ../agent-setup.sh >/
 [ "$(stat -c %a "$S/posix-setup")" = 700 ] && [ "$(stat -c %a "$S/posix-setup/handoff-priv.pem")" = 600 ] \
   || fail "first setup under POSIX option parsing left the wrong modes"
 # --public-key shows an existing key's public half and fingerprint again.
-got=$(bash ../agent-setup.sh --public-key "$TMPKEY" 2>"$S/err")
-grep -qxF "key file: $TMPKEY" "$S/err" || fail "--public-key didn't name the key file"
+got=$(bash ../agent-setup.sh --public-key "$RSAKEY" 2>"$S/err")
+grep -qxF "key file: $RSAKEY" "$S/err" || fail "--public-key didn't name the key file"
 [ "$(printf '%s\n' "$got" | sed -n 's/^public key fingerprint: //p')" = "$want" ] || fail "--public-key printed another fingerprint"
 [ "$(printf '%s\n' "$got" | sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p')" = "$(cat test-dummy-pub.pem)" ] \
   || fail "--public-key printed another public key"
 echo "ok"
+fi
 
+if section 5; then
 echo "== 5. refusals =="
+prep_shared
+prep_agent
 expect_refusal "purpose mismatch (--check)" 1 "purpose mismatch" \
   consume --label other --check --blob-file blob.txt
 expect_refusal "purpose mismatch (run mode)" 1 "purpose mismatch" \
@@ -341,13 +427,13 @@ expect_refusal "openssl not installed" 1 "openssl not found" \
 expect_refusal "input not base64" 1 "not valid base64" \
   consume --label example --check --blob '!!not base64!!'
 expect_refusal "damaged blob" 1 "stop and report it to the user (SETUP.md, stop conditions)" \
-  consume --label example --check --blob "$(cat "$S/blob2" | tr 'A-Za-z' 'B-ZAb-za')"
+  consume --label example --check --blob "$(cat "$S/blob-3a.txt" | tr 'A-Za-z' 'B-ZAb-za')"
 # One fixed message: the key file it tried, no openssl reason, and no hint to
 # try another key. Also for a valid blob made for another key (4b's), which
 # is what a wrapper meets with a blob made for another key and no rotation under way.
 for which in damaged other-key; do
   if [ "$which" = other-key ]; then
-    expect_refusal "a blob made for another key" 1 "decryption failed with the key at $TMPKEY" \
+    expect_refusal "a blob made for another key" 1 "decryption failed with the key at $RSAKEY" \
       consume --label example --check --blob "$(printf '%s' '{"svc":"example","password":"mk-Zq9"}' | openssl pkeyutl -encrypt -pubin -inkey "$S/agent-pub.pem" -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 | openssl base64 -A)"
   fi
   ! grep -q "Public Key operation\|:error:\|error:" "$S/err" || fail "the decrypt refusal ($which) shows openssl's reason: $(cat "$S/err")"
@@ -398,7 +484,7 @@ done
 # An unreadable key file is reported as unreadable, not as oversized (root
 # can read anything, so skip it there).
 if [ "$(id -u)" != 0 ]; then
-  cp "$TMPKEY" "$S/noread.pem"; chmod 000 "$S/noread.pem"
+  cp "$RSAKEY" "$S/noread.pem"; chmod 000 "$S/noread.pem"
   expect_refusal "agent-setup.sh --fingerprint, an unreadable key file" 1 "cannot read key file at" \
     bash ../agent-setup.sh --fingerprint "$S/noread.pem"
   ! grep -q "over 16384" "$S/err" || fail "an unreadable key file was reported as oversized"
@@ -495,25 +581,25 @@ expect_refusal "command not executable" 126 "cannot run" \
 expect_refusal "empty command" 1 "no command given" \
   consume --label example --blob-file blob.txt -- ""
 expect_refusal "NUL in a credential (run mode)" 1 "contains a NUL byte" \
-  consume --label example --blob "$(enc '{"svc":"example","password":"mk-Zq9\u0000b"}')" -- true
+  consume --label example --blob "$(enc_rsa '{"svc":"example","password":"mk-Zq9\u0000b"}')" -- true
 expect_refusal "NUL in a credential (--check)" 1 "contains a NUL byte" \
-  consume --label example --check --blob "$(enc '{"svc":"example","password":"mk-Zq9\u0000b"}')"
+  consume --label example --check --blob "$(enc_rsa '{"svc":"example","password":"mk-Zq9\u0000b"}')"
 expect_refusal "lone surrogate in a credential (run mode)" 1 "not valid UTF-8" \
-  consume --label example --blob "$(enc '{"svc":"example","password":"mk-Zq9\ud800b"}')" -- true
+  consume --label example --blob "$(enc_rsa '{"svc":"example","password":"mk-Zq9\ud800b"}')" -- true
 expect_refusal "lone surrogate in a credential (--check)" 1 "not valid UTF-8" \
-  consume --label example --check --blob "$(enc '{"svc":"example","password":"mk-Zq9\ud800b"}')"
+  consume --label example --check --blob "$(enc_rsa '{"svc":"example","password":"mk-Zq9\ud800b"}')"
 ! grep -q 'ud800\|position' "$S/err" || fail "the surrogate refusal quoted the payload"
 expect_refusal "payload without svc" 1 "no 'svc' field" \
-  consume --label example --check --blob "$(enc '{"username":"mk-Zq9-user"}')"
+  consume --label example --check --blob "$(enc_rsa '{"username":"mk-Zq9-user"}')"
 expect_refusal "payload not JSON" 1 "not valid JSON" \
-  consume --label example --check --blob "$(enc 'mk-Zq9 not json')"
+  consume --label example --check --blob "$(enc_rsa 'mk-Zq9 not json')"
 expect_refusal "payload not a JSON object" 1 "not a JSON object" \
-  consume --label example --check --blob "$(enc '["mk-Zq9"]')"
+  consume --label example --check --blob "$(enc_rsa '["mk-Zq9"]')"
 expect_refusal "credential not a string" 1 "not a string" \
-  consume --label example --check --blob "$(enc '{"svc":"example","password":9817263}')"
+  consume --label example --check --blob "$(enc_rsa '{"svc":"example","password":9817263}')"
 ! grep -q 9817263 "$S/err" || fail "the non-string refusal echoed the value"
 expect_refusal "empty credential" 1 "is empty" \
-  consume --label example --blob "$(enc '{"svc":"example","username":"mk-Zq9-user","password":""}')" -- true
+  consume --label example --blob "$(enc_rsa '{"svc":"example","username":"mk-Zq9-user","password":""}')" -- true
 expect_refusal "empty blob" 1 "the blob is empty" \
   consume --label example --check --blob ''
 expect_refusal "short blob" 1 "decodes to 10 bytes, not 256" \
@@ -830,7 +916,7 @@ expect_refusal "agent-setup.sh unknown argument" 2 "usage: agent-setup.sh" \
 expect_refusal "agent-setup.sh --fingerprint, no key" 1 "no key file at" \
   env HANDOFF_PRIVKEY="$S/no-such-key.pem" bash ../agent-setup.sh --fingerprint
 expect_refusal "agent-setup.sh --fingerprint, two keys" 2 "usage: agent-setup.sh --fingerprint" \
-  bash ../agent-setup.sh --fingerprint "$TMPKEY" "$TMPKEY"
+  bash ../agent-setup.sh --fingerprint "$RSAKEY" "$RSAKEY"
 expect_refusal "agent-setup.sh --fingerprint, empty KEY" 2 "empty KEY" \
   bash ../agent-setup.sh --fingerprint ""
 expect_refusal "agent-setup.sh --fingerprint, a public key" 1 "could not read key" \
@@ -853,8 +939,19 @@ if command -v jq >/dev/null; then
 else
   echo "skip: jq not installed, handoff.sh shape refusals not tested"
 fi
+fi
 
+if section 5a; then
+echo "== 5a. age header and identity refusals =="
+# Filled in by the tasks that move consume.py to age: the header allowlist
+# (vectors/*.txt) and the identity-file checks.
+echo "ok"
+fi
+
+if section 5b; then
 echo "== 5b. handoff.sh's key: handoff-NAME.pem beside the script, and nothing else =="
+prep_shared
+prep_agent
 K="$S/hk"; mkdir -p "$K"; cp ../handoff.sh "$K/handoff.sh"
 pay='{"svc":"example","password":"mk-Zq9"}'
 # No key file: no ciphertext, and no key in the script to fall back on.
@@ -1025,7 +1122,7 @@ sed 's/$/  /' test-dummy-pub.pem > "$K/handoff-blanks.pem"
 mkdir "$K/handoff-dir.pem"
 expect_refusal "handoff.sh key file that is a directory" 1 "handoff-dir.pem is not a regular file" \
   bash "$K/handoff.sh" --to dir --fingerprint
-cp "$TMPKEY" "$K/handoff-priv.pem"
+cp "$RSAKEY" "$K/handoff-priv.pem"
 expect_refusal "handoff.sh key file holding a private key" 1 "holds a private key. Only the agent's public key belongs here: delete this file now" \
   bash "$K/handoff.sh" --to priv <<<"$pay"
 printf 'not a key\n' > "$K/handoff-junk.pem"
@@ -1044,7 +1141,7 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen
   | openssl pkey -pubout > "$K/handoff-e65539.pem"
 expect_refusal "handoff.sh key file with e = 65539" 1 "is not an RSA-2048 public key with e = 65537" \
   bash "$K/handoff.sh" --to e65539 --fingerprint
-{ cat test-dummy-pub.pem; openssl req -x509 -new -key "$TMPKEY" -subj /CN=x -days 1 2>/dev/null; } > "$K/handoff-cert.pem"
+{ cat test-dummy-pub.pem; openssl req -x509 -new -key "$RSAKEY" -subj /CN=x -days 1 2>/dev/null; } > "$K/handoff-cert.pem"
 grep -q 'BEGIN CERTIFICATE' "$K/handoff-cert.pem" || fail "test setup: no certificate made"
 expect_refusal "handoff.sh key file with a key and a certificate" 1 "must hold exactly one public key" \
   bash "$K/handoff.sh" --to cert --fingerprint
@@ -1078,14 +1175,18 @@ cp test-dummy-pub.pem "$S/hl/handoff-other.pem"
 [ "$(bash "$S/hl/handoff.sh" --to other --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "handoff.sh through a symlink didn't read the key beside the link"
 echo "ok"
+fi
 
+if section 6; then
 echo "== 6. rotation: --rotate, the previous key, --rewrap, --retire =="
+prep_shared
+prep_agent
 # A copy of the dummy key, so blob.txt is a blob made for the key that
 # --rotate turns into the previous one.
 R="$S/rot"; mkdir -p "$R"
 # The blob store, apart from the key directory (--rewrap refuses a blob file there).
 ST="$S/store"; mkdir -p "$ST"
-cp "$TMPKEY" "$R/k.pem"
+cp "$RSAKEY" "$R/k.pem"
 rk() { env HANDOFF_PRIVKEY="$R/k.pem" "$@"; }
 rk bash ../agent-setup.sh --rotate >"$R/out" 2>"$R/err" || { cat "$R/err" >&2; fail "--rotate failed"; }
 if [ ! -f "$R/k.pem.previous" ] || [ "$R/k.pem.previous" -ef "$R/k.pem" ]; then
@@ -1190,6 +1291,7 @@ chmod 644 "$R/k.pem.previous"
 expect_refusal "a group-readable previous key" 1 "k.pem.previous is mode 644" \
   rk python3 ../consume.py --label example --check --blob-file blob.txt
 chmod 600 "$R/k.pem.previous"
+[ -f "$S/ed25519.pem" ] || openssl genpkey -algorithm ED25519 -out "$S/ed25519.pem" 2>/dev/null
 cp "$S/ed25519.pem" "$R/ed.pem"
 mv "$R/k.pem.previous" "$R/held.pem"; ln -s "$R/ed.pem" "$R/k.pem.previous"
 expect_refusal "a previous key that isn't RSA-2048" 1 "k.pem.previous is not an RSA-2048 key" \
@@ -1667,7 +1769,7 @@ grep -qF "removed a temporary key a killed --rotate left behind: $R/.handoff-new
 rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after the lock checks failed"
 [ ! -e "$R/.handoff-lock" ] || fail "--retire left its lock behind"
 # A key path that starts with "-" is a path, not an option.
-mkdir -p "$R/dash"; cp "$TMPKEY" "$R/dash/-k.pem"
+mkdir -p "$R/dash"; cp "$RSAKEY" "$R/dash/-k.pem"
 (cd "$R/dash" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -k.pem >/dev/null 2>&1 \
   && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire --yes -k.pem >/dev/null 2>&1) \
   || fail "--rotate / --retire on a key path starting with - failed"
@@ -1745,7 +1847,7 @@ if [ "$rc" != 1 ] || ! grep -qF "not valid base64" "$S/err" || grep -qF "concate
 fi
 rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after the redirect checks failed"
 # A key directory starting with "-" works for --rotate and first setup.
-mkdir -p "$R/dash2/-d"; cp "$TMPKEY" "$R/dash2/-d/k.pem"
+mkdir -p "$R/dash2/-d"; cp "$RSAKEY" "$R/dash2/-d/k.pem"
 (cd "$R/dash2" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -d/k.pem >/dev/null 2>&1 \
   && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire --yes -d/k.pem >/dev/null 2>&1 \
   && env -u HANDOFF_PRIVKEY HANDOFF_KEY_DIR=-g bash "$OLDPWD/../agent-setup.sh" >/dev/null 2>&1) \
@@ -1825,7 +1927,7 @@ fi
 # A temporary key a killed setup left is removed by the next one.
 mkdir -p "$S/stale-setup"; printf 'leftover\n' > "$S/stale-setup/.handoff-setup.Leftov"
 # A symlink with the same name isn't a temporary key: it stays.
-ln -s "$TMPKEY" "$S/stale-setup/.handoff-setup.Link"
+ln -s "$RSAKEY" "$S/stale-setup/.handoff-setup.Link"
 HANDOFF_KEY_DIR="$S/stale-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || fail "first setup with a leftover temporary key failed"
 grep -qF "removed a temporary key a killed (or concurrent) setup left behind" "$S/err" && [ ! -e "$S/stale-setup/.handoff-setup.Leftov" ] \
   || fail "the leftover temporary key wasn't removed"
@@ -1852,7 +1954,7 @@ mkdir -p "$S/dirrot"; ln -sf "$PY" "$S/dirrot/python3"
 # shellcheck disable=SC2016  # $1, $a and $@ belong to the generated script
 printf '#!/bin/sh\nif [ "$1" = genpkey ]; then rm -f "$TARGET" && mkdir "$TARGET"; fi\nexec %s "$@"\n' "$(command -v openssl)" > "$S/dirrot/openssl"
 chmod 755 "$S/dirrot/openssl"
-mkdir -p "$S/dr"; cp "$TMPKEY" "$S/dr/k.pem"
+mkdir -p "$S/dr"; cp "$RSAKEY" "$S/dr/k.pem"
 expect_refusal "--rotate when the key path becomes a directory" 1 "is now a directory; the new key was removed" \
   env HANDOFF_PRIVKEY="$S/dr/k.pem" TARGET="$S/dr/k.pem" PATH="$S/dirrot:/usr/bin:/bin" bash ../agent-setup.sh --rotate
 ! compgen -G "$S/dr/k.pem/.handoff-*" >/dev/null || fail "a new key was left inside the directory at the key path"
@@ -1866,7 +1968,7 @@ expect_refusal "a blob for an RSA-4096 key" 1 "not a blob for an RSA-2048 key" \
 ! grep -q "concatenated" "$S/err" || fail "a 4096-bit blob was called concatenated blobs"
 # A key file named like a temporary key isn't swept by its own --rotate,
 # however its path is spelled (relative, or with a doubled slash).
-mkdir -p "$S/spell"; cp "$TMPKEY" "$S/spell/.handoff-new.pem"
+mkdir -p "$S/spell"; cp "$RSAKEY" "$S/spell/.handoff-new.pem"
 (cd "$S/spell" && env HANDOFF_PRIVKEY=.handoff-new.pem bash "$OLDPWD/../agent-setup.sh" --rotate >/dev/null 2>"$S/err") \
   || fail "--rotate of a relative .handoff-new.pem failed: $(cat "$S/err")"
 [ -f "$S/spell/.handoff-new.pem" ] && [ -f "$S/spell/.handoff-new.pem.previous" ] || fail "a relative key path was swept"
@@ -1875,7 +1977,7 @@ mkdir -p "$S/spell"; cp "$TMPKEY" "$S/spell/.handoff-new.pem"
 (cd "$S/spell" && env HANDOFF_PRIVKEY=.handoff-new.pem bash "$OLDPWD/../agent-setup.sh" --retire --yes >/dev/null 2>&1) || fail "--retire of a relative key failed"
 [ -f "$S/spell/.handoff-new.pem" ] && [ ! -e "$S/spell/.handoff-new.pem.previous" ] || fail "--retire of a relative key removed the wrong file"
 # The hard-link guard holds for a key path starting with -.
-mkdir -p "$S/dashlink"; cp "$TMPKEY" "$S/dashlink/-k.pem"
+mkdir -p "$S/dashlink"; cp "$RSAKEY" "$S/dashlink/-k.pem"
 (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -k.pem >/dev/null 2>&1) || fail "--rotate -k.pem failed"
 ln -- "$S/dashlink/-k.pem.previous" "$S/dashlink/backup.pem"
 rc=0; (cd "$S/dashlink" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --retire --yes -k.pem >/dev/null 2>"$S/err") || rc=$?
@@ -1883,7 +1985,7 @@ if [ "$rc" != 1 ] || ! grep -qF "has another hard link" "$S/err"; then
   fail "--retire -k.pem with another link: exit $rc, $(cat "$S/err")"
 fi
 # A key path with a quote in it: the hint's paths are quoted for a POSIX shell.
-mkdir -p "$S/q'; touch PWNED; echo '"; qk="$S/q'; touch PWNED; echo '/k.pem"; cp "$TMPKEY" "$qk"
+mkdir -p "$S/q'; touch PWNED; echo '"; qk="$S/q'; touch PWNED; echo '/k.pem"; cp "$RSAKEY" "$qk"
 env HANDOFF_PRIVKEY="$qk" bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate on a key path with a quote failed"
 ln "$qk.previous" "$S/qbackup.pem"
 rc=0; env HANDOFF_PRIVKEY="$qk" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
@@ -1896,7 +1998,7 @@ rm -rf "$S/q'; touch PWNED; echo '" "$S/qbackup.pem"
 # A key path with a newline in it: the -inum form takes one line of digits,
 # and nothing after the newline becomes a line of its own.
 nl="$S/nl
-touch PWNED"; mkdir -p "$nl"; cp "$TMPKEY" "$nl/k.pem"
+touch PWNED"; mkdir -p "$nl"; cp "$RSAKEY" "$nl/k.pem"
 env HANDOFF_PRIVKEY="$nl/k.pem" bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate on a key path with a newline failed"
 ln "$nl/k.pem.previous" "$S/nlbackup.pem"
 rc=0; env HANDOFF_PRIVKEY="$nl/k.pem" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
@@ -1907,7 +2009,7 @@ rm -rf "$nl" "$S/nlbackup.pem"
 # A relative key path still gets an absolute path in the find hint.
 grep -qF -- "-samefile '$(cd "$S/dashlink" && pwd -P)/-k.pem.previous'" "$S/err" || fail "the find hint for a relative key isn't absolute: $(cat "$S/err")"
 # A key file named like a temporary key isn't swept by its own --rotate.
-mkdir -p "$S/tmpname"; cp "$TMPKEY" "$S/tmpname/.handoff-new.pem"
+mkdir -p "$S/tmpname"; cp "$RSAKEY" "$S/tmpname/.handoff-new.pem"
 env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.pem" bash ../agent-setup.sh --rotate >/dev/null 2>"$S/err" \
   || fail "--rotate of a key named .handoff-new.pem failed: $(cat "$S/err")"
 [ -f "$S/tmpname/.handoff-new.pem" ] && [ -f "$S/tmpname/.handoff-new.pem.previous" ] || fail "--rotate swept its own key"
@@ -1973,7 +2075,9 @@ HANDOFF_LABEL=x python3 ../consume.py --help >/dev/null 2>&1 || fail "--help was
 python3 -OO ../consume.py --help >"$S/out" 2>&1 || fail "--help failed under python3 -OO: $(cat "$S/out")"
 grep -qF "usage: consume.py" "$S/out" || fail "--help under -OO printed no usage"
 echo "ok"
+fi
 
+if section 7; then
 echo "== 7. nesting: \$HANDOFF_LABEL =="
 out=$(consume --label example --blob-file blob.txt -- python3 -c '
 import os
@@ -1987,5 +2091,7 @@ expect_refusal "HANDOFF_LABEL set by the caller" 1 "\$HANDOFF_LABEL is set" \
 expect_refusal "HANDOFF_LABEL set, empty" 1 "\$HANDOFF_LABEL is set" \
   env HANDOFF_LABEL= python3 ../consume.py --label example --check --blob-file blob.txt
 echo "ok"
+fi
 
+[ -z "${HANDOFF_TEST_ONLY-}" ] || echo "ran: $RAN"
 echo "ALL INTEROP CHECKS PASSED"
