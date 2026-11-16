@@ -1,7 +1,7 @@
 name: Security contact request
-description: Only if you can't use a private advisory; asks for a private channel, with no details here
+description: "Not for reporting: use the private advisory link below. Only if you can't use one: asks for a private channel, with no details here"
 title: "Security contact request"
-labels: ["security"]
+labels: ["question"]
 body:
   - type: markdown
     attributes:

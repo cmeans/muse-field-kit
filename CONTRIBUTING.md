@@ -11,7 +11,7 @@ So the way to contribute is an issue:
 - **[Bug report](../../issues/new?template=bug_report.yml):** something doesn't work as a folder's docs say.
 - **[Feature request](../../issues/new?template=feature_request.yml):** a new capability, or a change to how something works.
 - **[Platform test report](../../issues/new?template=platform_test_report.yml):** what happened when you ran a folder on a platform or tool version we don't test (macOS, Windows, a phone, an older `bash`).
-- **Security problems:** an exploitable flaw never goes in a public issue; report it privately as [`SECURITY.md`](SECURITY.md) says. (Hardening work that isn't embargoed is tracked as issues with the `security` label.)
+- **Security problems:** an exploitable flaw never goes in a public issue; report it privately as [`SECURITY.md`](SECURITY.md) says (or, if you can't use a private advisory, ask for a private channel with the [Security contact request](../../issues/new?template=security_contact.yml) form, which takes no details). (Hardening work that isn't embargoed is tracked as issues with the `security` label.)
 
 A good issue is specific: the folder, its version, your platform, what you ran, what you expected and what happened, and output with any secret removed. A proposed fix in the issue (a diff, or the exact wording) is welcome; the maintainer's side turns an agreed fix into a pull request and credits you in it.
 
