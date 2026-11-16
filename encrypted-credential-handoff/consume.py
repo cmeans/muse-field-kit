@@ -50,7 +50,14 @@ what SETUP.md's hard rules record for it.
     username / password          -> SERVICE_USERNAME / SERVICE_PASSWORD
     api_key_id / api_key_secret  -> SERVICE_API_KEY_ID / SERVICE_API_KEY_SECRET
     token_id / token_secret      -> SERVICE_TOKEN_ID / SERVICE_TOKEN_SECRET
+    private_key                  -> SERVICE_PRIVATE_KEY (a PEM, kept byte for byte)
+    app_id / installation_id     -> SERVICE_APP_ID / SERVICE_INSTALLATION_ID
     svc                          -> purpose binding; never injected
+
+Every field stands alone: none needs another, and a payload may carry any
+of them (private_key, app_id and installation_id together are a GitHub
+App's). Which fields a label's command needs is that label's record in
+SETUP.md, not this helper's check.
 
 Per-service variable names differ; map them per invocation instead of
 editing this file:  --env username=APP_USER --env password=APP_PASS
@@ -145,6 +152,9 @@ DEFAULT_ENV_MAP = {
     "api_key_secret": "SERVICE_API_KEY_SECRET",
     "token_id": "SERVICE_TOKEN_ID",
     "token_secret": "SERVICE_TOKEN_SECRET",
+    "private_key": "SERVICE_PRIVATE_KEY",
+    "app_id": "SERVICE_APP_ID",
+    "installation_id": "SERVICE_INSTALLATION_ID",
 }
 
 # --env target names: a plain identifier, and never one of the well-known
@@ -659,14 +669,13 @@ def parse_payload(plaintext: bytes) -> dict:
     return payload
 
 
-def rewrap(plaintext: bytes, current: str) -> str:
-    """The same payload, byte for byte, encrypted to the current key.
+def age_encrypt(plaintext: bytes, recipient: str) -> bytes:
+    """age -r RECIPIENT on plaintext: the binary age file.
 
-    Checked before it's returned: the new blob must open with the current
-    key to exactly this payload, since it replaces the old blob in the store
-    with no copy kept (SETUP.md, Rotation).
+    The plaintext goes in through a pipe of age's own, the environment is
+    age_env()'s, and age's stderr is not shown. Refuses, with one fixed
+    message, when age fails or its output isn't a binary age file.
     """
-    recipient = check_key(current)
     try:
         proc = subprocess.run(
             ["age", "-r", recipient], input=plaintext, capture_output=True,
@@ -678,11 +687,22 @@ def rewrap(plaintext: bytes, current: str) -> str:
         raise age_cannot_run("age", e) from None
     if proc.returncode != 0 or not proc.stdout.startswith(AGE_MAGIC):
         raise fail("re-encrypting to the current key failed")
-    back = age_decrypt(proc.stdout, current)
+    return proc.stdout
+
+
+def rewrap(plaintext: bytes, current: str) -> str:
+    """The same payload, byte for byte, encrypted to the current key.
+
+    Checked before it's returned: the new blob must open with the current
+    key to exactly this payload, since it replaces the old blob in the store
+    with no copy kept (SETUP.md, Rotation).
+    """
+    blob = age_encrypt(plaintext, check_key(current))
+    back = age_decrypt(blob, current)
     if back is None or back != plaintext:
         raise fail("the new blob doesn't open with the current key to the same "
                    "payload; keep the old blob, and report this")
-    return base64.b64encode(proc.stdout).decode("ascii")
+    return base64.b64encode(blob).decode("ascii")
 
 
 def check_payload(payload: dict, label: str, env_map: dict) -> dict:
