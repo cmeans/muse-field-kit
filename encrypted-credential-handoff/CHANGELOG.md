@@ -1,6 +1,6 @@
 # Changelog — encrypted-credential-handoff
 
-## 0.1.0 — 2026-11-15 — first publication
+## 0.1.0 — 2026-11-16 — first publication
 
 The folder's first public version. Nothing here has been released before, so this entry describes what ships, not a sequence of changes. (Renamed before publication from "blind-RSA credential handoff": "blind RSA" names a different, standardized technique.)
 
