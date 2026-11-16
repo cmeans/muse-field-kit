@@ -1,0 +1,16 @@
+name: Security contact request
+description: "Not for reporting: use the private advisory link below. Only if you can't use one: asks for a private channel, with no details here"
+title: "Security contact request"
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Put no details of the problem in this issue.** This issue is public. Its only purpose is to ask the maintainer for a private channel to report a security problem, for when you can't use a private advisory (https://github.com/cmeans/muse-field-kit/security/advisories/new). The maintainer will reply here to arrange one.
+  - type: checkboxes
+    id: no_details
+    attributes:
+      label: Confirmation
+      options:
+        - label: I've put no details of the problem anywhere in this issue, its title included.
+          required: true

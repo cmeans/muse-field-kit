@@ -1,5 +1,11 @@
 # Changelog — encrypted-credential-handoff
 
+## Unreleased
+
+### Changed
+
+- **Changes go upstream as issues.** README's "Variations" and SETUP's mechanism-change rule offered changes "as an issue or pull request"; pull requests in this repository are now opened by its collaborators only, so both say to open an issue, pointing to the repository's new `CONTRIBUTING.md`.
+
 ## 0.1.0 — 2026-11-16 — first publication
 
 The folder's first public version. Nothing here has been released before, so this entry describes what ships, not a sequence of changes. (Renamed before publication from "blind-RSA credential handoff": "blind RSA" names a different, standardized technique.)

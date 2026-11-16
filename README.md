@@ -35,6 +35,10 @@ These patterns were developed under a set of operating rules. They are listed he
 
 These are my own builds and guides, written up and submitted by me. The shared-memory store and NAS MCP server referenced in some guides live in their own repositories and are not part of this one.
 
+## Contributing, security and conduct
+
+Contributions come in as issues (bug reports, feature requests, platform test reports); pull requests are opened by collaborators. See [`CONTRIBUTING.md`](CONTRIBUTING.md). An exploitable security flaw goes through a private advisory, never a public issue: [`SECURITY.md`](SECURITY.md). Everyone taking part follows the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+
 ## License
 
 MIT, for code and text alike. See `LICENSE`.
