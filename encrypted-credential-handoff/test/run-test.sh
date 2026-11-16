@@ -449,6 +449,8 @@ HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh >"$S/setup-out" 2>"$S/setup-er
 ID="$S/agent/handoff-identity.txt"
 [ "$(stat -c %a "$ID")" = 600 ] || fail "new identity is not mode 600"
 [ "$(stat -c %a "$S/agent")" = 700 ] || fail "new key directory is not mode 700"
+! compgen -G "$S/agent/.handoff-*" >/dev/null || fail "first setup left a temporary file or directory"
+! compgen -G "$S/agent/.handoff-*" >/dev/null || fail "first setup left a temporary file or directory"
 [ "$(grep -c '^AGE-SECRET-KEY-1' "$ID")" = 1 ] || fail "the new identity file doesn't hold exactly one secret key"
 printed=$(sed -n 's/^recipient: //p' "$S/setup-out")
 [[ "$printed" =~ ^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$ ]] \
@@ -471,7 +473,7 @@ grep -qxF "key file: $TMPKEY" "$S/err" || fail "--public-key didn't name the key
 [ "$(printf '%s\n' "$got" | sed -n 's/^recipient: //p')" = "$(cat handoff-test.age)" ] || fail "--public-key printed another recipient"
 printf '%s\n' "$got" | grep -qxF "$(cat handoff-test.age)" || fail "--public-key printed no bare recipient line"
 printf '%s\n' "$got" | grep -qxF "save it as handoff-<name>.age beside handoff.sh" || fail "--public-key didn't say where to save it"
-! printf '%s\n' "$got" | grep -q 'AGE-SECRET-KEY' || fail "--public-key printed a secret-key line"
+! grep -q 'AGE-SECRET-KEY' <<<"$got" || fail "--public-key printed a secret-key line"
 # A relative HANDOFF_KEY_DIR is reported as an absolute path.
 mkdir -p "$S/cwd"
 here=$PWD
@@ -532,7 +534,9 @@ expect_refusal "a binary file as KEY" 1 "is not an age identity file" \
   bash ../agent-setup.sh --fingerprint "$S/id-nul.txt"
 # A refusal never prints any part of the file's contents.
 for f in id-two id-plugin id-pq id-text id-badsum; do
-  ! bash ../agent-setup.sh --fingerprint "$S/$f.txt" 2>&1 | grep -q "AGE-SECRET\|just some text" || fail "a refusal for $f printed the file's contents"
+  bash ../agent-setup.sh --fingerprint "$S/$f.txt" >"$S/o" 2>&1 || true
+  [ -s "$S/o" ] || fail "the refusal for $f printed nothing"
+  ! grep -q "AGE-SECRET\|just some text" "$S/o" || fail "a refusal for $f printed the file's contents"
 done
 # age-keygen missing: the words of consume.py's age-not-found, naming the PATH,
 # and no key directory is made for first setup.
@@ -1469,6 +1473,8 @@ new_rcpt=$("$AGE_KEYGEN" -y "$KEY")
 [ -f "$KEY" ] && [ ! -L "$KEY" ] && [ -f "$KEY.previous" ] && [ ! -L "$KEY.previous" ] || fail "the rotated keys are not regular files"
 [ "$(stat -c %a "$KEY")" = 600 ] && [ "$(stat -c %a "$KEY.previous")" = 600 ] || fail "--rotate left a key that is not mode 600"
 [ "$new_rcpt" != "$old_rcpt" ] || fail "--rotate kept the old key as the current one"
+! compgen -G "$R/.handoff-*" >/dev/null || fail "--rotate left a temporary file or directory"
+! compgen -G "$R/.handoff-*" >/dev/null || fail "--rotate left a temporary file or directory"
 [ "$("$AGE_KEYGEN" -y "$KEY.previous")" = "$old_rcpt" ] || fail "k.txt.previous is not the old key"
 [ "$(sed -n 's/^new recipient: //p' "$R/rot-out")" = "$new_rcpt" ] || fail "--rotate printed another recipient than the new key's: $(cat "$R/rot-out")"
 grep -qxF "$new_rcpt" "$R/rot-out" || fail "--rotate printed no bare recipient line to save"
@@ -2106,7 +2112,7 @@ expect_refusal "--rotate whose key generation fails" 1 "key generation failed; t
   rk env PATH="$S/nogen:/usr/bin:/bin" bash ../agent-setup.sh --rotate
 grep -qF "simulated failure" "$S/err" || fail "a failed key generation hid age-keygen's reason"
 [ "$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$before" ] || fail "a failed --rotate changed the current key"
-! compgen -G "$R/.handoff-new*" >/dev/null || fail "a failed --rotate left a temporary key file"
+! compgen -G "$R/.handoff-new*" >/dev/null && ! compgen -G "$R/.handoff-tmp*" >/dev/null || fail "a failed --rotate left a temporary key file"
 # It did keep the old key as the previous one: a re-run resumes from there.
 [ "$KEY.previous" -ef "$KEY" ] || fail "a failed --rotate didn't leave the resumable state"
 rm "$KEY.previous"
@@ -2121,14 +2127,14 @@ before=$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)
 expect_refusal "--rotate whose age-keygen writes a short file" 1 "the new key didn't check out" \
   rk env PATH="$S/shortgen:/usr/bin:/bin" bash ../agent-setup.sh --rotate
 [ "$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$before" ] || fail "a short key write replaced the current key"
-! compgen -G "$R/.handoff-new*" >/dev/null || fail "a short key write left a temporary key file"
+! compgen -G "$R/.handoff-new*" >/dev/null && ! compgen -G "$R/.handoff-tmp*" >/dev/null || fail "a short key write left a temporary key file"
 cur_blob=$(enc_to "$("$AGE_KEYGEN" -y "$KEY")" '{"svc":"example","password":"mk-Zq9-cur"}')
 rk python3 ../consume.py --label example --check --blob "$cur_blob" >/dev/null || fail "the current key stopped working after a short key write"
 rm "$KEY.previous"
 expect_refusal "first setup whose age-keygen writes a short file" 1 "nothing was written" \
   env PATH="$S/shortgen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/short-setup" bash ../agent-setup.sh
 [ ! -e "$S/short-setup/handoff-identity.txt" ] || fail "first setup left a short key file at the key path"
-! compgen -G "$S/short-setup/.handoff-setup.*" >/dev/null || fail "first setup left a temporary key file"
+! compgen -G "$S/short-setup/.handoff-setup.*" >/dev/null && ! compgen -G "$S/short-setup/.handoff-tmp.*" >/dev/null || fail "first setup left a temporary key file"
 # An age-keygen -y that fails is "cannot load", whatever the file holds.
 fake_keygen "$S/noy" 'for a; do [ "$a" = -y ] && exit 1; done'
 expect_refusal "--fingerprint whose age-keygen -y fails" 1 "cannot load the age identity at $KEY" \
@@ -2220,7 +2226,7 @@ mkdir -p "$R/dash2/-d"; cp "$TMPKEY" "$R/dash2/-d/k.txt"
   || fail "a key directory starting with - failed"
 [ -f "$R/dash2/-g/handoff-identity.txt" ] || fail "first setup in a directory starting with - wrote no key"
 # First setup never replaces a key that appears while it generates.
-fake_keygen "$S/racegen" 'prev=; for a; do [ "$prev" = -o ] && printf existing > "$(dirname "$a")/handoff-identity.txt"; prev=$a; done'
+fake_keygen "$S/racegen" 'prev=; for a; do [ "$prev" = -o ] && printf existing > "$(dirname "$(dirname "$a")")/handoff-identity.txt"; prev=$a; done'
 expect_refusal "first setup when a key appears meanwhile" 1 "could not link the new key into place" \
   env PATH="$S/racegen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/race-setup" bash ../agent-setup.sh
 [ "$(cat "$S/race-setup/handoff-identity.txt")" = existing ] || fail "first setup replaced a key that appeared meanwhile"
@@ -2257,7 +2263,7 @@ grep -qF "interrupted; run --rotate again to finish" "$S/term-rot-err" || fail "
 rm -f "$KEY.previous"
 # A key path that turns into a directory during generation: ln would put the
 # key inside it. Refused, with no copy left behind.
-fake_keygen "$S/dirgen" 'prev=; for a; do [ "$prev" = -o ] && mkdir "$(dirname "$a")/handoff-identity.txt"; prev=$a; done'
+fake_keygen "$S/dirgen" 'prev=; for a; do [ "$prev" = -o ] && mkdir "$(dirname "$(dirname "$a")")/handoff-identity.txt"; prev=$a; done'
 expect_refusal "first setup when the key path becomes a directory" 1 "it is now a directory" \
   env PATH="$S/dirgen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/dir-setup" bash ../agent-setup.sh
 if compgen -G "$S/dir-setup/handoff-identity.txt/*" >/dev/null || compgen -G "$S/dir-setup/handoff-identity.txt/.handoff-*" >/dev/null; then
@@ -2295,6 +2301,14 @@ mkdir -p "$S/dr"; cp "$TMPKEY" "$S/dr/k.txt"
 expect_refusal "--rotate when the key path becomes a directory" 1 "is now a directory; the new key was removed" \
   env HANDOFF_PRIVKEY="$S/dr/k.txt" PATH="$S/dirrot:/usr/bin:/bin" bash ../agent-setup.sh --rotate
 ! compgen -G "$S/dr/k.txt/.handoff-*" >/dev/null || fail "a new key was left inside the directory at the key path"
+! compgen -G "$S/dr/.handoff-tmp.*" >/dev/null || fail "a refused --rotate left its private temporary directory"
+# The same with a relative KEY starting with "-": rm, mv and ln must read it as a path.
+fake_keygen "$S/dirrot2" 'prev=; for a; do [ "$prev" = -o ] && { rm -f -- -k.txt && mkdir -- -k.txt; }; prev=$a; done'
+mkdir -p "$S/dr2"; cp "$TMPKEY" "$S/dr2/-k.txt"
+(cd "$S/dr2" && expect_refusal "--rotate when a key path starting with - becomes a directory" 1 "is now a directory; the new key was removed" \
+  env -u HANDOFF_PRIVKEY PATH="$S/dirrot2:/usr/bin:/bin" bash "$OLDPWD/../agent-setup.sh" --rotate -k.txt)
+! compgen -G "$S/dr2/-k.txt/*" >/dev/null && ! compgen -G "$S/dr2/-k.txt/.handoff-*" >/dev/null || fail "a new key was left inside the directory at a key path starting with -"
+! compgen -G "$S/dr2/.handoff-tmp.*" >/dev/null || fail "the dash-path run left its private temporary directory"
 [ -f "$S/dr/k.txt.previous" ] || fail "the old key wasn't kept as .previous"
 # A key file named like a temporary key isn't swept by its own --rotate,
 # however its path is spelled (relative, or with a doubled slash).

@@ -49,6 +49,7 @@ unset CDPATH
 # This run's temporary key and lock (cleanup removes them, except after a
 # SIGKILL; the next run removes a key left behind): never inherited.
 new=""
+newd=""
 lock=""
 # --retire's confirmation: set only by --yes on the command line.
 yes=""
@@ -91,7 +92,7 @@ expand_home() {  # PATH WHAT
 # The PATH age-keygen is looked for on, in the words of consume.py's
 # age_missing (long ones cut at 300 characters).
 path_was() {
-  local p=$PATH
+  local p=${PATH-}
   [ "${#p}" -le 300 ] || p="${p:0:300}..."
   printf "(PATH was '%s')" "$p"
 }
@@ -108,7 +109,7 @@ need_age() {
 # age-keygen with an environment of PATH only: none of the variables age reads
 # (AGE_PASSPHRASE and the rest, AGEDEBUG) may reach it. stdin passes through.
 age_keygen() {
-  env -i PATH="$PATH" age-keygen "$@"
+  env -i PATH="${PATH-}" age-keygen "$@"
 }
 
 # env's exit status for a command it found but couldn't run (126) or couldn't
@@ -289,6 +290,7 @@ lock_dir() {  # DIR
 # empty at the top of the script, so a caller's environment can't name them.
 cleanup() {
   [ -z "${new-}" ] || rm -f -- "$new"
+  [ -z "${newd-}" ] || rm -rf -- "$newd"
   [ -z "${lock-}" ] || rmdir -- "$lock" 2>/dev/null || true
 }
 
@@ -412,6 +414,13 @@ case "$mode" in
       rm -f -- "$f"
       echo "note: removed a temporary key a killed --rotate left behind: $f" >&2
     done
+    for f in "$dir"/.handoff-tmp.*; do
+      # The private directory of a killed --rotate or setup (the lock says
+      # none is running).
+      [ -d "$f" ] && [ ! -L "$f" ] || continue
+      rm -rf -- "$f"
+      echo "note: removed a temporary key directory a killed run left behind: $f" >&2
+    done
     if [ -e "$prev" ]; then
       [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
       prev_rcpt=$(recipient_of "$prev") || exit 1
@@ -429,10 +438,11 @@ case "$mode" in
     else
       ln -- "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $prev (the key directory needs hard links, SETUP.md step 1); nothing changed" >&2; exit 1; }
     fi
-    new=$(mktemp -- "$dir/.handoff-new.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
-    # mktemp made the name; age-keygen makes the file itself (and would not
-    # replace one), exclusively.
-    rm -f -- "$new"
+    # A private directory (mode 0700, beside KEY so the rename stays on one
+    # filesystem) holds the new key until it is checked: age-keygen makes the
+    # file in it, and no name is ever freed for someone else to plant a link on.
+    newd=$(mktemp -d -- "$dir/.handoff-tmp.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
+    new="$newd/${newd##*/}.key"
     make_identity "$new" \
       || { echo "key generation failed; the old key is unchanged, and $prev holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
     chmod -- 600 "$new"
@@ -443,7 +453,7 @@ case "$mode" in
     mv -f -- "$new" "$key"
     if [ -d "$key" ]; then
       # KEY became a directory meanwhile, and mv put the new key inside it.
-      rm -f "$key/${new##*/}"
+      rm -f -- "$key/${new##*/}"
       new=""
       echo "agent-setup.sh: $key is now a directory; the new key was removed, and the old key is $prev. Report it to the user." >&2
       exit 1
@@ -589,7 +599,7 @@ PRIV="$KEY_DIR/handoff-identity.txt"
 # the cause. Written to a temporary file and checked first (age-keygen can
 # exit 0 after a short write), then linked into place: ln never replaces a key
 # that appeared meanwhile, and a failed run leaves no file at $PRIV.
-trap 'rm -f -- "$new"' EXIT
+trap cleanup EXIT
 # A TERM, HUP or INT ends the run through the EXIT trap, after the running
 # age-keygen exits: without these, bash would die at once and the EXIT trap
 # would run before age-keygen wrote its file, leaving a private key behind.
@@ -600,9 +610,14 @@ for f in "$KEY_DIR"/.handoff-setup.*; do
   rm -f -- "$f"
   echo "note: removed a temporary key a killed (or concurrent) setup left behind: $f" >&2
 done
-new=$(mktemp -- "$KEY_DIR/.handoff-setup.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
-# mktemp made the name; age-keygen makes the file itself, exclusively.
-rm -f -- "$new"
+for f in "$KEY_DIR"/.handoff-tmp.*; do
+  [ -d "$f" ] && [ ! -L "$f" ] || continue
+  rm -rf -- "$f"
+  echo "note: removed a temporary key directory a killed (or concurrent) setup left behind: $f" >&2
+done
+# A private directory holds the new key until it is checked (see --rotate).
+newd=$(mktemp -d -- "$KEY_DIR/.handoff-tmp.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
+new="$newd/${newd##*/}.key"
 make_identity "$new" || { echo "key generation failed" >&2; exit 1; }
 chmod -- 600 "$new"
 RCPT=$(recipient_of "$new" 2>/dev/null) \
