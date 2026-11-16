@@ -45,13 +45,37 @@ param(
 
 begin {
   # A caller's Set-PSDebug -Trace 2 would print every assignment, the secret
-  # included (handoff.sh's set +x). This turns the caller's tracing off.
+  # included (handoff.sh's set +x). Set-PSDebug is session-wide: this turns
+  # the caller's tracing off for the rest of that PowerShell session too.
   Set-PSDebug -Off
   Set-StrictMode -Version 2
   $ErrorActionPreference = 'Stop'
+
+  # Every error this run records lands in the caller's $Error, where an error
+  # text could keep a fragment of the input. The newest entry before the run
+  # is noted; every exit (Exit-Handoff) removes what was added in front of it.
+  # (By reference, not by count: a full $Error drops its oldest entries.)
+  $ErrTop = $null
+  if ($global:Error.Count -gt 0) { $ErrTop = $global:Error[0] }
+  function Exit-Handoff([int]$code) {
+    try {
+      $e = $global:Error
+      $guard = 0
+      while ($e.Count -gt 0 -and -not [object]::ReferenceEquals($e[0], $ErrTop) -and $guard -lt 100000) { $e.RemoveAt(0); $guard++ }
+    } catch { }
+    exit $code
+  }
   # An error nobody planned for gets a fixed message: PowerShell's own error
   # text can quote the input.
-  trap { [Console]::Error.WriteLine("handoff.ps1: unexpected error ($($_.Exception.GetType().Name)), aborting"); exit 1 }
+  trap { [Console]::Error.WriteLine("handoff.ps1: unexpected error ($($_.Exception.GetType().Name)), aborting"); Exit-Handoff 1 }
+
+  # Windows PowerShell 5.1 and PowerShell 7 are the two this is tested on.
+  $ver = $PSVersionTable.PSVersion
+  if ($ver.Major -lt 5 -or ($ver.Major -eq 5 -and $ver.Minor -lt 1) -or $ver.Major -eq 6) {
+    [Console]::Error.WriteLine("handoff.ps1: needs Windows PowerShell 5.1 or PowerShell 7 (this is $ver)")
+    Exit-Handoff 1
+  }
+  $Desktop = $PSVersionTable.PSEdition -eq 'Desktop'
 
   $OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 
@@ -84,12 +108,12 @@ folder.
 stdout is ONLY the base64 ciphertext; all prompts go to stderr.
 "@)
   }
-  function Stop-Usage([string]$m) { [Console]::Error.WriteLine("handoff.ps1: $m"); Write-Usage; exit 2 }
-  function Stop-Run([string]$m) { [Console]::Error.WriteLine("handoff.ps1: $m"); exit 1 }
+  function Stop-Usage([string]$m) { [Console]::Error.WriteLine("handoff.ps1: $m"); Write-Usage; Exit-Handoff 2 }
+  function Stop-Run([string]$m) { [Console]::Error.WriteLine("handoff.ps1: $m"); Exit-Handoff 1 }
   function Format-Name([string]$s) { "'" + $s.Replace("'", "''") + "'" }
 
   # --- arguments ----------------------------------------------------------
-  if ($Help) { Write-Usage; exit 0 }
+  if ($Help) { Write-Usage; Exit-Handoff 0 }
   $fileGiven = $PSBoundParameters.ContainsKey('File')
   foreach ($x in @($Rest)) {
     if ($null -eq $x) { continue }
@@ -134,7 +158,27 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     if ($OnWindows -and $env:SystemRoot) { $psi.EnvironmentVariables['SystemRoot'] = $env:SystemRoot }
     $p = New-Object System.Diagnostics.Process
     $p.StartInfo = $psi
-    try { [void]$p.Start() } catch { return $null }
+    # On .NET Framework (5.1), Start() wraps stdin in a writer in
+    # Console.InputEncoding, and with code page 65001 that writer puts a UTF-8
+    # byte-order mark in front of the bytes written below: age would encrypt
+    # EF BB BF {...}, which the consume side can't parse. So around Start(),
+    # an input encoding without a preamble, then the caller's back. (Setting it
+    # can throw where there's no console: then there's no preamble to fear
+    # from a console, and nothing is changed.)
+    $savedIn = $null
+    if ($Desktop) {
+      try {
+        if ([Console]::InputEncoding.GetPreamble().Length -gt 0) {
+          $savedIn = [Console]::InputEncoding
+          [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false
+        }
+      } catch { $savedIn = $null }
+    }
+    $started = $false
+    try { [void]$p.Start(); $started = $true } catch { } finally {
+      if ($null -ne $savedIn) { try { [Console]::InputEncoding = $savedIn } catch { } }
+    }
+    if (-not $started) { $p.Dispose(); return $null }
     try {
       $out = New-Object System.IO.MemoryStream
       # stdout and stderr are read while stdin is written, so no pipe fills.
@@ -266,19 +310,19 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
   if ($Fingerprint) {
     [Console]::Error.WriteLine("key file: $keyfile")
     Write-Output "recipient: $RECIPIENT"
-    exit 0
+    Exit-Handoff 0
   }
 
   $piped = New-Object System.Collections.Generic.List[string]
 }
 
 process {
-  trap { [Console]::Error.WriteLine("handoff.ps1: unexpected error ($($_.Exception.GetType().Name)), aborting"); exit 1 }
+  trap { [Console]::Error.WriteLine("handoff.ps1: unexpected error ($($_.Exception.GetType().Name)), aborting"); Exit-Handoff 1 }
   if ($PSBoundParameters.ContainsKey('InputObject') -and $null -ne $InputObject) { $piped.Add($InputObject) }
 }
 
 end {
-  trap { [Console]::Error.WriteLine("handoff.ps1: unexpected error ($($_.Exception.GetType().Name)), aborting"); exit 1 }
+  trap { [Console]::Error.WriteLine("handoff.ps1: unexpected error ($($_.Exception.GetType().Name)), aborting"); Exit-Handoff 1 }
   $jsonMsg = 'input must be a single JSON object with a string "svc" and string values only, aborting'
   $strict = New-Object System.Text.UTF8Encoding $false, $true
 
@@ -347,36 +391,73 @@ end {
   # Exactly one JSON value, an object, carrying a non-empty string "svc" and
   # only string values (handoff.sh's jq filter): a payload that fails the
   # consume side's binding or shape checks should fail here, early, where the
-  # human can see why. PowerShell 6 and later parse with System.Text.Json,
-  # which keeps every string a string (7's ConvertFrom-Json turns an
-  # ISO-date-like string into a DateTime) and refuses trailing text; 5.1 uses
-  # ConvertFrom-Json. The first character rules out an array, which
-  # ConvertFrom-Json would unwrap.
+  # human can see why.
+  #
+  # One hand-written check, the same on 5.1 and 7, and no cmdlet ever gets the
+  # plaintext: 5.1's Module Logging records cmdlet parameters in the event log,
+  # and ConvertFrom-Json differs by edition (5.1 takes single quotes and turns
+  # "\/Date(0)\/" into a date, and refuses keys that differ only in case; 7
+  # turns ISO-date-like strings into dates). RFC 8259, strictly: whitespace is
+  # space, tab, CR and LF; strings in double quotes, with no control
+  # characters and only the standard escapes; surrogates only in pairs. As in
+  # jq, a repeated "svc" counts the last one, and keys that differ only in case
+  # are different keys. It only checks: age gets the input's own bytes.
   function Test-Payload([string]$s) {
-    if (-not $s.TrimStart(" `t`r`n".ToCharArray()).StartsWith('{')) { return $false }
-    if ($PSVersionTable.PSVersion.Major -ge 6) {
-      $doc = $null
-      try { $doc = [System.Text.Json.JsonDocument]::Parse($s, (New-Object System.Text.Json.JsonDocumentOptions)) } catch { return $false }
-      try {
-        $root = $doc.RootElement
-        if ($root.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) { return $false }
-        $svc = $null
-        foreach ($prop in $root.EnumerateObject()) {
-          if ($prop.Value.ValueKind -ne [System.Text.Json.JsonValueKind]::String) { return $false }
-          if ($prop.Name -ceq 'svc') { $svc = $prop.Value.GetString() }
-        }
-        return ($null -ne $svc -and $svc.Length -gt 0)
-      } finally { $doc.Dispose() }
+    $ws = New-Object System.Text.RegularExpressions.Regex '\G[ \t\r\n]*'
+    # A string token. Atomic, so a long string that fails can't backtrack.
+    $str = New-Object System.Text.RegularExpressions.Regex '\G"(?>(?:[^"\\\x00-\x1F]+|\\["\\/bfnrt]|\\u[0-9A-Fa-f]{4})*)"'
+    $esc = New-Object System.Text.RegularExpressions.Regex '\\(?:u([0-9A-Fa-f]{4})|(.))'
+    # Half a surrogate pair, written raw or as \uXXXX.
+    $lone = New-Object System.Text.RegularExpressions.Regex '[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]'
+    # A token's text, escapes decoded; $null if it holds a lone surrogate.
+    function Get-TokenText([string]$t) {
+      $body = $t.Substring(1, $t.Length - 2)
+      if ($body.IndexOf([char]0x5C) -ge 0) {
+        $body = $esc.Replace($body, [System.Text.RegularExpressions.MatchEvaluator] {
+          param($m)
+          if ($m.Groups[1].Success) { return [string][char][Convert]::ToInt32($m.Groups[1].Value, 16) }
+          switch -CaseSensitive ($m.Groups[2].Value) {
+            'b' { return [string][char]8 }
+            'f' { return [string][char]12 }
+            'n' { return "`n" }
+            'r' { return "`r" }
+            't' { return "`t" }
+            default { return $m.Groups[2].Value }   # " \ /
+          }
+        })
+      }
+      if ($lone.IsMatch($body)) { return $null }
+      return $body
     }
-    $o = $null
-    try { $o = ConvertFrom-Json -InputObject $s } catch { return $false }
-    if ($o -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+    $n = $s.Length
+    $i = $ws.Match($s, 0).Length
+    if ($i -ge $n -or $s[$i] -cne '{') { return $false }
+    $i = $i + 1
+    $i = $i + $ws.Match($s, $i).Length
     $svc = $null
-    foreach ($prop in $o.PSObject.Properties) {
-      if ($prop.Value -isnot [string]) { return $false }
-      if ($prop.Name -ceq 'svc') { $svc = $prop.Value }
+    while ($true) {
+      $k = $str.Match($s, $i)
+      if (-not $k.Success) { return $false }   # also {} and a trailing comma
+      $i = $i + $k.Length
+      $i = $i + $ws.Match($s, $i).Length
+      if ($i -ge $n -or $s[$i] -cne ':') { return $false }
+      $i = $i + 1
+      $i = $i + $ws.Match($s, $i).Length
+      $v = $str.Match($s, $i)
+      if (-not $v.Success) { return $false }   # any value that isn't a string
+      $i = $i + $v.Length
+      $key = Get-TokenText $k.Value
+      $val = Get-TokenText $v.Value
+      if ($null -eq $key -or $null -eq $val) { return $false }
+      if ($key -ceq 'svc') { $svc = $val }
+      $i = $i + $ws.Match($s, $i).Length
+      if ($i -ge $n) { return $false }
+      if ($s[$i] -ceq ',') { $i = $i + 1; $i = $i + $ws.Match($s, $i).Length; continue }
+      if ($s[$i] -ceq '}') { $i = $i + 1; break }
+      return $false
     }
-    return ($null -ne $svc -and $svc.Length -gt 0)
+    $i = $i + $ws.Match($s, $i).Length
+    return ($i -eq $n -and $null -ne $svc -and $svc.Length -gt 0)   # nothing after the object
   }
   if (-not (Test-Payload $secret)) { Stop-Run $jsonMsg }
 
@@ -390,7 +471,7 @@ end {
     [Console]::Error.WriteLine("handoff.ps1: payload is $n bytes; the most handoff.ps1 sends is $MAX_PAYLOAD bytes.")
     [Console]::Error.WriteLine('Shorten the JSON. (Larger payloads need a larger limit on both sides;')
     [Console]::Error.WriteLine('see README.md.)')
-    exit 1
+    Exit-Handoff 1
   }
 
   # --- encrypt (no plaintext ever touches disk) -------------------------
@@ -404,5 +485,5 @@ end {
   [Console]::Error.WriteLine("--- paste everything below into chat with $To (recipient file $keyfile) ---")
   Write-Output $blob
   [Console]::Error.WriteLine('--- end ---')
-  exit 0
+  Exit-Handoff 0
 }

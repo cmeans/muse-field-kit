@@ -1411,6 +1411,29 @@ print(os.environ["SERVICE_PASSWORD"])
   fi
   rm -f "$ut/handoff-$c_to.age"
 done
+# The payload shapes, one table shared with run-test.ps1 (payload-cases.json):
+# {name, payload, exit, stderr_contains}, the payload on stdin. The lone
+# surrogate cases are run-test.ps1's alone: handoff.ps1 refuses both halves,
+# where jq refuses a lone \ud800 but (1.8) accepts a lone \udc00.
+npc=$(jq length payload-cases.json)
+[ "$npc" -gt 0 ] || fail "payload-cases.json is empty"
+for i in $(seq 0 $(( npc - 1 ))); do
+  [ "$(jq -r ".[$i] | keys | join(\",\")" payload-cases.json)" = "exit,name,payload,stderr_contains" ] \
+    || fail "payload-cases.json: case $i has the wrong keys"
+  c_name=$(jq -r ".[$i].name" payload-cases.json)
+  c_exit=$(jq -r ".[$i].exit" payload-cases.json)
+  c_msg=$(jq -r ".[$i].stderr_contains" payload-cases.json)
+  jq -j ".[$i].payload" payload-cases.json >"$S/pc-in"
+  if [ "$c_exit" = 0 ]; then
+    bash "$S/hd/handoff.sh" <"$S/pc-in" >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "payload case $c_name: refused"; }
+    grep -qF -- "$c_msg" "$S/err" || fail "payload case $c_name: stderr lacks \"$c_msg\""
+    [ "$(wc -l <"$S/out")" = 1 ] || fail "payload case $c_name: stdout is not one line"
+    no_dummy_in "$S/out" "$S/err"
+    echo "ok (accepted: payload $c_name)"
+  else
+    expect_refusal "payload case $c_name" "$c_exit" "$c_msg" bash "$S/hd/handoff.sh" <"$S/pc-in"
+  fi
+done
 # The tools, refused before any prompt. jq: absent, then too old, then 1.6 (the
 # floor, accepted). age: absent. Each runs under a pseudo-terminal when script(1)
 # is there, where a prompt would show; the refusal must come first.

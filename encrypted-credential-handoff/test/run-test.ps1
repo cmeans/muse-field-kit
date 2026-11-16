@@ -11,7 +11,8 @@
 # It checks:
 #   - handoff.ps1's constants and recipient rule against handoff.sh (its twin);
 #   - every recipient-file case in user-side-cases.json, the table run-test.sh
-#     section 5b reads too (exit code, stderr text, nothing on stdout);
+#     section 5b reads too (exit code, stderr text, nothing on stdout), and
+#     every payload case in payload-cases.json (shared the same way);
 #   - the cases that aren't a file's contents: -To NAME rules, arguments, the
 #     near-miss allow-list, links and directories, the payload checks and cap,
 #     -File and pipeline input, a missing or failing age, age's environment;
@@ -410,27 +411,48 @@ foreach ($c in $cases) {
 Say '== 5b-ps. the payload: checks, cap, -File and pipeline input =='
 Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $K 'handoff-muse.age')
 $jsonMsg = 'input must be a single JSON object with a string "svc" and string values only, aborting'
-$i = 0
-foreach ($c in @(@('empty', '', 'empty, aborting'),
-                 @('blanks only', "  `n`t `n", 'empty, aborting'),
-                 @('not JSON', 'mk-Zq9 not json', $jsonMsg),
-                 @('an array', '[{"svc":"example","password":"mk-Zq9"}]', $jsonMsg),
-                 @('two objects', '{"svc":"example","password":"mk-Zq9"}{"svc":"example"}', $jsonMsg),
-                 @('two objects, a space between', '{"svc":"example","password":"mk-Zq9"} {"svc":"example"}', $jsonMsg),
-                 @('trailing text', '{"svc":"example","password":"mk-Zq9"} x', $jsonMsg),
-                 @('no svc', '{"password":"mk-Zq9"}', $jsonMsg),
-                 @('an empty svc', '{"svc":"","password":"mk-Zq9"}', $jsonMsg),
-                 @('a number svc', '{"svc":5,"password":"mk-Zq9"}', $jsonMsg),
-                 @('a number value', '{"svc":"example","password":5}', $jsonMsg),
-                 @('a null value', '{"svc":"example","password":null}', $jsonMsg),
-                 @('an object value', '{"svc":"example","password":{"v":"mk-Zq9"}}', $jsonMsg),
-                 @('a bare string', '"mk-Zq9"', $jsonMsg))) {
-  $i++
-  $f = Join-Path $S "bad-$i.json"
-  [IO.File]::WriteAllText($f, $c[1], $Utf8)
-  Assert-Refusal "payload $($c[0])" 1 $c[2] (Invoke-Handoff -Script $hk -Pipe $f)
-  Assert-Refusal "payload $($c[0]) (-File)" 1 $c[2] (Invoke-Handoff -Script $hk -ArgText "-File $(Q $f)")
+# The payload shapes, one table shared with run-test.sh (payload-cases.json):
+# {name, payload, exit, stderr_contains}. Each runs piped in and with -File;
+# an accepted one's blob goes to interop, to open to the same bytes.
+$pcases = @(ConvertFrom-Json -InputObject ([IO.File]::ReadAllText((Join-Path $Here 'payload-cases.json'))))
+if ($pcases.Count -eq 1 -and $pcases[0] -is [array]) { $pcases = @($pcases[0]) }
+Assert-True ($pcases.Count -gt 0) 'payload-cases.json is empty'
+foreach ($c in $pcases) {
+  $keys = (@($c.PSObject.Properties | ForEach-Object { $_.Name }) | Sort-Object) -join ','
+  Assert-True ($keys -eq 'exit,name,payload,stderr_contains') "payload-cases.json: case $($c.name) has the wrong keys ($keys)"
+  $f = Join-Path $S "pc-$($c.name).json"
+  [IO.File]::WriteAllText($f, $c.payload, $Utf8)
+  if ([int]$c.exit -eq 0) {
+    $r = Invoke-Handoff -Script $hk -Pipe $f
+    $blob = Assert-Blob "payload $($c.name)" $r
+    Assert-True ($r.Err.Contains($c.stderr_contains)) "payload $($c.name): stderr lacks `"$($c.stderr_contains)`""
+    [void](Assert-Blob "payload $($c.name) (-File)" (Invoke-Handoff -Script $hk -ArgText "-File $(Q $f)"))
+    Save-Interop "payload-$($c.name)" $blob $c.payload $Utf8.GetBytes($c.payload.TrimEnd("`r", "`n"))
+    Say "ok (accepted: payload $($c.name))"
+  } else {
+    Assert-Refusal "payload $($c.name)" ([int]$c.exit) $c.stderr_contains (Invoke-Handoff -Script $hk -Pipe $f)
+    Assert-Refusal "payload $($c.name) (-File)" ([int]$c.exit) $c.stderr_contains (Invoke-Handoff -Script $hk -ArgText "-File $(Q $f)")
+  }
 }
+# Lone surrogates, either half, escaped or raw: refused with the JSON message
+# (handoff.ps1's alone; jq differs, see run-test.sh). Built from [char] codes.
+$bs = [string][char]0x5C
+$i = 0
+foreach ($c in @(@('a lone high surrogate in svc', ('{"svc":"' + $bs + 'ud800"}')),
+                 @('a lone high surrogate', ('{"svc":"example","password":"mk-Zq9' + $bs + 'ud800"}')),
+                 @('a lone low surrogate', ('{"svc":"example","password":"' + $bs + 'udc00mk-Zq9"}')),
+                 @('a high surrogate before a non-surrogate', ('{"svc":"example","password":"mk-Zq9' + $bs + 'ud800' + $bs + 'u0041"}')),
+                 @('two high surrogates', ('{"svc":"example","password":"mk-Zq9' + $bs + 'ud800' + $bs + 'ud800"}')))) {
+  $i++
+  $f = Join-Path $S "lone-$i.json"
+  [IO.File]::WriteAllText($f, $c[1], $Utf8)
+  Assert-Refusal "payload: $($c[0])" 1 $jsonMsg (Invoke-Handoff -Script $hk -Pipe $f)
+}
+Assert-Refusal 'payload: a raw lone surrogate in a piped string' 1 $jsonMsg (Invoke-Handoff -Call "('{`"svc`":`"example`",`"password`":`"mk-Zq9' + [char]0xD800 + '`"}') | & $(Q $hk)")
+# An unpaired escape in a key is refused too.
+$f = Join-Path $S 'lone-key.json'
+[IO.File]::WriteAllText($f, ('{"svc":"example","' + $bs + 'udfff":"mk-Zq9"}'), $Utf8)
+Assert-Refusal 'payload: a lone surrogate in a key' 1 $jsonMsg (Invoke-Handoff -Script $hk -Pipe $f)
 # Nothing piped and nothing on stdin: empty.
 Assert-Refusal 'an empty pipeline' 1 'empty, aborting' (Invoke-Handoff -Call "@() | & $(Q $hk)")
 Assert-Refusal 'no input at all' 1 'empty, aborting' (Invoke-Handoff -Script $hk)
@@ -438,13 +460,30 @@ Assert-Refusal '-File that is not there' 1 'cannot read' (Invoke-Handoff -Script
 Assert-Refusal '-File with an empty path' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File ''")
 Assert-Refusal '-File that is a folder' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $S)")
 
-# Values that ConvertFrom-Json would turn into something else stay strings.
-$f = Join-Path $S 'date.json'
-[IO.File]::WriteAllText($f, '{"svc":"example","password":"2024-01-01T00:00:00mk-Zq9","username":"2024-01-01T00:00:00Z"}', $Utf8)
-[void](Assert-Blob 'an ISO-date-like value' (Invoke-Handoff -Script $hk -Pipe $f))
-$f = Join-Path $S 'dup.json'
-[IO.File]::WriteAllText($f, '{"svc":"example","password":"mk-Zq9","Password":"mk-Zq9-2"}', $Utf8)
-[void](Assert-Blob 'keys that differ only in case' (Invoke-Handoff -Script $hk -Pipe $f))
+# Run in the caller's own session (& .\handoff.ps1 in-process), handoff.ps1
+# leaves the caller's $Error as it found it: nothing a run records (an input
+# fragment in an error text, say) stays behind, on any exit path.
+$notJson = Join-Path $S 'pc-notjson.json'
+foreach ($c in @(@('not JSON', $notJson, '', 1),
+                 @('a payload that opens', $PayFile, '', 0),
+                 @('no recipient file', $PayFile, '-To nobody', 1),
+                 @('a usage error', $PayFile, "-To $(Q '../x')", 2),
+                 @('-Fingerprint', '', '-Fingerprint', 0))) {
+  $call = "& $(Q $hk) $($c[2])"
+  if ($c[1]) { $call = "[IO.File]::ReadAllText($(Q $c[1]), [Text.Encoding]::UTF8) | $call" }
+  $text = "try { throw 'handoff-test: an earlier error' } catch { }`n" +
+          "  `$top = `$global:Error[0]; `$before = `$global:Error.Count`n" +
+          "  $call`n" +
+          "  `$code = `$LASTEXITCODE`n" +
+          "  `$hit = @(`$global:Error | Where-Object { (`$_ | Out-String) -match 'mk-Zq9' }).Count`n" +
+          "  [Console]::Error.WriteLine(`"ERRS same-top=`$([object]::ReferenceEquals(`$global:Error[0], `$top)) before=`$before after=`$(`$global:Error.Count) hit=`$hit`")`n" +
+          "  exit `$code"
+  $r = Invoke-Handoff -Call $text
+  Assert-True ($r.Exit -eq $c[3]) "`$Error, $($c[0]): exit $($r.Exit), expected $($c[3]): $($r.Err)"
+  Assert-True ($r.Err -match 'ERRS same-top=True before=(\d+) after=\1 hit=0') "`$Error, $($c[0]): the caller's `$Error changed: $(($r.Err -split "`r?`n" | Where-Object { $_ -like 'ERRS*' }) -join ' ')"
+  No-Dummy "`$Error, $($c[0])" @($r.Out, $r.Err)
+}
+Say 'ok (the caller''s $Error is left as it was)'
 Say 'ok (payload shape)'
 
 # The cap: MAX_PAYLOAD bytes works, one more byte is refused, counted in
@@ -525,6 +564,24 @@ if ($r.Exit -ne 0 -and $r.Err.Contains($jsonMsg)) {
 $blob = Assert-Blob 'a private_key payload, as the docs build it' $r
 Save-Interop 'private-key' $blob $pkExpect $null
 Say 'ok'
+
+# Windows PowerShell 5.1 with a console input encoding that has a preamble
+# (UTF-8 with a BOM, code page 65001): .NET Framework would write that BOM
+# into age's stdin ahead of the payload. The blob must open to the payload's
+# bytes exactly (interop), and the caller's input encoding is put back.
+$enc51 = 'Windows PowerShell 5.1 with a UTF-8 (BOM) console input encoding: no byte-order mark reaches age'
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+  $r = Invoke-Handoff -Call ("[Console]::InputEncoding = New-Object System.Text.UTF8Encoding `$true`n" +
+    "  if ([Console]::InputEncoding.GetPreamble().Length -eq 0) { throw 'test setup: the input encoding has no preamble' }`n" +
+    "  [IO.File]::ReadAllText($(Q $naFile), [Text.Encoding]::UTF8) | & $(Q $hk)`n" +
+    "  `$code = `$LASTEXITCODE`n" +
+    "  if ([Console]::InputEncoding.GetPreamble().Length -eq 0) { [Console]::Error.WriteLine('INPUT ENCODING NOT RESTORED') }`n" +
+    "  exit `$code")
+  $blob = Assert-Blob $enc51 $r
+  Assert-True (-not $r.Err.Contains('INPUT ENCODING NOT RESTORED')) 'handoff.ps1 did not put the caller''s input encoding back'
+  Save-Interop 'utf8-input-encoding' $blob $naJson $Utf8.GetBytes($naJson)
+  Say "ok ($enc51)"
+} else { NotHere $enc51 }
 
 # --- age: missing, failing, its environment ---------------------------------------
 Say '== 5b-age. age: missing, failing, and what it is given =='

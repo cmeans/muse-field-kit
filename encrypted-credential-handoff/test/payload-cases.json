@@ -1,0 +1,200 @@
+[
+ {
+  "name": "dateescape",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\/Date(0)\\/mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "isodate",
+  "payload": "{\"svc\":\"example\",\"password\":\"2024-01-01T00:00:00Z-mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "casekeys",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"Password\":\"mk-Zq9-2\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "svclastwins",
+  "payload": "{\"svc\":\"\",\"password\":\"mk-Zq9\",\"svc\":\"example\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "escapedkey",
+  "payload": "{\"\\u0073vc\":\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "surrogatepair",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\ud83d\\ude00mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "escapes",
+  "payload": "{\"svc\":\"example\",\"password\":\"a\\\"b\\\\c\\/d\\b\\f\\n\\r\\tmk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "whitespace",
+  "payload": " \t\r\n{ \"svc\" : \"example\" ,\r\n \"password\":\"mk-Zq9\" } \n",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "notjson",
+  "payload": "mk-Zq9 not json",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "toparray",
+  "payload": "[{\"svc\":\"example\",\"password\":\"mk-Zq9\"}]",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "barestring",
+  "payload": "\"mk-Zq9\"",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "twovalues",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\"}{\"svc\":\"example\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "twovaluesspace",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\"} {\"svc\":\"example\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "trailinggarbage",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\"} x",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "emptyobject",
+  "payload": "{}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "nosvc",
+  "payload": "{\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "emptysvc",
+  "payload": "{\"svc\":\"\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "svclastempty",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"svc\":\"\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "numbersvc",
+  "payload": "{\"svc\":5,\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "numbervalue",
+  "payload": "{\"svc\":\"example\",\"password\":5}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "nullvalue",
+  "payload": "{\"svc\":\"example\",\"password\":null}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "truevalue",
+  "payload": "{\"svc\":\"example\",\"password\":true}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "objectvalue",
+  "payload": "{\"svc\":\"example\",\"password\":{\"v\":\"mk-Zq9\"}}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "arrayvalue",
+  "payload": "{\"svc\":\"example\",\"password\":[\"mk-Zq9\"]}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "singlequoted",
+  "payload": "{'svc':'example','password':'mk-Zq9'}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "trailingcomma",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "badescape",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\\x\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "shortunicode",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\\u12\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "rawtab",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\tx\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "comment",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\" /* c */}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "unquotedkey",
+  "payload": "{svc:\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "empty",
+  "payload": "",
+  "exit": 1,
+  "stderr_contains": "empty, aborting"
+ },
+ {
+  "name": "blanks",
+  "payload": "  \n\t \n",
+  "exit": 1,
+  "stderr_contains": "empty, aborting"
+ }
+]
