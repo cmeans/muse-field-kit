@@ -236,5 +236,26 @@
   "to": "commentedsecret",
   "exit": 1,
   "stderr_contains": "delete this file now"
+ },
+ {
+  "name": "notepadcrlf",
+  "file_bytes_b64": "77u/DQoNCmFnZTFscTc3bGdnOXVxZnZlemVhem5oY2hnc3N4NTh5cTM0N3YyN3VyMnUzNDZjOXJ4OW05OTZxcGVyeGhzDQoNCg==",
+  "to": "notepadcrlf",
+  "exit": 0,
+  "stderr_contains": "recipient: age1lq77lgg9uqfvezeaznhchgssx58yq347v27ur2u346c9rx9m996qperxhs"
+ },
+ {
+  "name": "tabs",
+  "file_bytes_b64": "CWFnZTFscTc3bGdnOXVxZnZlemVhem5oY2hnc3N4NTh5cTM0N3YyN3VyMnUzNDZjOXJ4OW05OTZxcGVyeGhzCQ0K",
+  "to": "tabs",
+  "exit": 0,
+  "stderr_contains": "recipient: age1lq77lgg9uqfvezeaznhchgssx58yq347v27ur2u346c9rx9m996qperxhs"
+ },
+ {
+  "name": "nbsp",
+  "file_bytes_b64": "YWdlMWxxNzdsZ2c5dXFmdmV6ZWF6bmhjaGdzc3g1OHlxMzQ3djI3dXIydTM0NmM5cng5bTk5NnFwZXJ4aHPCoAo=",
+  "to": "nbsp",
+  "exit": 1,
+  "stderr_contains": "is not an age X25519 recipient"
  }
 ]
