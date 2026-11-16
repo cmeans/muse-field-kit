@@ -1,10 +1,12 @@
 # Changelog — encrypted-credential-handoff
 
-## 0.1.0 — 2026-11-13 — first publication
+## 0.1.0 — 2026-11-15 — first publication
 
 The folder's first public version. Nothing here has been released before, so this entry describes what ships, not a sequence of changes. (Renamed before publication from "blind-RSA credential handoff": "blind RSA" names a different, standardized technique.)
 
-Before its first commit, the folder had a structural review and a line-level script review, with findings reproduced. PR #1 and PR #7 (the rotation tooling) then went through a cold read and several QA review rounds, each with Dev's own pre-QA reviews. The PR body records each round's findings and what was fixed or declined. The reviewers were AI agent sessions in the author's setup, plus the author: peer review inside one shop, not a third-party audit.
+Before its first commit, the folder had a structural review and a line-level script review, with findings reproduced. PR #1 and PR #7 (the rotation tooling) then went through a cold read and several QA review rounds, each with Dev's own pre-QA reviews, and so did each pre-release PR after them (#12, #17, #20, #24, #29 and #34). Every one was also reviewed by Muse, the agent the folder is written for, and approved by the author before it merged. Each PR body records each round's findings and what was fixed or declined. The reviewers were AI agent sessions in the author's setup, plus the author: peer review inside one shop, not a third-party audit.
+
+Before publication, Muse also ran it live: the published `consume.py` and wrappers on two of its production labels, one complete routine rotation on them (rotate, rewrap, last pass and retire, 2026-11-14), and each store in README's "Choosing a store" end to end with a dummy blob (2026-11-14).
 
 ### Added
 
