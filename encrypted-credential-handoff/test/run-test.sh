@@ -943,8 +943,53 @@ fi
 
 if section 5a; then
 echo "== 5a. age header and identity refusals =="
-# Filled in by the tasks that move consume.py to age: the header allowlist
-# (vectors/*.txt) and the identity-file checks.
+# The header allowlist (vectors/*.txt), checked before `age` runs. The
+# identity-file checks join this section in a later task.
+M="age blob of a kind this helper doesn't open"
+for v in scrypt:"$M" plugin-stanza:"$M" pq-stanza:"$M" ssh-stanza:"$M" \
+         unknown-stanza:"$M" two-x25519:"needs exactly one X25519 recipient" \
+         grease-only:"needs exactly one X25519 recipient" \
+         armored-b64:"armored" armored-raw:"armored"; do
+  expect_refusal "vector ${v%%:*}" 1 "${v#*:}" \
+    consume --label test --check --blob-file vectors/"${v%%:*}".txt
+done
+# A 0.1.0-shaped blob (256 bytes of RSA ciphertext) is not an age blob.
+head -c 256 /dev/urandom | base64 | tr -d '\n' >"$S/blob-256.txt"
+expect_refusal "a 256-byte 0.1.0-shaped blob" 1 "not an age blob" \
+  consume --label test --check --blob-file "$S/blob-256.txt"
+expect_refusal "a 256-byte blob names the 0.1.0 change" 1 \
+  "0.2.0 uses age: a 0.1.0 install sets up again" \
+  consume --label test --check --blob-file "$S/blob-256.txt"
+: >"$S/blob-empty.txt"
+expect_refusal "an empty blob file" 1 "empty" \
+  consume --label test --check --blob-file "$S/blob-empty.txt"
+expect_refusal "an empty --blob" 1 "empty" \
+  consume --label test --check --blob ""
+head -c 70000 /dev/zero | tr '\0' 'A' >"$S/blob-big.txt"
+expect_refusal "a blob over the cap" 1 "over 65536 characters" \
+  consume --label test --check --blob-file "$S/blob-big.txt"
+expect_refusal "a blob over the cap (--blob)" 1 "over 65536 characters" \
+  consume --label test --check --blob "$(cat "$S/blob-big.txt")"
+# A header that never reaches its --- line.
+printf 'age-encryption.org/v1\n-> X25519 AAAA\nAAAA\n' | base64 | tr -d '\n' >"$S/blob-nomac.txt"
+expect_refusal "a header with no --- line" 1 "not an age blob" \
+  consume --label test --check --blob-file "$S/blob-nomac.txt"
+# A scrypt header must be refused without `age` ever starting: a stub `age`
+# first on PATH leaves a marker if it runs. (consume.py doesn't look `age`
+# up yet; the assertion bites from the task that wires age decryption.)
+mkdir -p "$S/stub"
+printf '#!/bin/sh\ntouch "%s/age-ran"\nexit 0\n' "$S" >"$S/stub/age"
+chmod 755 "$S/stub/age"
+rm -f "$S/age-ran"
+expect_refusal "scrypt header, age never started" 1 "$M" \
+  env PATH="$S/stub:$PATH" python3 ../consume.py --label test --check --blob-file vectors/scrypt.txt
+[ ! -e "$S/age-ran" ] || fail "age was started for a scrypt blob"
+# A real blob survives a paste: wrapped at 76 columns, trailing spaces.
+# passes from Task 2 (age decrypt)
+fold -w 76 blob-age.txt | sed 's/$/  /' >"$S/blob-wrapped.txt"
+HANDOFF_PRIVKEY="$TMPKEY" consume --label example --check --blob-file "$S/blob-wrapped.txt" \
+  >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "wrapped age blob: --check failed"; }
+diff "$S/out" expected-check.txt || fail "wrapped age blob: --check output differs"
 echo "ok"
 fi
 

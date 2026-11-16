@@ -138,7 +138,10 @@ RSA2048_SPKI_HEAD = bytes.fromhex(
 )
 RSA2048_SPKI_TAIL = bytes.fromhex("0203010001")  # exponent 65537
 MAX_REASON = 300        # characters of openssl's error text shown
-MAX_BLOB_FILE = 8192    # characters; a reference blob is 344
+AGE_MAGIC = b"age-encryption.org/v1\n"
+AGE_ARMOR_BEGIN = b"-----BEGIN AGE ENCRYPTED FILE-----"
+MAX_BLOB_FILE = 65536   # characters; provisional (a reference blob is about 370)
+MAX_BLOB_BYTES = MAX_BLOB_FILE // 4 * 3  # the most that many characters decode to
 
 DEFAULT_ENV_MAP = {
     "username": "SERVICE_USERNAME",
@@ -264,26 +267,72 @@ def check_openssl() -> None:
         )
 
 
+def check_age_header(raw: bytes) -> None:
+    """Refuse anything but a binary age file for exactly one X25519 recipient.
+
+    Parses the text header up to its "---" MAC line before any decryption,
+    so a header that asks `age` for a passphrase, a plugin or an SSH key
+    never reaches it. A stanza is accepted only if its type is X25519 or
+    ends in "-grease". Messages never include stanza contents.
+    """
+    if raw.startswith(AGE_ARMOR_BEGIN):
+        raise fail(armored_message())
+    if not raw.startswith(AGE_MAGIC):
+        hint = ""
+        if len(raw) == CIPHERTEXT_BYTES:
+            hint = " (0.2.0 uses age: a 0.1.0 install sets up again)"
+        raise fail("not an age blob" + hint)
+    x25519 = 0
+    in_stanza = False
+    done = False
+    for line in raw[len(AGE_MAGIC):MAX_BLOB_BYTES].split(b"\n"):
+        if line == b"---" or line.startswith(b"--- "):
+            done = True
+            break
+        if line.startswith(b"-> "):
+            in_stanza = True
+            kind = line[3:].split(b" ", 1)[0]
+            if kind == b"X25519":
+                x25519 += 1
+            elif not kind.endswith(b"-grease"):
+                raise fail("age blob of a kind this helper doesn't open: "
+                           "only X25519 recipients are supported")
+        elif not in_stanza:
+            raise fail("not an age blob: the header is malformed")
+    if not done:
+        raise fail("not an age blob: the header has no end line")
+    if x25519 != 1:
+        raise fail("age blob needs exactly one X25519 recipient")
+
+
+def armored_message() -> str:
+    return ("the blob is armored (ASCII-armored age text); "
+            "give the binary age format, base64 on one line")
+
+
 def decode_blob(blob_b64: str) -> bytes:
+    # An armored file pasted as it is, before the base64 decode sees it.
+    for line in blob_b64.splitlines():
+        if line.strip():
+            if line.strip().encode("ascii", "replace") == AGE_ARMOR_BEGIN:
+                raise fail(armored_message())
+            break
     # Tolerate line wrapping from a paste: strip ALL whitespace.
     compact = "".join(blob_b64.split())
     if not compact:
         raise fail("the blob is empty")
-    several = ("it looks like several blobs concatenated (an appending redirect?); "
-               "give one")
+    if len(compact) > MAX_BLOB_FILE:
+        raise fail(f"the blob is over {MAX_BLOB_FILE} characters; not a blob")
     try:
-        cipher = base64.b64decode(compact, validate=True)
+        raw = base64.b64decode(compact, validate=True)
     except Exception:
         # Padding inside the text: one blob's "==" followed by another's.
-        if re.fullmatch(r"(?:[A-Za-z0-9+/]{342}==){2,}", compact):
-            raise fail("input is not valid base64: " + several)
+        if re.search(r"={1,2}[A-Za-z0-9+/]", compact):
+            raise fail("input is not valid base64: it looks like several blobs "
+                       "concatenated (an appending redirect?); give one")
         raise fail("input is not valid base64")
-    if len(cipher) != CIPHERTEXT_BYTES:
-        raise fail(
-            f"the blob decodes to {len(cipher)} bytes, not {CIPHERTEXT_BYTES}: "
-            "truncated, padded, or not a blob for an RSA-2048 key"
-        )
-    return cipher
+    check_age_header(raw)
+    return raw
 
 
 def check_key(privkey: str) -> bytes:
