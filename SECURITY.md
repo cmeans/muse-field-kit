@@ -18,7 +18,7 @@ The supported channel is a **GitHub private security advisory**:
 2. Describe the problem, how to reproduce it, and the version affected.
 3. Submit it. Only you and the repository's maintainers see the report, and the report, any proof of concept, the fix and the disclosure timing are discussed there.
 
-If you can't use a private advisory, open a **public** issue titled only "Security contact request", with no details, and the maintainer will arrange a private channel.
+If you can't use a private advisory, open a **public** issue with the [Security contact request](https://github.com/cmeans/muse-field-kit/issues/new?template=security_contact.yml) form, which asks for no details, and the maintainer will arrange a private channel.
 
 Guides and patterns without scripts (documentation problems) can be reported as normal issues; there's no embargo expectation for those.
 
