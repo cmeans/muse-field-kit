@@ -92,7 +92,10 @@ section() {
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-consume() { python3 ../consume.py "$@"; }
+# consume runs the helper with the age identity (TMPKEY). CONSUME_KEY
+# overrides it; the sections still on RSA (3b, 4a, 4b, 6) set it themselves
+# in the task that moves them.
+consume() { HANDOFF_PRIVKEY="${CONSUME_KEY-$TMPKEY}" python3 ../consume.py "$@"; }
 
 # The real interpreter, for the restricted-PATH tests: `command -v python3`
 # can be a pyenv/asdf shim (#!/usr/bin/env bash) that can't run there.
@@ -170,10 +173,16 @@ prep_agent() {
 
 if section 1a; then
 echo "== 1a. reference decrypt, --check output =="
-consume --label example --check --blob-file blob.txt >"$S/out" 2>"$S/err"
+consume --label example --check --blob-file blob-age.txt >"$S/out" 2>"$S/err"
 diff "$S/out" expected-check.txt || fail "--check output differs from expected-check.txt"
 [ ! -s "$S/err" ] || fail "--check wrote to stderr"
 no_dummy_in "$S/out"
+# rage's blob carries a -grease stanza beside the X25519 one: accepted, and
+# the same payload (the positive half of 5a's header tests).
+consume --label example --check --blob-file blob-age-rage.txt >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "the rage blob was refused"; }
+diff "$S/out" expected-check.txt || fail "--check output differs for the rage blob"
+[ ! -s "$S/err" ] || fail "--check wrote to stderr for the rage blob"
 echo "ok"
 fi
 
@@ -181,20 +190,28 @@ if section 1b; then
 # The command writes what it received to a file, and prints nothing, so
 # anything on stdout or stderr came from the helper itself.
 echo "== 1b. reference decrypt, injected environment, nothing from the helper =="
-consume --label example --blob-file blob.txt -- python3 -c '
+consume --label example --blob-file blob-age.txt -- python3 -c '
 import os, sys
 open(sys.argv[1], "w").write(os.environ["SERVICE_USERNAME"] + "\n" + os.environ["SERVICE_PASSWORD"] + "\n")
 ' "$S/child" >"$S/out" 2>"$S/err"
 [ "$(cat "$S/child")" = "$U
 $P" ] || fail "unexpected env values"
 [ ! -s "$S/out" ] && [ ! -s "$S/err" ] || fail "the helper printed something in run mode"
+# The rage blob too: the same values injected.
+consume --label example --blob-file blob-age-rage.txt -- python3 -c '
+import os, sys
+open(sys.argv[1], "w").write(os.environ["SERVICE_USERNAME"] + "\n" + os.environ["SERVICE_PASSWORD"] + "\n")
+' "$S/child-rage" >"$S/out" 2>"$S/err"
+[ "$(cat "$S/child-rage")" = "$U
+$P" ] || fail "unexpected env values (rage blob)"
+[ ! -s "$S/out" ] && [ ! -s "$S/err" ] || fail "the helper printed something in run mode (rage blob)"
 echo "ok"
 fi
 
 if section 1c; then
 echo "== 1c. per-invocation --env mapping =="
 # An inherited SERVICE_USERNAME must not survive the remapping either.
-out=$(SERVICE_USERNAME=inherited consume --label example --blob-file blob.txt --env username=CUSTOM_USER -- python3 -c '
+out=$(SERVICE_USERNAME=inherited consume --label example --blob-file blob-age.txt --env username=CUSTOM_USER -- python3 -c '
 import os
 print(os.environ["CUSTOM_USER"])
 print("SERVICE_USERNAME" in os.environ)
@@ -214,7 +231,7 @@ echo "== 1d. mapped variables come from the payload only =="
 # mapped to CUSTOM_PASS): a nested wrapper's parent may have set it for
 # another service.
 out=$(SERVICE_PASSWORD=inherited CUSTOM_PASS=inherited consume --label example \
-  --blob "$(enc_rsa '{"svc":"example","username":"mk-Zq9-only-user"}')" --env password=CUSTOM_PASS -- python3 -c '
+  --blob "$(enc '{"svc":"example","username":"mk-Zq9-only-user"}')" --env password=CUSTOM_PASS -- python3 -c '
 import os
 print(os.environ["SERVICE_USERNAME"], os.environ.get("CUSTOM_PASS"), os.environ.get("SERVICE_PASSWORD"))
 ')
@@ -224,7 +241,7 @@ fi
 
 if section 2a; then
 echo "== 2a. the command's stdin passes through untouched =="
-out=$(printf 'hello-stdin' | consume --label example --blob-file blob.txt -- python3 -c '
+out=$(printf 'hello-stdin' | consume --label example --blob-file blob-age.txt -- python3 -c '
 import os, sys
 print(os.environ["SERVICE_USERNAME"] == sys.argv[1])
 print(sys.stdin.read())
@@ -242,7 +259,7 @@ echo "== 2b. the helper execs the command; TERM leaves nothing running =="
 # forked subshell, and $! would be that subshell's PID.
 for launcher in python3 sh; do
   : >"$S/pid"
-  "$launcher" ../consume.py --label example --blob-file blob.txt -- python3 -c '
+  HANDOFF_PRIVKEY="$TMPKEY" "$launcher" ../consume.py --label example --blob-file blob-age.txt -- python3 -c '
 import os, time
 print(os.getpid(), flush=True)
 time.sleep(60)
@@ -402,58 +419,57 @@ echo "== 5. refusals =="
 prep_shared
 prep_agent
 expect_refusal "purpose mismatch (--check)" 1 "purpose mismatch" \
-  consume --label other --check --blob-file blob.txt
+  consume --label other --check --blob-file blob-age.txt
 expect_refusal "purpose mismatch (run mode)" 1 "purpose mismatch" \
-  consume --label other --blob-file blob.txt -- true
+  consume --label other --blob-file blob-age.txt -- true
 # The payload's own svc ("example") is unauthenticated text: never echoed.
 ! grep -q example "$S/err" || fail "the mismatch message echoed the payload's svc"
 expect_refusal "no known credential field" 1 "no known credential field" \
-  consume --label example --check --blob-file blob-unknown.txt
-# Unknown fields are counted, never named: blob-unknown.txt's is "note".
+  consume --label example --check --blob "$(enc "$(cat unknown.json)")"
+# Unknown fields are counted, never named: unknown.json's is "note".
 grep -qF "ignoring 1 unknown field" "$S/err" || fail "unknown field not counted"
 ! grep -qw note "$S/err" || fail "an unknown field's name was echoed"
 expect_refusal "--check with a command" 1 "--check takes no command" \
-  consume --label example --check --blob-file blob.txt -- true
+  consume --label example --check --blob-file blob-age.txt -- true
 expect_refusal "no command and no --check" 1 "no command given" \
-  consume --label example --blob-file blob.txt
+  consume --label example --blob-file blob-age.txt
 expect_refusal "no --label" 1 "--label is required" \
-  consume --check --blob-file blob.txt
+  consume --check --blob-file blob-age.txt
 printf '\377\376' > "$S/not-text.txt"
 expect_refusal "blob file not text" 1 "as text" \
   consume --label example --check --blob-file "$S/not-text.txt"
-mkdir -p "$S/py-only"; ln -sf "$PY" "$S/py-only/python3"
-expect_refusal "openssl not installed" 1 "openssl not found" \
-  env PATH="$S/py-only" python3 ../consume.py --label example --check --blob-file blob.txt
+expect_refusal "age not installed" 1 "age not found" \
+  env -i PATH=/nonexistent HANDOFF_PRIVKEY="$TMPKEY" "$PY" ../consume.py --label example --check --blob-file blob-age.txt
+grep -qF "PATH=" "$S/err" || fail "the age-not-found message doesn't say which PATH to fix"
 expect_refusal "input not base64" 1 "not valid base64" \
   consume --label example --check --blob '!!not base64!!'
+python3 -c '
+import base64, sys
+raw = bytearray(base64.b64decode(open(sys.argv[1]).read()))
+raw[-1] ^= 1
+print(base64.b64encode(bytes(raw)).decode())
+' blob-age.txt >"$S/blob-flipped.txt"
 expect_refusal "damaged blob" 1 "stop and report it to the user (SETUP.md, stop conditions)" \
-  consume --label example --check --blob "$(cat "$S/blob-3a.txt" | tr 'A-Za-z' 'B-ZAb-za')"
-# One fixed message: the key file it tried, no openssl reason, and no hint to
+  consume --label example --check --blob-file "$S/blob-flipped.txt"
+# One fixed message: the key file it tried, no age text, and no hint to
 # try another key. Also for a valid blob made for another key (4b's), which
 # is what a wrapper meets with a blob made for another key and no rotation under way.
+rm -f "$S/other-identity.txt"; "$AGE_KEYGEN" -o "$S/other-identity.txt" 2>/dev/null
 for which in damaged other-key; do
   if [ "$which" = other-key ]; then
-    expect_refusal "a blob made for another key" 1 "decryption failed with the key at $RSAKEY" \
-      consume --label example --check --blob "$(printf '%s' '{"svc":"example","password":"mk-Zq9"}' | openssl pkeyutl -encrypt -pubin -inkey "$S/agent-pub.pem" -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 | openssl base64 -A)"
+    expect_refusal "a blob made for another key" 1 "decryption failed with the key at $TMPKEY" \
+      consume --label example --check --blob "$(printf '%s' '{"svc":"example","password":"mk-Zq9"}' | "$AGE" -r "$("$AGE_KEYGEN" -y "$S/other-identity.txt")" | base64 | tr -d '\n')"
   fi
-  ! grep -q "Public Key operation\|:error:\|error:" "$S/err" || fail "the decrypt refusal ($which) shows openssl's reason: $(cat "$S/err")"
+  ! grep -q "no identity matched\|age: \|error:" "$S/err" || fail "the decrypt refusal ($which) shows age's text: $(cat "$S/err")"
   ! grep -q "check that HANDOFF_PRIVKEY" "$S/err" || fail "the decrypt refusal ($which) invites trying another key"
 done
-cp test-dummy-priv.pem "$S/loose.pem"; chmod 644 "$S/loose.pem"
-expect_refusal "group/other-readable key" 1 "must be owner-only" \
-  env HANDOFF_PRIVKEY="$S/loose.pem" python3 ../consume.py --label example --check --blob-file blob.txt
-cp test-dummy-pub.pem "$S/pub-as-key.pem"; chmod 600 "$S/pub-as-key.pem"
-expect_refusal "a key that doesn't load (a public key)" 1 "cannot load the private key" \
-  env HANDOFF_PRIVKEY="$S/pub-as-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
-! grep -q "made for another key" "$S/err" || fail "a key that doesn't load was blamed on the blob"
-! grep -q ":error:" "$S/err" || fail "the key-load refusal shows openssl's internal error line, not its readable one"
 # An encrypted key is refused, and never takes a passphrase from stdin (the
 # command's transport): the passphrase is right there on stdin.
 openssl pkey -in test-dummy-priv.pem -aes256 -passout pass:mk-Zq9-pass -out "$S/enc-key.pem" 2>/dev/null
 chmod 600 "$S/enc-key.pem"
 # shellcheck disable=SC2016  # $1 is the inner shell's argument
-expect_refusal "an encrypted key, passphrase on stdin" 1 "cannot load the private key" \
-  bash -c 'echo mk-Zq9-pass | HANDOFF_PRIVKEY="$1" python3 ../consume.py --label example --check --blob-file blob.txt' _ "$S/enc-key.pem"
+expect_refusal "an encrypted 0.1.0 key, passphrase on stdin" 1 "is an RSA key from 0.1.0" \
+  bash -c 'echo mk-Zq9-pass | HANDOFF_PRIVKEY="$1" python3 ../consume.py --label example --check --blob-file blob-age.txt' _ "$S/enc-key.pem"
 # shellcheck disable=SC2016  # $1 is the inner shell's argument
 expect_refusal "agent-setup.sh --fingerprint, an encrypted key" 1 "could not read key" \
   bash -c 'echo mk-Zq9-pass | bash ../agent-setup.sh --fingerprint "$1"' _ "$S/enc-key.pem"
@@ -470,8 +486,6 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen
 for k in ed25519 p256 rsa2052 rsa-e3 rsa-e65539; do
   if [ ! -s "$S/$k.pem" ]; then echo "skip: openssl couldn't make a $k key, its refusal wasn't tested"; continue; fi
   chmod 600 "$S/$k.pem"
-  expect_refusal "a $k key (consume.py)" 1 "is not an RSA-2048 key" \
-    env HANDOFF_PRIVKEY="$S/$k.pem" python3 ../consume.py --label example --check --blob-file blob.txt
   expect_refusal "a $k key (agent-setup.sh --fingerprint)" 1 "is not an RSA-2048 key" \
     bash ../agent-setup.sh --fingerprint "$S/$k.pem"
   ! grep -q "could not read key" "$S/err" || fail "agent-setup.sh said it couldn't read a $k key it did read"
@@ -493,23 +507,23 @@ fi
 # is very slow on large junk).
 head -c 20000 /dev/zero | tr '\0' 'A' > "$S/big-key.pem"; chmod 600 "$S/big-key.pem"
 expect_refusal "an oversized key file (consume.py)" 1 "over 16384" \
-  timeout 20 env HANDOFF_PRIVKEY="$S/big-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
+  timeout 20 env HANDOFF_PRIVKEY="$S/big-key.pem" python3 ../consume.py --label example --check --blob-file blob-age.txt
 expect_refusal "an oversized key file (agent-setup.sh --fingerprint)" 1 "over 16384 bytes" \
   timeout 20 bash ../agent-setup.sh --fingerprint "$S/big-key.pem"
 # Under a terminal (a pseudo-terminal from script), an encrypted key still
 # isn't prompted for: no "Enter pass phrase", and no hang.
 if command -v script >/dev/null; then
-  out=$(HANDOFF_PRIVKEY="$S/enc-key.pem" timeout 20 script -qec "python3 ../consume.py --label example --check --blob-file blob.txt" /dev/null 2>&1) || true
+  out=$(HANDOFF_PRIVKEY="$S/enc-key.pem" timeout 20 script -qec "python3 ../consume.py --label example --check --blob-file blob-age.txt" /dev/null 2>&1) || true
   case "$out" in
     *"Enter pass phrase"*) fail "the helper prompted for a key passphrase on a terminal" ;;
-    *"cannot load the private key"*) echo "ok (refused: an encrypted key under a terminal, no prompt)" ;;
+    *"an RSA key from 0.1.0"*) echo "ok (refused: an encrypted 0.1.0 key under a terminal, no prompt)" ;;
     *) fail "an encrypted key under a terminal: unexpected output: $out" ;;
   esac
 else
   echo "skip: script(1) missing, the terminal prompt check didn't run"
 fi
 expect_refusal "missing key" 1 "cannot read private key" \
-  env HANDOFF_PRIVKEY="$S/no-such-key.pem" python3 ../consume.py --label example --check --blob-file blob.txt
+  env HANDOFF_PRIVKEY="$S/no-such-key.pem" python3 ../consume.py --label example --check --blob-file blob-age.txt
 # A key file owned by another user is refused, even at mode 0600. It needs a
 # file this account doesn't own, so: $HANDOFF_TEST_OTHER_OWNER_KEY if set (CI
 # makes a root-owned 0600 copy of the dummy key), else a root-owned,
@@ -526,18 +540,18 @@ if [ "$(id -u)" != 0 ]; then
 fi
 if [ -n "$other_owner" ]; then
   expect_refusal "a key owned by another user ($other_owner)" 1 "is not owned by this user" \
-    env HANDOFF_PRIVKEY="$other_owner" python3 ../consume.py --label example --check --blob-file blob.txt
+    env HANDOFF_PRIVKEY="$other_owner" python3 ../consume.py --label example --check --blob-file blob-age.txt
 else
   echo "skip: no owner-only file owned by another user, the key-owner refusal wasn't tested"
 fi
 expect_refusal "--env PATH" 1 "is on the refused list" \
-  consume --label example --blob-file blob.txt --env password=PATH -- true
+  consume --label example --blob-file blob-age.txt --env password=PATH -- true
 expect_refusal "--env LD_PRELOAD" 1 "is on the refused list" \
-  consume --label example --blob-file blob.txt --env password=LD_PRELOAD -- true
+  consume --label example --blob-file blob-age.txt --env password=LD_PRELOAD -- true
 expect_refusal "--env PYTHONSTARTUP" 1 "is on the refused list" \
-  consume --label example --blob-file blob.txt --env password=PYTHONSTARTUP -- true
+  consume --label example --blob-file blob-age.txt --env password=PYTHONSTARTUP -- true
 expect_refusal "--env BASH_ENV" 1 "is on the refused list" \
-  consume --label example --blob-file blob.txt --env password=BASH_ENV -- true
+  consume --label example --blob-file blob-age.txt --env password=BASH_ENV -- true
 # Every refused name, in upper and lower case, and every refused prefix.
 # The list is written out here, not read from consume.py, so dropping an
 # entry there fails the test.
@@ -553,87 +567,81 @@ n=0
 for name in $refused_names; do
   for v in "$name" "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"; do
     expect_refusal "--env $v" 1 "is on the refused list" \
-      consume --label example --blob-file blob.txt --env "password=$v" -- true >/dev/null
+      consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
     n=$((n + 1))
   done
 done
 for prefix in $refused_prefixes; do
   expect_refusal "--env ${prefix}X" 1 "is on the refused list" \
-    consume --label example --blob-file blob.txt --env "password=${prefix}X" -- true >/dev/null
+    consume --label example --blob-file blob-age.txt --env "password=${prefix}X" -- true >/dev/null
   n=$((n + 1))
 done
 echo "ok (refused: $n --env targets, every listed name in both cases and every prefix)"
 expect_refusal "--env unknown field (a typo)" 1 "not a known credential field" \
-  consume --label example --blob-file blob.txt --env pasword=APP_PASS -- true
+  consume --label example --blob-file blob-age.txt --env pasword=APP_PASS -- true
 expect_refusal "--env wrong-case field" 1 "not a known credential field" \
-  consume --label example --blob-file blob.txt --env Password=APP_PASS -- true
+  consume --label example --blob-file blob-age.txt --env Password=APP_PASS -- true
 expect_refusal "--env one field twice" 1 "maps 'password' twice" \
-  consume --label example --blob-file blob.txt --env password=A_P --env password=B_P -- true
+  consume --label example --blob-file blob-age.txt --env password=A_P --env password=B_P -- true
 expect_refusal "--env not a variable name" 1 "not a valid variable name" \
-  consume --label example --blob-file blob.txt --env 'password=A B' -- true
+  consume --label example --blob-file blob-age.txt --env 'password=A B' -- true
 expect_refusal "--env two fields, one target" 1 "same environment variable" \
-  consume --label example --blob-file blob.txt --env username=SERVICE_PASSWORD -- true
+  consume --label example --blob-file blob-age.txt --env username=SERVICE_PASSWORD -- true
 expect_refusal "command not found" 127 "cannot run" \
-  consume --label example --blob-file blob.txt -- "$S/no-such-command"
+  consume --label example --blob-file blob-age.txt -- "$S/no-such-command"
 printf '#!/bin/sh\n' > "$S/not-executable"; chmod 644 "$S/not-executable"
 expect_refusal "command not executable" 126 "cannot run" \
-  consume --label example --blob-file blob.txt -- "$S/not-executable"
+  consume --label example --blob-file blob-age.txt -- "$S/not-executable"
 expect_refusal "empty command" 1 "no command given" \
-  consume --label example --blob-file blob.txt -- ""
+  consume --label example --blob-file blob-age.txt -- ""
 expect_refusal "NUL in a credential (run mode)" 1 "contains a NUL byte" \
-  consume --label example --blob "$(enc_rsa '{"svc":"example","password":"mk-Zq9\u0000b"}')" -- true
+  consume --label example --blob "$(enc '{"svc":"example","password":"mk-Zq9\u0000b"}')" -- true
 expect_refusal "NUL in a credential (--check)" 1 "contains a NUL byte" \
-  consume --label example --check --blob "$(enc_rsa '{"svc":"example","password":"mk-Zq9\u0000b"}')"
+  consume --label example --check --blob "$(enc '{"svc":"example","password":"mk-Zq9\u0000b"}')"
 expect_refusal "lone surrogate in a credential (run mode)" 1 "not valid UTF-8" \
-  consume --label example --blob "$(enc_rsa '{"svc":"example","password":"mk-Zq9\ud800b"}')" -- true
+  consume --label example --blob "$(enc '{"svc":"example","password":"mk-Zq9\ud800b"}')" -- true
 expect_refusal "lone surrogate in a credential (--check)" 1 "not valid UTF-8" \
-  consume --label example --check --blob "$(enc_rsa '{"svc":"example","password":"mk-Zq9\ud800b"}')"
+  consume --label example --check --blob "$(enc '{"svc":"example","password":"mk-Zq9\ud800b"}')"
 ! grep -q 'ud800\|position' "$S/err" || fail "the surrogate refusal quoted the payload"
 expect_refusal "payload without svc" 1 "no 'svc' field" \
-  consume --label example --check --blob "$(enc_rsa '{"username":"mk-Zq9-user"}')"
+  consume --label example --check --blob "$(enc '{"username":"mk-Zq9-user"}')"
 expect_refusal "payload not JSON" 1 "not valid JSON" \
-  consume --label example --check --blob "$(enc_rsa 'mk-Zq9 not json')"
+  consume --label example --check --blob "$(enc 'mk-Zq9 not json')"
 expect_refusal "payload not a JSON object" 1 "not a JSON object" \
-  consume --label example --check --blob "$(enc_rsa '["mk-Zq9"]')"
+  consume --label example --check --blob "$(enc '["mk-Zq9"]')"
 expect_refusal "credential not a string" 1 "not a string" \
-  consume --label example --check --blob "$(enc_rsa '{"svc":"example","password":9817263}')"
+  consume --label example --check --blob "$(enc '{"svc":"example","password":9817263}')"
 ! grep -q 9817263 "$S/err" || fail "the non-string refusal echoed the value"
 expect_refusal "empty credential" 1 "is empty" \
-  consume --label example --blob "$(enc_rsa '{"svc":"example","username":"mk-Zq9-user","password":""}')" -- true
+  consume --label example --blob "$(enc '{"svc":"example","username":"mk-Zq9-user","password":""}')" -- true
 expect_refusal "empty blob" 1 "the blob is empty" \
   consume --label example --check --blob ''
-expect_refusal "short blob" 1 "decodes to 10 bytes, not 256" \
+expect_refusal "short blob" 1 "not an age blob" \
   consume --label example --check --blob "$(head -c 10 /dev/zero | base64)"
-python3 -c 'print("A" * 9000)' > "$S/big-blob.txt"
-expect_refusal "oversized blob file" 1 "over 8192 characters" \
-  consume --label example --check --blob-file "$S/big-blob.txt"
 expect_refusal "no blob supplied" 1 "no blob supplied" \
   consume --label example --check
 expect_refusal "two blob sources" 1 "more than one blob source" \
-  consume --label example --check --blob "$(cat blob.txt)" --blob-file blob.txt
+  consume --label example --check --blob "$(cat blob-age.txt)" --blob-file blob-age.txt
 expect_refusal "blob option and \$HANDOFF_BLOB" 1 "more than one blob source" \
-  env HANDOFF_BLOB="$(cat blob.txt)" python3 ../consume.py --label example --check --blob-file blob.txt
+  env HANDOFF_BLOB="$(cat blob-age.txt)" python3 ../consume.py --label example --check --blob-file blob-age.txt
 expect_refusal "--label twice" 1 "--label given twice" \
-  consume --label other --label example --check --blob-file blob.txt
+  consume --label other --label example --check --blob-file blob-age.txt
 expect_refusal "--env without =" 1 "--env takes field=NAME" \
-  consume --label example --blob-file blob.txt --env password -- true
+  consume --label example --blob-file blob-age.txt --env password -- true
 expect_refusal "option without its value" 1 "--label needs a value" \
   consume --label
 expect_refusal "unrecognized argument" 1 "unrecognized argument" \
-  consume --label example --check --blob-file blob.txt --verbose
+  consume --label example --check --blob-file blob-age.txt --verbose
 mkdir -p "$S/fake-ssl"; ln -sf "$PY" "$S/fake-ssl/python3"
 printf '#!/bin/sh\necho "LibreSSL 3.8.2"\n' > "$S/fake-ssl/openssl"; chmod 755 "$S/fake-ssl/openssl"
-expect_refusal "not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
-  env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
-[ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
 # ~/ is expanded, ~user is refused, and both scripts agree on each.
-mkdir -p "$S/home2"; cp blob.txt "$S/home2/b.txt"
+mkdir -p "$S/home2"; cp blob-age.txt "$S/home2/b.txt"
 # shellcheck disable=SC2088
 HOME="$S/home2" consume --label example --check --blob-file '~/b.txt' >"$S/out" \
   || fail "--blob-file did not expand ~/"
 # shellcheck disable=SC2088
 expect_refusal "~user in HANDOFF_PRIVKEY (consume.py)" 1 "only ~/ is expanded" \
-  env HANDOFF_PRIVKEY='~root/k.pem' python3 ../consume.py --label example --check --blob-file blob.txt
+  env HANDOFF_PRIVKEY='~root/k.pem' python3 ../consume.py --label example --check --blob-file blob-age.txt
 # shellcheck disable=SC2088
 expect_refusal "~user in HANDOFF_PRIVKEY (agent-setup.sh)" 1 "only ~/ is expanded" \
   env HANDOFF_PRIVKEY='~root/k.pem' bash ../agent-setup.sh --fingerprint
@@ -659,19 +667,18 @@ HOME="$S/home4" HANDOFF_KEY_DIR='~' bash ../agent-setup.sh >/dev/null 2>&1 \
 expect_refusal "~user in --fingerprint's KEY" 1 "agent-setup.sh: KEY '~root/k.pem'" \
   bash ../agent-setup.sh --fingerprint '~root/k.pem'
 expect_refusal "--check twice" 1 "--check given twice" \
-  consume --label example --check --check --blob-file blob.txt
+  consume --label example --check --check --blob-file blob-age.txt
 expect_refusal "blob file missing" 1 "No such file or directory" \
-  consume --label example --check --blob-file "$S/no-such-blob.txt"
+  consume --label example --check --blob-file "$S/no-such-blob-age.txt"
 # A blob file saved with a byte-order mark still works.
-printf '\357\273\277' > "$S/bom.txt"; cat blob.txt >> "$S/bom.txt"
+printf '\357\273\277' > "$S/bom.txt"; cat blob-age.txt >> "$S/bom.txt"
 consume --label example --check --blob-file "$S/bom.txt" >/dev/null || fail "a blob file with a BOM was refused"
-# OpenSSL 4 passes the gate (a wrapper that reports 4.0.0 and passes the rest on).
+# OpenSSL 4 passes agent-setup.sh's and handoff.sh's gates (a wrapper that
+# reports 4.0.0 and passes the rest on).
 mkdir -p "$S/ssl4"; ln -sf "$PY" "$S/ssl4/python3"
 # shellcheck disable=SC2016  # $1 and $@ belong to the generated script
 printf '#!/bin/sh\nif [ "$1" = version ]; then echo "OpenSSL 4.0.0 1 Jan 2027"; else exec %s "$@"; fi\n' "$(command -v openssl)" > "$S/ssl4/openssl"
 chmod 755 "$S/ssl4/openssl"
-PATH="$S/ssl4" python3 ../consume.py --label example --check --blob-file blob.txt >/dev/null \
-  || fail "consume.py refused OpenSSL 4"
 expect_refusal "agent-setup.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
   env PATH="$S/fake-ssl:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
 [ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
@@ -681,13 +688,12 @@ mkdir -p "$S/pp"
 printf 'open(%s, "w").close()\n' "'$S/pp/HIT'" > "$S/pp/sitecustomize.py"
 # Through sh, which is what a #!/bin/sh launch does, so the test doesn't
 # need the execute bit.
-PYTHONPATH="$S/pp" sh ../consume.py --label example --check --blob-file blob.txt >/dev/null 2>"$S/launch-err" \
+PYTHONPATH="$S/pp" HANDOFF_PRIVKEY="$TMPKEY" sh ../consume.py --label example --check --blob-file blob-age.txt >/dev/null 2>"$S/launch-err" \
   || fail "consume.py's sh launcher failed to run"
 [ ! -e "$S/pp/HIT" ] || fail "consume.py's launcher ran the caller's sitecustomize (not isolated)"
 # ...and silent: a reformatted line 2 (""" ":) makes sh print an error on
 # every run while still working.
 [ ! -s "$S/launch-err" ] || fail "consume.py's launcher wrote to stderr: $(cat "$S/launch-err")"
-# The OpenSSL 4 wrapper passes agent-setup.sh's and handoff.sh's gates too.
 [ "$(PATH="$S/ssl4:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "agent-setup.sh refused OpenSSL 4"
 [ "$(PATH="$S/ssl4:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint)" = "$want" ] \
@@ -723,47 +729,19 @@ expect_refusal "agent-setup.sh, empty openssl version" 1 "found: no version outp
   env PATH="$S/empty-ssl:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
 expect_refusal "handoff.sh, empty openssl version" 1 "found: no version output" \
   env PATH="$S/empty-ssl:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint
-expect_refusal "consume.py, empty openssl version" 1 "found: no version output" \
-  env PATH="$S/empty-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
-# openssl's error text: silent (no reason, no traceback), the readable line
-# picked over openssl's hex-prefixed internal lines, the first of two
-# readable lines, and a long line cut short.
-mkdir -p "$S/reason-ssl"; ln -sf "$PY" "$S/reason-ssl/python3"
-printf '#!/bin/sh\nexit 1\n' > "$S/reason-ssl/openssl"; chmod 755 "$S/reason-ssl/openssl"
-expect_refusal "consume.py, openssl version fails silently" 1 "openssl version failed" \
-  env PATH="$S/reason-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
-grep -qx "consume.py: openssl version failed" "$S/err" || fail "a silent openssl failure got a reason: $(cat "$S/err")"
-printf '#!/bin/sh\nprintf "00AB12CD:error:0A000086:SSL routines::internal\\nfirst readable reason\\nsecond readable reason\\n" >&2\nexit 1\n' > "$S/reason-ssl/openssl"
-expect_refusal "consume.py, openssl's readable line" 1 "openssl version failed: first readable reason" \
-  env PATH="$S/reason-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
-# Only openssl's internal lines: the last one is shown.
-printf '#!/bin/sh\nprintf "00AB12CD:error:first internal\\n00AB12CD:error:second internal\\n" >&2\nexit 1\n' > "$S/reason-ssl/openssl"
-expect_refusal "consume.py, only internal openssl lines" 1 "openssl version failed: 00AB12CD:error:second internal" \
-  env PATH="$S/reason-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
-printf '#!/bin/sh\nhead -c 5000 /dev/zero | tr "\\0" x >&2\nexit 1\n' > "$S/reason-ssl/openssl"
-expect_refusal "consume.py, a long openssl error" 1 "openssl version failed: xxx" \
-  env PATH="$S/reason-ssl:/usr/bin:/bin" python3 ../consume.py --label example --check --blob-file blob.txt
-[ "$(wc -c < "$S/err")" -lt 400 ] || fail "a long openssl error came back whole ($(wc -c < "$S/err") bytes)"
 # On macOS the hint names Homebrew's openssl@3: OSTYPE (which bash takes
-# from the environment) and sys.platform are faked to say darwin.
+# from the environment) is faked to say darwin.
 ln -sf "$PY" "$S/libressl/python3"
 expect_refusal "agent-setup.sh hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
   env PATH="$S/libressl:/usr/bin:/bin" OSTYPE=darwin23 bash ../agent-setup.sh --fingerprint
 expect_refusal "handoff.sh hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
   env PATH="$S/libressl:/usr/bin:/bin" OSTYPE=darwin23 bash "$S/hd/handoff.sh" --fingerprint
-expect_refusal "consume.py hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
-  env PATH="$S/libressl" python3 -I -c '
-import sys
-sys.platform = "darwin"
-sys.argv = ["consume.py", "--label", "example", "--check", "--blob-file", "blob.txt"]
-exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
-'
 
 # shellcheck disable=SC2088
 expect_refusal "agent-setup.sh, ~ without HOME" 1 "a ~ in HANDOFF_KEY_DIR needs it" \
   env -u HOME HANDOFF_KEY_DIR='~/kd' bash ../agent-setup.sh
 expect_refusal "consume.py default key without HOME" 1 "the default key path needs it" \
-  env -u HOME -u HANDOFF_PRIVKEY python3 ../consume.py --label example --check --blob-file blob.txt
+  env -u HOME -u HANDOFF_PRIVKEY python3 ../consume.py --label example --check --blob-file blob-age.txt
 # A key at the default location isn't reported as non-default, even with a
 # trailing slash on HOME.
 for h in "$S/home5" "$S/home6/"; do
@@ -775,7 +753,7 @@ done
 # A blob file that isn't a regular file (a pipe on stdin) would take the
 # command's stdin: refused.
 expect_refusal "blob file on a pipe" 1 "is not a regular file" \
-  bash -c 'cat blob.txt | python3 ../consume.py --label example --check --blob-file /dev/stdin'
+  bash -c 'cat blob-age.txt | python3 ../consume.py --label example --check --blob-file /dev/stdin'
 # Devices and an empty path are refused (the FIFO test below checks the
 # refusal comes before any open).
 expect_refusal "blob file is a device" 1 "is not a regular file" \
@@ -793,22 +771,16 @@ sleep 0.3
 released=no; [ ! -e "$S/fifo-released" ] || released=yes
 kill "$writer" 2>/dev/null || true; wait "$writer" 2>/dev/null || true
 [ "$released" = no ] || fail "the helper opened the FIFO before refusing it"
-# A caller's OPENSSL_CONF doesn't reach the helper's own openssl (it could
-# load a provider module into the process that reads the private key).
 printf 'openssl_conf = init\n[init]\nproviders = prov\n[prov]\nevil = evil\n[evil]\nmodule = %s/no-such-provider.so\nactivate = 1\n' "$S" > "$S/evil.cnf"
-OPENSSL_CONF="$S/evil.cnf" consume --label example --check --blob-file blob.txt >"$S/out" 2>"$S/err" \
-  || fail "a caller's OPENSSL_CONF reached the helper's openssl: $(cat "$S/err")"
-# No OPENSSL_* variable, in any case, reaches the helper's openssl: a fake
-# openssl first on PATH fails if it sees one, and passes the rest on.
+# No OPENSSL_* variable, in any case, reaches agent-setup.sh's or handoff.sh's
+# openssl: a fake openssl first on PATH fails if it sees one, and passes the
+# rest on.
 mkdir -p "$S/ssl-env"; ln -sf "$PY" "$S/ssl-env/python3"
 # Absolute paths inside the fake: it runs with only $S/ssl-env on PATH.
 printf '#!/bin/sh\nif %s | %s -qi "^openssl_"; then echo "OPENSSL_ variable reached openssl" >&2; exit 9; fi\nexec %s "$@"\n' \
   "$(command -v env)" "$(command -v grep)" "$(command -v openssl)" > "$S/ssl-env/openssl"
 chmod 755 "$S/ssl-env/openssl"
-env PATH="$S/ssl-env" OPENSSL_MODULES="$S/nowhere" openssl_x=1 python3 ../consume.py --label example --check --blob-file blob.txt >/dev/null 2>"$S/err" \
-  || fail "an OPENSSL_* variable reached the helper's openssl: $(cat "$S/err")"
-# agent-setup.sh and handoff.sh drop every OPENSSL_* variable too, in any
-# case: through the fake openssl that fails on one...
+# Through the fake openssl that fails on one...
 [ "$(env PATH="$S/ssl-env:/usr/bin:/bin" OPENSSL_MODULES="$S/nowhere" openssl_x=1 bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "an OPENSSL_* variable reached agent-setup.sh's openssl"
 [ "$(env PATH="$S/ssl-env:/usr/bin:/bin" OPENSSL_MODULES="$S/nowhere" openssl_x=1 bash "$S/hd/handoff.sh" --fingerprint 2>/dev/null)" = "$want" ] \
@@ -847,7 +819,7 @@ import atexit
 atexit.register(lambda: hits["stat"] and hits["open"] or os._exit(7))
 src = open("../consume.py").read()
 exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
-' blob.txt "$S/swap.fifo"
+' blob-age.txt "$S/swap.fifo"
 # The same swap to a terminal: the helper, a session leader with no
 # controlling terminal (setsid), opens the blob file with O_NOCTTY, so a
 # terminal swapped in after the stat check is refused without becoming its
@@ -888,7 +860,7 @@ atexit.register(check)
 sys.argv = ["consume.py", "--label", "example", "--check", "--blob-file", tty]
 src = open("../consume.py").read()
 exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
-' blob.txt
+' blob-age.txt
 else
   echo "skip: setsid -w (util-linux) or /dev/ptmx missing, the O_NOCTTY check didn't run"
 fi
@@ -896,13 +868,6 @@ fi
 mkfifo "$S/blob.fifo"
 expect_refusal "blob file is a FIFO" 1 "is not a regular file" \
   timeout 20 python3 ../consume.py --label example --check --blob-file "$S/blob.fifo"
-# openssl output that isn't UTF-8 is a clean refusal, not a traceback.
-printf '#!/bin/sh\nprintf "bad \\351 byte\\n" >&2\nexit 1\n' > "$S/fake-ssl/openssl"
-expect_refusal "openssl version, undecodable stderr" 1 "openssl version failed" \
-  env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
-printf '#!/bin/sh\necho "openssl: error loading config" >&2\nexit 1\n' > "$S/fake-ssl/openssl"
-expect_refusal "openssl version failing" 1 "openssl version failed: openssl: error loading config" \
-  env PATH="$S/fake-ssl" python3 ../consume.py --label example --check --blob-file blob.txt
 expect_refusal "agent-setup.sh re-run over an existing key" 1 "refusing to overwrite existing key" \
   env HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh
 # Its hint says a cut-short setup's key is shown with --public-key, and
@@ -943,8 +908,9 @@ fi
 
 if section 5a; then
 echo "== 5a. age header and identity refusals =="
-# The header allowlist (vectors/*.txt), checked before `age` runs. The
-# identity-file checks join this section in a later task.
+# The header allowlist (vectors/*.txt), checked before `age` runs; then the
+# header's edges, `age`'s own failures, the identity file's checks, and the
+# environment `age` gets.
 M="age blob of a kind this helper doesn't open"
 for v in scrypt:"$M" plugin-stanza:"$M" pq-stanza:"$M" ssh-stanza:"$M" \
          unknown-stanza:"$M" two-x25519:"needs exactly one X25519 recipient" \
@@ -975,8 +941,7 @@ printf 'age-encryption.org/v1\n-> X25519 AAAA\nAAAA\n' | base64 | tr -d '\n' >"$
 expect_refusal "a header with no --- line" 1 "not an age blob" \
   consume --label test --check --blob-file "$S/blob-nomac.txt"
 # A scrypt header must be refused without `age` ever starting: a stub `age`
-# first on PATH leaves a marker if it runs. (consume.py doesn't look `age`
-# up yet; the assertion bites from the task that wires age decryption.)
+# first on PATH leaves a marker if it runs.
 mkdir -p "$S/stub"
 printf '#!/bin/sh\ntouch "%s/age-ran"\nexit 0\n' "$S" >"$S/stub/age"
 chmod 755 "$S/stub/age"
@@ -985,11 +950,114 @@ expect_refusal "scrypt header, age never started" 1 "$M" \
   env PATH="$S/stub:$PATH" python3 ../consume.py --label test --check --blob-file vectors/scrypt.txt
 [ ! -e "$S/age-ran" ] || fail "age was started for a scrypt blob"
 # A real blob survives a paste: wrapped at 76 columns, trailing spaces.
-# passes from Task 2 (age decrypt)
 fold -w 76 blob-age.txt | sed 's/$/  /' >"$S/blob-wrapped.txt"
 HANDOFF_PRIVKEY="$TMPKEY" consume --label example --check --blob-file "$S/blob-wrapped.txt" \
   >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "wrapped age blob: --check failed"; }
 diff "$S/out" expected-check.txt || fail "wrapped age blob: --check output differs"
+
+# A blob with one X25519 stanza and a -grease stanza (rage's) is accepted, and
+# opens to the same payload as Go age's (1a and 1b run it in full too).
+consume --label example --check --blob-file blob-age-rage.txt >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "the rage blob (X25519 + -grease) was refused"; }
+diff "$S/out" expected-check.txt || fail "the rage blob: --check output differs"
+# Header edges, built from blob-age.txt. Each is refused before `age` runs: the
+# stub `age` (marker) must not have started.
+python3 -c '
+import base64, sys
+raw = base64.b64decode(open(sys.argv[1]).read())
+out = sys.argv[2]
+magic = b"age-encryption.org/v1\n"
+assert raw.startswith(magic)
+first_end = raw.index(b"\n", len(magic)) + 1       # the X25519 stanza line, through its newline
+end_line = raw.index(b"\n--- ") + 1               # the "--- MAC" line
+after_end = raw.index(b"\n", end_line)            # its newline
+def put(name, data):
+    open("%s/hdr-%s.txt" % (out, name), "w").write(base64.b64encode(data).decode())
+put("crlf-end", raw[:end_line] + b"---\r" + raw[after_end:])
+put("no-type", magic + b"-> \n" + raw[first_end:])
+put("junk-first", magic + b"junk\n" + raw[len(magic):])
+put("cut-mid-stanza", raw[:first_end + 8])
+put("no-end", raw[:end_line])
+put("trunc-after-header", raw[:after_end + 1])
+raw = bytearray(raw); raw[-1] ^= 1
+put("flipped", bytes(raw))
+' blob-age.txt "$S"
+rm -f "$S/age-ran"
+expect_refusal "header, CRLF end line" 1 "not an age blob" \
+  env PATH="$S/stub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" python3 ../consume.py --label example --check --blob-file "$S/hdr-crlf-end.txt"
+expect_refusal "header, a stanza with no type" 1 "$M" \
+  env PATH="$S/stub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" python3 ../consume.py --label example --check --blob-file "$S/hdr-no-type.txt"
+expect_refusal "header, a non-stanza line before the first stanza" 1 "not an age blob" \
+  env PATH="$S/stub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" python3 ../consume.py --label example --check --blob-file "$S/hdr-junk-first.txt"
+expect_refusal "header, cut mid-stanza" 1 "not an age blob" \
+  env PATH="$S/stub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" python3 ../consume.py --label example --check --blob-file "$S/hdr-cut-mid-stanza.txt"
+expect_refusal "header, no end line" 1 "not an age blob" \
+  env PATH="$S/stub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" python3 ../consume.py --label example --check --blob-file "$S/hdr-no-end.txt"
+[ ! -e "$S/age-ran" ] || fail "age was started for a blob with a bad header"
+# age's own failures: one fixed message, whichever way it failed.
+D="decryption failed with the key at $TMPKEY"
+expect_refusal "a flipped last byte" 1 "$D" \
+  consume --label example --check --blob-file "$S/hdr-flipped.txt"
+expect_refusal "truncated after the header" 1 "$D" \
+  consume --label example --check --blob-file "$S/hdr-trunc-after-header.txt"
+rm -f "$S/other-identity.txt"; "$AGE_KEYGEN" -o "$S/other-identity.txt" 2>/dev/null
+expect_refusal "the wrong identity" 1 "decryption failed with the key at $S/other-identity.txt" \
+  env HANDOFF_PRIVKEY="$S/other-identity.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+! grep -q "no identity matched\|age: " "$S/err" || fail "the decrypt refusal shows age's text: $(cat "$S/err")"
+# The age that ran is reported, so a refusal can be traced to a version.
+mkdir -p "$S/verstub"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\ncat >/dev/null\nexit 1\n' >"$S/verstub/age"
+chmod 755 "$S/verstub/age"
+expect_refusal "the age version is reported" 1 "age v9.9.9-test" \
+  env PATH="$S/verstub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" python3 ../consume.py --label example --check --blob-file blob-age.txt
+# Identity-file checks. Each file is owner-only unless the test says otherwise.
+cp test-dummy-identity.txt "$S/loose.txt"; chmod 644 "$S/loose.txt"
+expect_refusal "group/other-readable identity" 1 "must be owner-only" \
+  env HANDOFF_PRIVKEY="$S/loose.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+ln -s "$TMPKEY" "$S/id-link.txt"
+expect_refusal "a symlinked identity" 1 "is a symbolic link" \
+  env HANDOFF_PRIVKEY="$S/id-link.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+cat "$TMPKEY" "$TMPKEY" >"$S/id-two.txt"
+expect_refusal "an identity with two secret keys" 1 "holds 2 secret keys" \
+  env HANDOFF_PRIVKEY="$S/id-two.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+{ cat "$TMPKEY"; echo "AGE-PLUGIN-FOO-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"; } >"$S/id-plugin.txt"
+expect_refusal "a plugin identity line" 1 "plugin identity" \
+  env HANDOFF_PRIVKEY="$S/id-plugin.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+{ cat "$TMPKEY"; echo "AGE-SECRET-KEY-PQ-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"; } >"$S/id-pq.txt"
+expect_refusal "a post-quantum identity line" 1 "post-quantum identity" \
+  env HANDOFF_PRIVKEY="$S/id-pq.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+cp test-dummy-priv.pem "$S/id-rsa.txt"; chmod 600 "$S/id-rsa.txt"
+expect_refusal "an RSA PEM at the identity path" 1 "an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again (README.md)" \
+  env HANDOFF_PRIVKEY="$S/id-rsa.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+# Any other text is refused before age-keygen runs (a stub age-keygen leaves a marker).
+mkdir -p "$S/kgstub"
+printf '#!/bin/sh\ntouch "%s/keygen-ran"\nexit 1\n' "$S" >"$S/kgstub/age-keygen"
+chmod 755 "$S/kgstub/age-keygen"
+rm -f "$S/keygen-ran"
+cp handoff-test.age "$S/id-recipient.txt"; chmod 600 "$S/id-recipient.txt"
+expect_refusal "a recipient saved at the identity path" 1 "is not an age identity file; that is a recipient (public), not an identity" \
+  env PATH="$S/kgstub:$PATH" HANDOFF_PRIVKEY="$S/id-recipient.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+printf 'just some text\n' >"$S/id-text.txt"
+expect_refusal "arbitrary text at the identity path" 1 "is not an age identity file" \
+  env PATH="$S/kgstub:$PATH" HANDOFF_PRIVKEY="$S/id-text.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+! grep -q recipient "$S/err" || fail "arbitrary text was called a recipient"
+[ ! -e "$S/keygen-ran" ] || fail "age-keygen was started for a file that isn't an identity"
+# The environment age gets is built from scratch: none of the variables it reads
+# (age 1.3.2: AGE_PASSPHRASE, AGE_PASSPHRASE_FD, AGE_PASSPHRASE_WORK_FACTOR,
+# AGE_PASSPHRASE_MAX_WORK_FACTOR, AGEDEBUG) reaches it, nor anything else.
+mkdir -p "$S/envstub"
+printf '#!/bin/sh\nenv >"%s/age-env"\nexec %s "$@"\n' "$S" "$(command -v "$AGE")" >"$S/envstub/age"
+chmod 755 "$S/envstub/age"
+rm -f "$S/age-env"
+env PATH="$S/envstub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" \
+  AGE_PASSPHRASE=x AGE_PASSPHRASE_FD=3 AGE_PASSPHRASE_WORK_FACTOR=5 AGE_PASSPHRASE_MAX_WORK_FACTOR=5 AGEDEBUG=1 \
+  python3 ../consume.py --label example --check --blob-file blob-age.txt >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "the env-isolation run failed"; }
+[ -s "$S/age-env" ] || fail "the stub age didn't run"
+for v in AGE_PASSPHRASE AGE_PASSPHRASE_FD AGE_PASSPHRASE_WORK_FACTOR AGE_PASSPHRASE_MAX_WORK_FACTOR AGEDEBUG; do
+  ! grep -q "^$v=" "$S/age-env" || fail "$v reached age"
+done
+! grep -q "^HANDOFF_" "$S/age-env" || fail "a HANDOFF_ variable reached age"
 echo "ok"
 fi
 
@@ -2124,17 +2192,17 @@ fi
 
 if section 7; then
 echo "== 7. nesting: \$HANDOFF_LABEL =="
-out=$(consume --label example --blob-file blob.txt -- python3 -c '
+out=$(consume --label example --blob-file blob-age.txt -- python3 -c '
 import os
 print(os.environ["HANDOFF_LABEL"])
 ')
 [ "$out" = example ] || fail "the command didn't get HANDOFF_LABEL=example: $out"
 expect_refusal "a consume.py started by another one's command" 1 "wrappers never nest" \
-  consume --label example --blob-file blob.txt -- python3 ../consume.py --label example --check --blob-file blob.txt
+  consume --label example --blob-file blob-age.txt -- python3 ../consume.py --label example --check --blob-file blob-age.txt
 expect_refusal "HANDOFF_LABEL set by the caller" 1 "\$HANDOFF_LABEL is set" \
-  env HANDOFF_LABEL=mk-Zq9-outer python3 ../consume.py --label example --check --blob-file blob.txt
+  env HANDOFF_LABEL=mk-Zq9-outer python3 ../consume.py --label example --check --blob-file blob-age.txt
 expect_refusal "HANDOFF_LABEL set, empty" 1 "\$HANDOFF_LABEL is set" \
-  env HANDOFF_LABEL= python3 ../consume.py --label example --check --blob-file blob.txt
+  env HANDOFF_LABEL= python3 ../consume.py --label example --check --blob-file blob-age.txt
 echo "ok"
 fi
 
