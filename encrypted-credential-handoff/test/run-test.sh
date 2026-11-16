@@ -134,12 +134,12 @@ expect_refusal() {
   echo "ok (refused: $desc)"
 }
 
-# Copy ../handoff.sh to $2, with the public key in $1 beside it as
-# handoff-muse.pem (the default recipient's key file).
+# Copy ../handoff.sh to $2, with the recipient file $1 beside it as
+# handoff-muse.age (the default recipient's file).
 install_handoff() {
   mkdir -p "$(dirname "$2")"
   cp ../handoff.sh "$2"
-  cp "$1" "$(dirname "$2")/handoff-muse.pem"
+  cp "$1" "$(dirname "$2")/handoff-muse.age"
 }
 
 # Encrypt the JSON text in $1 to the dummy public key with openssl (the
@@ -160,9 +160,9 @@ enc() {
 # dummy public key, the blob it wrote, and the key's fingerprint. Made on
 # demand, so a section can run alone under HANDOFF_TEST_ONLY.
 prep_shared() {
-  [ -f "$S/hd/handoff.sh" ] || install_handoff test-dummy-pub.pem "$S/hd/handoff.sh"
+  [ -f "$S/hd/handoff.sh" ] || install_handoff handoff-test.age "$S/hd/handoff.sh"
   [ -s "$S/blob-3a.txt" ] || bash "$S/hd/handoff.sh" < expected.json >"$S/blob-3a.txt" 2>/dev/null
-  want=$(bash "$S/hd/handoff.sh" --fingerprint)
+  want=$(bash "$S/hd/handoff.sh" --fingerprint 2>/dev/null)
 }
 
 # What the sections after 4b need from it: a freshly generated identity in
@@ -346,9 +346,9 @@ fi
 
 if section 3a; then
 echo "== 3a. reference encrypt (handoff.sh) writes a blob =="
-install_handoff test-dummy-pub.pem "$S/hd/handoff.sh"
+install_handoff handoff-test.age "$S/hd/handoff.sh"
 bash "$S/hd/handoff.sh" < expected.json >"$S/blob-3a.txt" 2>"$S/err"
-grep -q '^pubkey SHA256:' "$S/err" || fail "handoff.sh printed no fingerprint"
+grep -qF "recipient: $(cat handoff-test.age) (from $S/hd/handoff-muse.age)" "$S/err" || fail "handoff.sh printed no recipient"
 no_dummy_in "$S/blob-3a.txt" "$S/err"
 echo "ok"
 fi
@@ -378,15 +378,51 @@ if [ -r /proc/self/status ]; then
 else
   echo "skip: no /proc, signal dispositions not checked"
 fi
-# 190 bytes is the RSA-2048/OAEP-SHA256 ceiling: exactly that must work.
-max=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "mk-Zq9" + "y" * 153}, separators=(",", ":")), end="")')
-[ "${#max}" = 190 ] || fail "test setup: maximum payload is ${#max} bytes, not 190"
-bash "$S/hd/handoff.sh" <<<"$max" >"$S/blob3" 2>/dev/null || fail "handoff.sh refused a 190-byte payload"
-out=$(HANDOFF_BLOB="$(cat "$S/blob3")" consume --label example -- python3 -c '
+# The payload cap: MAX_PAYLOAD bytes works, one more is refused with the limit
+# named, and the number agrees with consume.py's MAX_BLOB_FILE (Task 9
+# changes both). Both are read from their files, so a change to one alone
+# fails here.
+max_payload=$(sed -n 's/^MAX_PAYLOAD=\([0-9]*\).*/\1/p' ../handoff.sh)
+max_blob=$(sed -n 's/^MAX_BLOB_FILE = \([0-9]*\).*/\1/p' ../consume.py)
+[ -n "$max_payload" ] && [ -n "$max_blob" ] || fail "test setup: MAX_PAYLOAD or MAX_BLOB_FILE not found"
+# The formula in handoff.sh's comment: blob bytes <= MAX_BLOB_FILE / 4 * 3,
+# less 168 (header) and 32 (payload overhead) and a 256-byte grease margin.
+[ "$max_payload" = "$(( max_blob / 4 * 3 - 168 - 32 - 256 ))" ] \
+  || fail "MAX_PAYLOAD ($max_payload) is not MAX_BLOB_FILE ($max_blob) / 4 * 3 - 168 - 32 - 256"
+# JSON of exactly $1 bytes, a svc and one private_key value.
+pad() {
+  python3 -c 'import json, sys; n = int(sys.argv[1]); head = json.dumps({"svc": "example", "private_key": ""}, separators=(",", ":")); sys.stdout.write(head[:-2] + "y" * (n - len(head)) + head[-2:])' "$1"
+}
+big=$(pad "$max_payload")
+[ "${#big}" = "$max_payload" ] || fail "test setup: the maximum payload is ${#big} bytes, not $max_payload"
+bash "$S/hd/handoff.sh" <<<"$big" >"$S/blob-max" 2>"$S/err" || { cat "$S/err" >&2; fail "handoff.sh refused a $max_payload-byte payload"; }
+# What Go age makes for that payload is 168 + 32 bytes over it, which leaves
+# the margin to MAX_BLOB_FILE's decoded size for rage's grease stanza.
+blob_chars=$(( $(wc -c < "$S/blob-max") - 1 ))
+[ "$blob_chars" -le "$max_blob" ] || fail "the blob for a maximum payload is $blob_chars characters, over $max_blob"
+[ "$blob_chars" = "$(( (max_payload + 168 + 32 + 2) / 3 * 4 ))" ] \
+  || fail "the blob for a maximum payload is not payload + 168 + 32 bytes (the comment's arithmetic is out of date)"
+out=$(HANDOFF_BLOB="$(cat "$S/blob-max")" consume --label example -- python3 -c '
 import os
-print(len(os.environ["SERVICE_PASSWORD"]))
+print(len(os.environ["SERVICE_PRIVATE_KEY"]))
 ')
-[ "$out" = 159 ] || fail "the 190-byte payload did not round-trip"
+[ "$out" = "$(( max_payload - 34 ))" ] || fail "the maximum payload did not round-trip ($out)"
+over=$(pad "$(( max_payload + 1 ))")
+expect_refusal "handoff.sh payload one byte over the cap" 1 "payload is $(( max_payload + 1 )) bytes; the most handoff.sh sends is $max_payload bytes" \
+  bash "$S/hd/handoff.sh" <<<"$over"
+# One line of base64, no wrapping: checked here on GNU coreutils; BSD/macOS
+# base64 and Git Bash are CI's to check.
+[ "$(wc -l < "$S/blob-max" | tr -d ' ')" = 1 ] || fail "handoff.sh's output is not one line"
+# A PEM-like private_key built with jq --rawfile and piped in (the documented
+# way to build one): its newlines survive the round trip.
+printf -- '-----BEGIN EXAMPLE KEY-----\nZmFrZSBrZXkgZm9yIHRlc3Rpbmc=\n-----END EXAMPLE KEY-----\n' >"$S/pem.txt"
+jq -n --arg svc example --rawfile private_key "$S/pem.txt" '{svc: $svc, private_key: $private_key}' \
+  | bash "$S/hd/handoff.sh" >"$S/blob-pem" 2>/dev/null || fail "handoff.sh refused a jq --rawfile private_key payload"
+HANDOFF_BLOB="$(cat "$S/blob-pem")" consume --label example -- python3 -c '
+import os, sys
+sys.stdout.buffer.write(os.environ["SERVICE_PRIVATE_KEY"].encode())
+' >"$S/pem-out"
+cmp "$S/pem-out" "$S/pem.txt" || fail "the multi-line private_key did not round-trip"
 echo "ok"
 fi
 
@@ -570,7 +606,6 @@ rm -f "$S/keygen-args"
 env PATH="$S/envstub:$PATH" bash ../agent-setup.sh --fingerprint "$TMPKEY" >/dev/null 2>&1 || fail "the argument-recording --fingerprint failed"
 [ "$(cat "$S/keygen-args")" = "-y" ] || fail "--fingerprint passed more than -y to age-keygen: $(cat "$S/keygen-args")"
 # The recipient setup printed is the one handoff.sh shows for it.
-# passes from Task 5 (handoff.sh --fingerprint)
 mkdir -p "$S/ha"; cp ../handoff.sh "$S/ha/handoff.sh"
 printf '%s\n' "$printed" >"$S/ha/handoff-muse.age"
 from_handoff=$(bash "$S/ha/handoff.sh" --fingerprint 2>&1) || fail "handoff.sh --fingerprint failed: $from_handoff"
@@ -653,11 +688,6 @@ for k in ed25519 p256 rsa2052 rsa-e3 rsa-e65539; do
   # Any PEM private key is a 0.1.0 key to agent-setup.sh, as it is to consume.py.
   expect_refusal "a $k key (agent-setup.sh --fingerprint)" 1 "is an RSA key from 0.1.0" \
     bash ../agent-setup.sh --fingerprint "$S/$k.pem"
-  # handoff.sh's copy of the same check, on the key's public half.
-  mkdir -p "$S/hb"; cp ../handoff.sh "$S/hb/handoff.sh"
-  openssl pkey -in "$S/$k.pem" -pubout > "$S/hb/handoff-$k.pem"
-  expect_refusal "a $k key (handoff.sh)" 1 "is not an RSA-2048 public key with e = 65537" \
-    bash "$S/hb/handoff.sh" --to "$k" --fingerprint
 done
 # An unreadable key file is reported as unreadable, not as oversized (root
 # can read anything, so skip it there).
@@ -835,12 +865,6 @@ expect_refusal "blob file missing" 1 "No such file or directory" \
 # A blob file saved with a byte-order mark still works.
 printf '\357\273\277' > "$S/bom.txt"; cat blob-age.txt >> "$S/bom.txt"
 consume --label example --check --blob-file "$S/bom.txt" >/dev/null || fail "a blob file with a BOM was refused"
-# OpenSSL 4 passes handoff.sh's gate (a wrapper that reports 4.0.0 and passes
-# the rest on). agent-setup.sh uses no OpenSSL: its gate is age-keygen's (4b).
-mkdir -p "$S/ssl4"; ln -sf "$PY" "$S/ssl4/python3"
-# shellcheck disable=SC2016  # $1 and $@ belong to the generated script
-printf '#!/bin/sh\nif [ "$1" = version ]; then echo "OpenSSL 4.0.0 1 Jan 2027"; else exec %s "$@"; fi\n' "$(command -v openssl)" > "$S/ssl4/openssl"
-chmod 755 "$S/ssl4/openssl"
 # Run as ./consume.py, the helper is isolated: a planted sitecustomize on
 # PYTHONPATH doesn't run.
 mkdir -p "$S/pp"
@@ -853,36 +877,6 @@ PYTHONPATH="$S/pp" HANDOFF_PRIVKEY="$TMPKEY" sh ../consume.py --label example --
 # ...and silent: a reformatted line 2 (""" ":) makes sh print an error on
 # every run while still working.
 [ ! -s "$S/launch-err" ] || fail "consume.py's launcher wrote to stderr: $(cat "$S/launch-err")"
-[ "$(PATH="$S/ssl4:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint)" = "$want" ] \
-  || fail "handoff.sh refused OpenSSL 4"
-mkdir -p "$S/libressl"
-printf '#!/bin/sh\necho "LibreSSL 3.8.2"\n' > "$S/libressl/openssl"; chmod 755 "$S/libressl/openssl"
-expect_refusal "handoff.sh, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
-  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint
-[ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
-expect_refusal "handoff.sh encrypting, not OpenSSL 3 or 4" 1 "requires OpenSSL 3 or 4" \
-  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/hd/handoff.sh" <<<'{"svc":"example","password":"mk-Zq9"}'
-[ "$(uname -s)" = Darwin ] || ! grep -q Homebrew "$S/err" || fail "the macOS hint showed off macOS"
-# An openssl version that fails silently is reported, not a bare exit.
-mkdir -p "$S/silent-ssl"; ln -sf "$PY" "$S/silent-ssl/python3"
-printf '#!/bin/sh\nexit 1\n' > "$S/silent-ssl/openssl"; chmod 755 "$S/silent-ssl/openssl"
-expect_refusal "handoff.sh, openssl version fails silently" 1 "openssl version failed" \
-  env PATH="$S/silent-ssl:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint
-# handoff.sh runs in the user's shell, so its hint doesn't mention wrappers.
-expect_refusal "handoff.sh hint off wrappers" 1 "Put one first on your PATH" \
-  env PATH="$S/libressl:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint
-! grep -q "wrapper" "$S/err" || fail "handoff.sh's hint mentions wrappers"
-# An openssl version that prints nothing but exits 0: "no version output",
-# in handoff.sh.
-mkdir -p "$S/empty-ssl"; ln -sf "$PY" "$S/empty-ssl/python3"
-printf '#!/bin/sh\nexit 0\n' > "$S/empty-ssl/openssl"; chmod 755 "$S/empty-ssl/openssl"
-expect_refusal "handoff.sh, empty openssl version" 1 "found: no version output" \
-  env PATH="$S/empty-ssl:/usr/bin:/bin" bash "$S/hd/handoff.sh" --fingerprint
-# On macOS the hint names Homebrew's openssl@3: OSTYPE (which bash takes
-# from the environment) is faked to say darwin.
-ln -sf "$PY" "$S/libressl/python3"
-expect_refusal "handoff.sh hint on macOS" 1 "on macOS, Homebrew's openssl@3" \
-  env PATH="$S/libressl:/usr/bin:/bin" OSTYPE=darwin23 bash "$S/hd/handoff.sh" --fingerprint
 
 # shellcheck disable=SC2088
 expect_refusal "agent-setup.sh, ~ without HOME" 1 "a ~ in HANDOFF_KEY_DIR needs it" \
@@ -918,21 +912,6 @@ sleep 0.3
 released=no; [ ! -e "$S/fifo-released" ] || released=yes
 kill "$writer" 2>/dev/null || true; wait "$writer" 2>/dev/null || true
 [ "$released" = no ] || fail "the helper opened the FIFO before refusing it"
-printf 'openssl_conf = init\n[init]\nproviders = prov\n[prov]\nevil = evil\n[evil]\nmodule = %s/no-such-provider.so\nactivate = 1\n' "$S" > "$S/evil.cnf"
-# No OPENSSL_* variable, in any case, reaches handoff.sh's openssl: a fake
-# openssl first on PATH fails if it sees one, and passes the rest on.
-# (agent-setup.sh runs no openssl; the variables age-keygen reads are 4b's.)
-mkdir -p "$S/ssl-env"; ln -sf "$PY" "$S/ssl-env/python3"
-# Absolute paths inside the fake: it runs with only $S/ssl-env on PATH.
-printf '#!/bin/sh\nif %s | %s -qi "^openssl_"; then echo "OPENSSL_ variable reached openssl" >&2; exit 9; fi\nexec %s "$@"\n' \
-  "$(command -v env)" "$(command -v grep)" "$(command -v openssl)" > "$S/ssl-env/openssl"
-chmod 755 "$S/ssl-env/openssl"
-# Through the fake openssl that fails on one...
-[ "$(env PATH="$S/ssl-env:/usr/bin:/bin" OPENSSL_MODULES="$S/nowhere" openssl_x=1 bash "$S/hd/handoff.sh" --fingerprint 2>/dev/null)" = "$want" ] \
-  || fail "an OPENSSL_* variable reached handoff.sh's openssl"
-# ...and a caller's OPENSSL_CONF that would break them.
-[ "$(OPENSSL_CONF="$S/evil.cnf" bash "$S/hd/handoff.sh" --fingerprint)" = "$want" ] \
-  || fail "a caller's OPENSSL_CONF reached handoff.sh's openssl"
 # The fstat re-check: a path that passed the stat check but is a FIFO by the
 # time it's opened (os.stat patched to report a regular file) is still
 # refused, without hanging (O_NONBLOCK).
@@ -1030,20 +1009,12 @@ expect_refusal "agent-setup.sh --fingerprint, empty KEY" 2 "empty KEY" \
 cp test-dummy-pub.pem "$S/pub-copy.pem"; chmod 600 "$S/pub-copy.pem"
 expect_refusal "agent-setup.sh --fingerprint, a public key" 1 "is not an age identity file" \
   bash ../agent-setup.sh --fingerprint "$S/pub-copy.pem"
-long=$(python3 -c 'import json; print(json.dumps({"svc": "example", "password": "mk-Zq9" + "x" * 154}, separators=(",", ":")), end="")')
-[ "${#long}" = 191 ] || fail "test setup: oversize payload is ${#long} bytes, not 191"
-expect_refusal "handoff.sh 191-byte payload" 1 "payload is 191 bytes" \
-  bash "$S/hd/handoff.sh" <<<"$long"
-if command -v jq >/dev/null; then
-  expect_refusal "handoff.sh non-object payload" 1 "must be a single JSON object" \
-    bash "$S/hd/handoff.sh" <<<'["mk-Zq9"]'
-  expect_refusal "handoff.sh two concatenated objects" 1 "must be a single JSON object" \
-    bash "$S/hd/handoff.sh" <<<'{"svc":"example","password":"mk-Zq9"}{"svc":"example"}'
-  expect_refusal "handoff.sh payload without svc" 1 "must be a single JSON object" \
-    bash "$S/hd/handoff.sh" <<<'{"password":"mk-Zq9"}'
-else
-  echo "skip: jq not installed, handoff.sh shape refusals not tested"
-fi
+expect_refusal "handoff.sh non-object payload" 1 "must be a single JSON object" \
+  bash "$S/hd/handoff.sh" <<<'["mk-Zq9"]'
+expect_refusal "handoff.sh two concatenated objects" 1 "must be a single JSON object" \
+  bash "$S/hd/handoff.sh" <<<'{"svc":"example","password":"mk-Zq9"}{"svc":"example"}'
+expect_refusal "handoff.sh payload without svc" 1 "must be a single JSON object" \
+  bash "$S/hd/handoff.sh" <<<'{"password":"mk-Zq9"}'
 fi
 
 if section 5a; then
@@ -1154,7 +1125,7 @@ expect_refusal "the age version is reported" 1 "age v9.9.9-test" \
 cp test-dummy-identity.txt "$S/loose.txt"; chmod 644 "$S/loose.txt"
 expect_refusal "group/other-readable identity" 1 "must be owner-only" \
   env HANDOFF_PRIVKEY="$S/loose.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
-ln -s "$TMPKEY" "$S/id-link.txt"
+ln -sf "$TMPKEY" "$S/id-link.txt"
 expect_refusal "a symlinked identity" 1 "is a symbolic link" \
   env HANDOFF_PRIVKEY="$S/id-link.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 cat "$TMPKEY" "$TMPKEY" >"$S/id-two.txt"
@@ -1226,36 +1197,38 @@ echo "ok"
 fi
 
 if section 5b; then
-echo "== 5b. handoff.sh's key: handoff-NAME.pem beside the script, and nothing else =="
+echo "== 5b. handoff.sh's recipient: handoff-NAME.age beside the script, and nothing else =="
 prep_shared
 prep_agent
 K="$S/hk"; mkdir -p "$K"; cp ../handoff.sh "$K/handoff.sh"
 pay='{"svc":"example","password":"mk-Zq9"}'
-# No key file: no ciphertext, and no key in the script to fall back on.
-expect_refusal "handoff.sh with no key file" 1 "no key file for recipient 'muse': $K/handoff-muse.pem doesn't exist" \
+RCPT=$(cat handoff-test.age)
+BASH_BIN=$(command -v bash)
+# No recipient file: no ciphertext, and no recipient in the script to fall back on.
+expect_refusal "handoff.sh with no recipient file" 1 "no recipient file for 'muse': $K/handoff-muse.age doesn't exist" \
   bash "$K/handoff.sh" <<<"$pay"
-expect_refusal "handoff.sh --fingerprint with no key file" 1 "no key file for recipient 'muse'" \
+expect_refusal "handoff.sh --fingerprint with no recipient file" 1 "no recipient file for 'muse'" \
   bash "$K/handoff.sh" --fingerprint
-# A backstop only: the behavior above (no key file, no ciphertext) is the proof.
-! grep -qx -e '-----BEGIN PUBLIC KEY-----' -e '-----END PUBLIC KEY-----' ../handoff.sh \
-  || fail "handoff.sh still embeds a public key block"
-# --to NAME picks handoff-NAME.pem; --fingerprint names the file it read.
-cp test-dummy-pub.pem "$K/handoff-other.pem"
+# A backstop only: the behavior above (no file, no ciphertext) is the proof.
+! grep -q 'age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]\{58\}' ../handoff.sh \
+  || fail "handoff.sh still embeds a recipient"
+# --to NAME picks handoff-NAME.age; --fingerprint names the file it read.
+cp handoff-test.age "$K/handoff-other.age"
 [ "$(bash "$K/handoff.sh" --to other --fingerprint 2>"$S/err")" = "$want" ] \
-  || fail "--to other didn't read handoff-other.pem"
-grep -qxF "key file: $K/handoff-other.pem" "$S/err" || fail "--fingerprint didn't name the key file it read"
-expect_refusal "handoff.sh --to a recipient with no key file" 1 "no key file for recipient 'nobody'" \
+  || fail "--to other didn't read handoff-other.age"
+grep -qxF "key file: $K/handoff-other.age" "$S/err" || fail "--fingerprint didn't name the file it read"
+expect_refusal "handoff.sh --to a recipient with no file" 1 "no recipient file for 'nobody'" \
   bash "$K/handoff.sh" --to nobody --fingerprint
 # With no --to, the recipient is muse.
-cp test-dummy-pub.pem "$K/handoff-muse.pem"
+cp handoff-test.age "$K/handoff-muse.age"
 [ "$(bash "$K/handoff.sh" --fingerprint 2>"$S/err")" = "$want" ] \
-  || fail "with no --to, handoff.sh didn't read handoff-muse.pem"
-grep -qxF "key file: $K/handoff-muse.pem" "$S/err" || fail "with no --to, handoff.sh didn't name handoff-muse.pem"
-rm "$K/handoff-muse.pem"
-# Encrypting names the key file beside the fingerprint, and the blob round-trips.
+  || fail "with no --to, handoff.sh didn't read handoff-muse.age"
+grep -qxF "key file: $K/handoff-muse.age" "$S/err" || fail "with no --to, handoff.sh didn't name handoff-muse.age"
+rm "$K/handoff-muse.age"
+# Encrypting names the recipient file beside the recipient, and the blob round-trips.
 bash "$K/handoff.sh" --to other expected.json >"$S/blob4" 2>"$S/err" || { cat "$S/err" >&2; fail "handoff.sh --to other FILE failed"; }
-grep -qF "pubkey $want (from $K/handoff-other.pem)" "$S/err" || fail "the encrypt run didn't name its key file"
-grep -qF -- "--- paste everything below into chat with other (key file $K/handoff-other.pem) ---" "$S/err" \
+grep -qF "$want (from $K/handoff-other.age)" "$S/err" || fail "the encrypt run didn't name its recipient file"
+grep -qF -- "--- paste everything below into chat with other (recipient file $K/handoff-other.age) ---" "$S/err" \
   || fail "the paste banner didn't name the recipient"
 out=$(HANDOFF_BLOB="$(cat "$S/blob4")" consume --label example -- python3 -c '
 import os
@@ -1271,7 +1244,7 @@ expect_refusal "handoff.sh --to a non-ASCII name" 2 "--to NAME takes only letter
   bash "$K/handoff.sh" --to "othér" --fingerprint
 expect_refusal "handoff.sh --to a 65-character name" 2 "--to NAME is at most 64 characters" \
   bash "$K/handoff.sh" --to "$(printf 'a%.0s' $(seq 65))" --fingerprint
-cp test-dummy-pub.pem "$K/handoff-$(printf 'a%.0s' $(seq 64)).pem"
+cp handoff-test.age "$K/handoff-$(printf 'a%.0s' $(seq 64)).age"
 [ "$(bash "$K/handoff.sh" --to "$(printf 'a%.0s' $(seq 64))" --fingerprint 2>/dev/null)" = "$want" ] \
   || fail "handoff.sh refused a 64-character name"
 expect_refusal "handoff.sh --to with no NAME" 2 "--to needs a NAME" bash "$K/handoff.sh" --to
@@ -1288,7 +1261,7 @@ expect_refusal "handoff.sh as /dev/stdin" 1 "save handoff.sh to a file and run t
 expect_refusal "handoff.sh as //dev/stdin" 1 "save handoff.sh to a file and run that file" \
   bash //dev/stdin --to other --fingerprint < "$K/handoff.sh"
 # bash in POSIX mode (macOS's sh, or POSIXLY_CORRECT / SHELLOPTS=posix set)
-# leaves POSIX mode, so the encrypt step's <(...) works on bash before 5.1 too.
+# leaves POSIX mode, so the script runs the same either way.
 for how in "bash --posix" "env POSIXLY_CORRECT=1 bash" "env SHELLOPTS=posix bash"; do
   $how "$K/handoff.sh" --to other expected.json >"$S/blob6" 2>"$S/err" \
     || { cat "$S/err" >&2; fail "handoff.sh failed under $how"; }
@@ -1301,45 +1274,54 @@ done
 # A real file under /dev/shm is not a descriptor: it runs.
 if [ -d /dev/shm ] && [ -w /dev/shm ]; then
   SH=$(mktemp -d /dev/shm/handoff-test.XXXXXX)
-  cp ../handoff.sh "$SH/handoff.sh"; cp test-dummy-pub.pem "$SH/handoff-muse.pem"
+  cp ../handoff.sh "$SH/handoff.sh"; cp handoff-test.age "$SH/handoff-muse.age"
   [ "$(bash "$SH/handoff.sh" --fingerprint 2>/dev/null)" = "$want" ] || { rm -rf "$SH"; fail "handoff.sh refused to run from /dev/shm"; }
   rm -rf "$SH"
 else
   echo "skip: no writable /dev/shm, handoff.sh's run from it not tested"
 fi
-# A near-miss key file name is named.
+# A near-miss file name is named.
 mkdir -p "$S/hn"; cp ../handoff.sh "$S/hn/handoff.sh"
-# Only a short allow-list counts as a near miss; anything else (a kept old key
+# Only a short allow-list counts as a near miss; anything else (a kept old file
 # under any suffix, a directory, a symlink) gets the plain message.
-for old in handoff-muse.pem.old handoff-muse.pem.OLD handoff-muse.pem.bak handoff-muse.pem~ handoff-muse.pem.2025-06-01 handoff-muse.pem.save handoff_muse.pem.d handoff_muse.pem.lnk handoffXmuse.pem; do
-  rm -rf "$S/hn/"handoff?muse.pem* "$S/hn/"handoff?Muse.pem*
+for old in handoff-muse.age.old handoff-muse.age.OLD handoff-muse.age.bak handoff-muse.age~ handoff-muse.age.2025-06-01 handoff-muse.age.save handoff_muse.age.d handoff_muse.age.lnk handoffXmuse.age; do
+  rm -rf "$S/hn/"handoff?muse.age* "$S/hn/"handoff?Muse.age*
   case "$old" in
-    *.d) mkdir "$S/hn/handoff_muse.pem"; old="handoff_muse.pem (a directory)" ;;
-    *.lnk) ln -s "$PWD/test-dummy-pub.pem" "$S/hn/handoff_muse.pem" ;;
-    *) cp test-dummy-pub.pem "$S/hn/$old" ;;
+    *.d) mkdir "$S/hn/handoff_muse.age"; old="handoff_muse.age (a directory)" ;;
+    *.lnk) ln -s "$PWD/handoff-test.age" "$S/hn/handoff_muse.age" ;;
+    *) cp handoff-test.age "$S/hn/$old" ;;
   esac
-  expect_refusal "handoff.sh with only $old beside it" 1 "handoff-muse.pem doesn't exist. Save the agent's public key there" \
+  expect_refusal "handoff.sh with only $old beside it" 1 "handoff-muse.age doesn't exist. Save the agent's recipient there" \
     bash "$S/hn/handoff.sh" --fingerprint
 done
-for near in handoff_muse.pem handoff.muse.pem HANDOFF_MUSE.pem handoff-muse.pem.txt handoff-muse.pem.pem; do
-  rm -rf "$S/hn/"handoff?muse.pem* "$S/hn/"handoff?Muse.pem* "$S/hn/"HANDOFF?MUSE.pem*
-  cp test-dummy-pub.pem "$S/hn/$near"
-  expect_refusal "handoff.sh with $near beside it" 1 "but $near does. If that file is the agent's current public key, rename it to handoff-muse.pem, then compare --fingerprint" \
+for near in handoff_muse.age handoff.muse.age HANDOFF_MUSE.age handoff-muse.age.txt handoff-muse.age.age; do
+  rm -rf "$S/hn/"handoff?muse.age* "$S/hn/"handoff?Muse.age* "$S/hn/"HANDOFF?MUSE.age*
+  cp handoff-test.age "$S/hn/$near"
+  expect_refusal "handoff.sh with $near beside it" 1 "but $near does. If that file is the agent's current recipient, rename it to handoff-muse.age, then compare --fingerprint" \
     bash "$S/hn/handoff.sh" --fingerprint
 done
-rm -rf "$S/hn/"handoff?muse.pem* "$S/hn/"handoff?Muse.pem* "$S/hn/"HANDOFF?MUSE.pem*
+rm -rf "$S/hn/"handoff?muse.age* "$S/hn/"handoff?Muse.age* "$S/hn/"HANDOFF?MUSE.age*
 # Only NAME's case differs: the hint suggests the other --to, not a rename.
-cp test-dummy-pub.pem "$S/hn/handoff-muse.pem"
-expect_refusal "handoff.sh --to Muse with handoff-muse.pem beside it" 1 "but handoff-muse.pem does. Names are case-sensitive: did you mean --to muse?" \
+cp handoff-test.age "$S/hn/handoff-muse.age"
+expect_refusal "handoff.sh --to Muse with handoff-muse.age beside it" 1 "but handoff-muse.age does. Names are case-sensitive: did you mean --to muse?" \
   bash "$S/hn/handoff.sh" --to Muse --fingerprint
-rm -f "$S/hn/handoff-muse.pem"
+rm -f "$S/hn/handoff-muse.age"
 # With the allow-list, a near-miss name can only be a case or separator
-# variant of handoff-NAME.pem: a newline in place of the - isn't offered.
-nl_name=$'handoff\nmuse.pem'
-cp test-dummy-pub.pem "$S/hn/$nl_name"
-expect_refusal "handoff.sh with a newline in place of the -" 1 "handoff-muse.pem doesn't exist. Save the agent's public key there" \
+# variant of handoff-NAME.age: a newline in place of the - isn't offered.
+nl_name=$'handoff\nmuse.age'
+cp handoff-test.age "$S/hn/$nl_name"
+expect_refusal "handoff.sh with a newline in place of the -" 1 "handoff-muse.age doesn't exist. Save the agent's recipient there" \
   bash "$S/hn/handoff.sh" --fingerprint
 rm -f "$S/hn/$nl_name"
+# A 0.1.0 install: handoff-muse.pem beside it and no .age. It says 0.2.0 uses
+# age and to ask the agent for its recipient; the key is never used.
+cp test-dummy-pub.pem "$S/hn/handoff-muse.pem"
+expect_refusal "handoff.sh with a .pem and no .age" 1 "0.2.0 uses age" \
+  bash "$S/hn/handoff.sh" <<<"$pay"
+grep -qF "ask your agent for its recipient" "$S/err" || fail "the .pem refusal doesn't say to ask for the recipient"
+expect_refusal "handoff.sh --fingerprint with a .pem and no .age" 1 "0.2.0 uses age" \
+  bash "$S/hn/handoff.sh" --fingerprint
+rm -f "$S/hn/handoff-muse.pem"
 # After --, the next argument is FILE even if it starts with -.
 cp expected.json "$K/-x.json"
 ( cd "$K" && bash handoff.sh --to other -- -x.json </dev/null >"$S/blob5" 2>/dev/null ) || fail "handoff.sh -- -x.json failed"
@@ -1370,87 +1352,96 @@ expect_refusal "handoff.sh two FILEs, the second after --" 2 "at most one FILE" 
 # Options may follow FILE.
 bash "$K/handoff.sh" expected.json --to other >/dev/null 2>"$S/err" \
   || { cat "$S/err" >&2; fail "handoff.sh FILE --to NAME was refused"; }
-grep -qF "(from $K/handoff-other.pem)" "$S/err" || fail "handoff.sh FILE --to NAME didn't read handoff-other.pem"
+grep -qF "(from $K/handoff-other.age)" "$S/err" || fail "handoff.sh FILE --to NAME didn't read handoff-other.age"
 expect_refusal "handoff.sh FILE then --fingerprint" 2 "--fingerprint takes no FILE" \
   bash "$K/handoff.sh" expected.json --fingerprint
-# Run by a relative path, the key file is named relative to the working directory.
+# Run by a relative path, the file is named relative to the working directory.
 ( cd "$K" && bash handoff.sh --to other --fingerprint ) 2>"$S/err" >/dev/null || fail "handoff.sh run as bash handoff.sh failed"
-grep -qxF "key file: ./handoff-other.pem" "$S/err" || fail "bash handoff.sh named its key file $(cat "$S/err")"
+grep -qxF "key file: ./handoff-other.age" "$S/err" || fail "bash handoff.sh named its recipient file $(cat "$S/err")"
 ( cd "$S" && bash hk/handoff.sh --to other --fingerprint ) 2>"$S/err" >/dev/null || fail "handoff.sh run as bash hk/handoff.sh failed"
-grep -qxF "key file: ./hk/handoff-other.pem" "$S/err" || fail "bash hk/handoff.sh named its key file $(cat "$S/err")"
-# A copy with CRLF line endings or trailing blanks is still the one key.
-sed 's/$/\r/' test-dummy-pub.pem > "$K/handoff-crlf.pem"
-[ "$(bash "$K/handoff.sh" --to crlf --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a CRLF key file"
-{ printf '\357\273\277'; cat test-dummy-pub.pem; } > "$K/handoff-bom.pem"
-[ "$(bash "$K/handoff.sh" --to bom --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with a byte-order mark"
-{ printf '\357\273\277'; sed 's/$/\r/' test-dummy-pub.pem; } > "$K/handoff-bomcrlf.pem"
-[ "$(bash "$K/handoff.sh" --to bomcrlf --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with a byte-order mark and CRLF"
-sed 's/^/    /' test-dummy-pub.pem > "$K/handoff-indented.pem"
-[ "$(bash "$K/handoff.sh" --to indented --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused an indented key file"
-python3 -c 'import sys; sys.stdout.buffer.write(open("test-dummy-pub.pem").read().encode("utf-16"))' > "$K/handoff-utf16.pem"
-expect_refusal "handoff.sh key file saved as UTF-16" 1 "handoff-utf16.pem is saved as UTF-16: save it as UTF-8 or plain text" \
-  bash "$K/handoff.sh" --to utf16 --fingerprint
-python3 -c 'import sys; sys.stdout.buffer.write(b"\xfe\xff" + open("test-dummy-pub.pem").read().encode("utf-16-be"))' > "$K/handoff-utf16be.pem"
-expect_refusal "handoff.sh key file saved as UTF-16 big-endian" 1 "handoff-utf16be.pem is saved as UTF-16" \
-  bash "$K/handoff.sh" --to utf16be --fingerprint
-sed 's/$/  /' test-dummy-pub.pem > "$K/handoff-blanks.pem"
-[ "$(bash "$K/handoff.sh" --to blanks --fingerprint 2>/dev/null)" = "$want" ] || fail "handoff.sh refused a key file with trailing blanks"
-# A key file that isn't one RSA-2048 public key is refused, never used.
-mkdir "$K/handoff-dir.pem"
-expect_refusal "handoff.sh key file that is a directory" 1 "handoff-dir.pem is not a regular file" \
+grep -qxF "key file: ./hk/handoff-other.age" "$S/err" || fail "bash hk/handoff.sh named its recipient file $(cat "$S/err")"
+# Recipient files that aren't a regular file, or aren't there.
+mkdir "$K/handoff-dir.age"
+expect_refusal "handoff.sh recipient file that is a directory" 1 "handoff-dir.age is not a regular file" \
   bash "$K/handoff.sh" --to dir --fingerprint
-cp "$RSAKEY" "$K/handoff-priv.pem"
-expect_refusal "handoff.sh key file holding a private key" 1 "holds a private key. Only the agent's public key belongs here: delete this file now" \
-  bash "$K/handoff.sh" --to priv <<<"$pay"
-printf 'not a key\n' > "$K/handoff-junk.pem"
-expect_refusal "handoff.sh key file with no key" 1 "must hold exactly one public key" \
-  bash "$K/handoff.sh" --to junk --fingerprint
-cat test-dummy-pub.pem "$S/agent-pub.pem" > "$K/handoff-two.pem"
-expect_refusal "handoff.sh key file with two keys" 1 "must hold exactly one public key" \
-  bash "$K/handoff.sh" --to two <<<"$pay"
-{ echo '-----BEGIN PUBLIC KEY-----'; echo 'bm90IGEga2V5'; echo '-----END PUBLIC KEY-----'; } > "$K/handoff-damaged.pem"
-expect_refusal "handoff.sh damaged key file" 1 "handoff-damaged.pem is not a readable public key" \
-  bash "$K/handoff.sh" --to damaged --fingerprint
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null | openssl pkey -pubout > "$K/handoff-ec.pem"
-expect_refusal "handoff.sh key file with an EC key" 1 "is not an RSA-2048 public key with e = 65537" \
-  bash "$K/handoff.sh" --to ec --fingerprint
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:65539 2>/dev/null \
-  | openssl pkey -pubout > "$K/handoff-e65539.pem"
-expect_refusal "handoff.sh key file with e = 65539" 1 "is not an RSA-2048 public key with e = 65537" \
-  bash "$K/handoff.sh" --to e65539 --fingerprint
-{ cat test-dummy-pub.pem; openssl req -x509 -new -key "$RSAKEY" -subj /CN=x -days 1 2>/dev/null; } > "$K/handoff-cert.pem"
-grep -q 'BEGIN CERTIFICATE' "$K/handoff-cert.pem" || fail "test setup: no certificate made"
-expect_refusal "handoff.sh key file with a key and a certificate" 1 "must hold exactly one public key" \
-  bash "$K/handoff.sh" --to cert --fingerprint
-ln -s "$K/nowhere.pem" "$K/handoff-dangling.pem"
-expect_refusal "handoff.sh key file that is a dangling symlink" 1 "handoff-dangling.pem is a symlink that doesn't resolve to a file" \
+ln -s "$K/nowhere.age" "$K/handoff-dangling.age"
+expect_refusal "handoff.sh recipient file that is a dangling symlink" 1 "handoff-dangling.age is a symlink that doesn't resolve to a file" \
   bash "$K/handoff.sh" --to dangling --fingerprint
-ln -s handoff-loop.pem "$K/handoff-loop.pem"
-expect_refusal "handoff.sh key file that is a symlink loop" 1 "handoff-loop.pem is a symlink that doesn't resolve to a file" \
+ln -s handoff-loop.age "$K/handoff-loop.age"
+expect_refusal "handoff.sh recipient file that is a symlink loop" 1 "handoff-loop.age is a symlink that doesn't resolve to a file" \
   bash "$K/handoff.sh" --to loop --fingerprint
-# Exactly 16384 bytes is still accepted (the limit, not one past it).
-{ cat test-dummy-pub.pem; python3 -c 'import os,sys; sys.stdout.write("#" * (16384 - os.path.getsize("test-dummy-pub.pem") - 1) + "\n")'; } > "$K/handoff-max.pem"
-[ "$(wc -c < "$K/handoff-max.pem")" -eq 16384 ] || fail "test setup: handoff-max.pem isn't 16384 bytes"
-[ "$(bash "$K/handoff.sh" --to max --fingerprint 2>"$S/err")" = "$want" ] || { cat "$S/err" >&2; fail "handoff.sh refused a 16384-byte key file"; }
-# Trailing newlines count toward the limit too.
-{ cat test-dummy-pub.pem; python3 -c 'import sys; sys.stdout.write("\n" * 16384)'; } > "$K/handoff-nl.pem"
-expect_refusal "handoff.sh key file over 16384 bytes of trailing newlines" 1 "handoff-nl.pem is over 16384 bytes" \
-  bash "$K/handoff.sh" --to nl --fingerprint
-# And NULs, which bash's $(...) would otherwise drop before the count.
-{ cat test-dummy-pub.pem; head -c 16384 /dev/zero; } > "$K/handoff-nul.pem"
-expect_refusal "handoff.sh key file over 16384 bytes of NULs" 1 "handoff-nul.pem is over 16384 bytes" \
-  bash "$K/handoff.sh" --to nul --fingerprint
-! grep -q "null byte" "$S/err" || fail "handoff.sh let bash warn about NULs in the key file"
-python3 -c 'import sys; sys.stdout.write("x" * 16385)' > "$K/handoff-big.pem"
-expect_refusal "handoff.sh key file over 16384 bytes" 1 "handoff-big.pem is over 16384 bytes" \
-  bash "$K/handoff.sh" --to big --fingerprint
-# Run through a symlink, it reads the key beside the link, not the target.
+# Run through a symlink, it reads the recipient beside the link, not the target.
 mkdir -p "$S/hl"; ln -s "$K/handoff.sh" "$S/hl/handoff.sh"
-expect_refusal "handoff.sh through a symlink, key only beside the target" 1 "$S/hl/handoff-other.pem doesn't exist" \
+expect_refusal "handoff.sh through a symlink, recipient only beside the target" 1 "$S/hl/handoff-other.age doesn't exist" \
   bash "$S/hl/handoff.sh" --to other --fingerprint
-cp test-dummy-pub.pem "$S/hl/handoff-other.pem"
+cp handoff-test.age "$S/hl/handoff-other.age"
 [ "$(bash "$S/hl/handoff.sh" --to other --fingerprint 2>/dev/null)" = "$want" ] \
-  || fail "handoff.sh through a symlink didn't read the key beside the link"
+  || fail "handoff.sh through a symlink didn't read the recipient beside the link"
+# The recipient-file cases that are a file's contents, one table shared with
+# run-test.ps1 (user-side-cases.json): {name, file_bytes_b64, to, exit,
+# stderr_contains}. Each is written as handoff-<to>.age, then handoff.sh runs
+# with a valid payload on stdin. exit 0 cases must also make a blob that opens.
+ut="$S/ut"; mkdir -p "$ut"; cp ../handoff.sh "$ut/handoff.sh"
+ncases=$(jq length user-side-cases.json)
+[ "$ncases" -gt 0 ] || fail "user-side-cases.json is empty"
+for i in $(seq 0 $(( ncases - 1 ))); do
+  c_name=$(jq -r ".[$i].name" user-side-cases.json)
+  c_to=$(jq -r ".[$i].to" user-side-cases.json)
+  c_exit=$(jq -r ".[$i].exit" user-side-cases.json)
+  c_msg=$(jq -r ".[$i].stderr_contains" user-side-cases.json)
+  [ "$(jq -r ".[$i] | keys | join(\",\")" user-side-cases.json)" = "exit,file_bytes_b64,name,stderr_contains,to" ] \
+    || fail "user-side-cases.json: case $c_name has the wrong keys"
+  jq -r ".[$i].file_bytes_b64" user-side-cases.json \
+    | python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' >"$ut/handoff-$c_to.age"
+  if [ "$c_exit" = 0 ]; then
+    bash "$ut/handoff.sh" --to "$c_to" <<<"$pay" >"$S/blob-case" 2>"$S/err" \
+      || { cat "$S/err" >&2; fail "case $c_name: handoff.sh refused the file"; }
+    grep -qF -- "$c_msg" "$S/err" || fail "case $c_name: stderr lacks \"$c_msg\""
+    out=$(HANDOFF_BLOB="$(cat "$S/blob-case")" consume --label example -- python3 -c '
+import os
+print(os.environ["SERVICE_PASSWORD"])
+')
+    [ "$out" = mk-Zq9 ] || fail "case $c_name: the blob did not round-trip (not the same recipient)"
+    [ "$(bash "$ut/handoff.sh" --to "$c_to" --fingerprint 2>/dev/null)" = "$want" ] \
+      || fail "case $c_name: --fingerprint shows another recipient"
+    echo "ok (accepted: $c_name)"
+  else
+    expect_refusal "recipient file case $c_name" "$c_exit" "$c_msg" \
+      bash "$ut/handoff.sh" --to "$c_to" <<<"$pay"
+  fi
+  rm -f "$ut/handoff-$c_to.age"
+done
+# The tools, refused before any prompt. jq: absent, then too old, then 1.6 (the
+# floor, accepted). age: absent. Each runs under a pseudo-terminal when script(1)
+# is there, where a prompt would show; the refusal must come first.
+cp handoff-test.age "$K/handoff-muse.age"
+refused_before_prompt() { # DESC MESSAGE ENV... (the command runs handoff.sh)
+  local desc="$1" msg="$2"; shift 2
+  expect_refusal "$desc" 1 "$msg" env "$@" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
+  ! grep -q 'Paste or type' "$S/err" || fail "$desc: a prompt came before the refusal"
+  if command -v script >/dev/null; then
+    out=$(timeout 20 script -qec "$(printf '%q ' env "$@" "$BASH_BIN" "$K/handoff.sh")" /dev/null </dev/null 2>&1) || true
+    printf '%s' "$out" | grep -qF -- "$msg" || fail "$desc (terminal): no refusal: $out"
+    ! printf '%s' "$out" | grep -q 'Paste or type' || fail "$desc (terminal): a prompt came before the refusal"
+  fi
+}
+mkdir -p "$S/nojq" "$S/stubjq" "$S/onlyjq"
+refused_before_prompt "handoff.sh without jq" "jq not found" PATH="$S/nojq"
+printf '#!/bin/sh\necho jq-1.5\n' >"$S/stubjq/jq"; chmod 755 "$S/stubjq/jq"
+refused_before_prompt "handoff.sh with jq 1.5" "jq 1.6 or newer is required; found jq-1.5" PATH="$S/stubjq:$PATH"
+printf '#!/bin/sh\necho gibberish\n' >"$S/stubjq/jq"
+refused_before_prompt "handoff.sh with an unreadable jq version" "found gibberish" PATH="$S/stubjq:$PATH"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.6; else exec %s "$@"; fi\n' "$(command -v jq)" >"$S/stubjq/jq"
+env PATH="$S/stubjq:$PATH" bash "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "handoff.sh refused jq 1.6"; }
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.7.1-dirty; else exec %s "$@"; fi\n' "$(command -v jq)" >"$S/stubjq/jq"
+env PATH="$S/stubjq:$PATH" bash "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "handoff.sh refused jq 1.7.1-dirty"; }
+ln -sf "$(command -v jq)" "$S/onlyjq/jq"
+refused_before_prompt "handoff.sh without age" "age not found" PATH="$S/onlyjq"
+# --fingerprint needs age too.
+expect_refusal "handoff.sh --fingerprint without age" 1 "age not found" \
+  env PATH="$S/nojq" "$BASH_BIN" "$K/handoff.sh" --fingerprint
 echo "ok"
 fi
 

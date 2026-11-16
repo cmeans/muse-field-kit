@@ -1,21 +1,25 @@
 #!/bin/bash
 # handoff.sh — securely pass a secret to your AI agent's machine.
 #
-# The plaintext never enters the chat: it is RSA-OAEP-encrypted on THIS
-# machine and only the ciphertext is pasted in. The matching private key
-# lives in a locked-down file on the agent's machine and never enters chat.
+# The plaintext never enters the chat: it is encrypted with age (X25519) on
+# THIS machine and only the ciphertext is pasted in. The matching private
+# key (an age identity) lives in a locked-down file on the agent's machine
+# and never enters chat.
 #
 # The plaintext never touches disk in the interactive path, but it does live
 # in this shell's memory while the script runs and could in principle be
 # swapped out. That is the residual exposure; "shredding" is not claimed.
 #
-# SETUP: save the public key printed by agent-setup.sh on the agent's machine
-# as handoff-<recipient>.pem in the same directory as this script (for an
-# agent called muse, the default: handoff-muse.pem), and confirm the
-# --fingerprint output matches the fingerprint the agent reports for its key.
-# At a rotation, replace that file; this script itself never changes. The
-# directory is the one in the path this script was run by, not resolved
-# through a symlink: for a symlink ~/bin/handoff.sh, the key goes in ~/bin.
+# SETUP: save the recipient printed by agent-setup.sh on the agent's machine
+# (one line, age1...) as handoff-<recipient>.age in the same directory as
+# this script (for an agent called muse, the default: handoff-muse.age), and
+# confirm the --fingerprint output matches the recipient the agent reports
+# for its key. At a rotation, replace that file; this script itself never
+# changes. The directory is the one in the path this script was run by, not
+# resolved through a symlink: for a symlink ~/bin/handoff.sh, the file goes
+# in ~/bin.
+#
+# Needs age and jq 1.6 or newer on PATH (README.md, "Installing age").
 #
 # Usage: handoff.sh --help (the usage() text below is the one copy).
 #
@@ -25,47 +29,35 @@
 # Under zsh or sh, BASH_SOURCE and compgen don't exist: say so, rather than a
 # misleading refusal further down. (First, before options sh may not have.)
 [ -n "${BASH_VERSION-}" ] || { echo "handoff.sh: run it with bash (./handoff.sh, or bash handoff.sh)" >&2; exit 1; }
-# macOS's sh is bash in POSIX mode (as is bash with POSIXLY_CORRECT or
-# SHELLOPTS=posix set), which before bash 5.1 has no <(...), used at the
-# encrypt step: leave POSIX mode, so it runs the same either way.
+# Leave POSIX mode if bash was started in it (macOS's sh, POSIXLY_CORRECT or
+# SHELLOPTS=posix), so the script runs the same either way.
 set +o posix
 set -euo pipefail
 
-# Kept equal to consume.py's MAX_KEY_FILE and agent-setup.sh's MAX_KEY_BYTES:
-MAX_KEY_BYTES=16384   # an RSA-2048 PEM key is about 450 bytes public, 1.7 KB private
-# NAME's length cap: keeps handoff-NAME.pem far under any file system's 255-byte name limit.
+# Kept equal to consume.py's MAX_KEY_FILE and agent-setup.sh's MAX_KEY_BYTES
+# (a recipient file is 63 bytes; the same bound keeps the three alike):
+MAX_KEY_BYTES=16384
+# NAME's length cap: keeps handoff-NAME.age far under any file system's 255-byte name limit.
 MAX_NAME=64
-
-# The caller's OPENSSL_* variables (OPENSSL_CONF, OPENSSL_MODULES, ...) are
-# dropped, in any case, as consume.py does: a stray or planted openssl config
-# can't load a provider into the openssl processes this script runs. This
-# guards against a config, not against a caller who controls the environment
-# (LD_PRELOAD would still pass): that control is a clean environment, the
-# wrapper's env -i (SETUP.md step 7).
-for v in $(compgen -e); do
-  case "$v" in [Oo][Pp][Ee][Nn][Ss][Ss][Ll]_*) unset "$v" ;; esac
-done
-
-command -v openssl >/dev/null || { echo "handoff.sh: openssl not found" >&2; exit 1; }
-
-# Fail closed on the wrong crypto tool, the same gate as agent-setup.sh and
-# consume.py: LibreSSL's pkeyutl OAEP behavior differs and is unverified for
-# this protocol. (The hint leaves out wrappers: this runs in the user's shell.)
-ssl_version=$(openssl version) || { echo "handoff.sh: openssl version failed" >&2; exit 1; }
-case "$ssl_version" in
-  "OpenSSL 3."*|"OpenSSL 4."*) ;;
-  *) echo "handoff.sh: requires OpenSSL 3 or 4; found: ${ssl_version:-no version output}. Put one first on your PATH$(case "${OSTYPE-}" in (darwin*) printf '%s' "; on macOS, Homebrew's openssl@3" ;; esac)" >&2; exit 1 ;;
-esac
+# The largest payload, in bytes, handed to age. Twin of consume.py's
+# MAX_BLOB_FILE (65536 characters); Task 9 changes both together:
+#   a blob is at most MAX_BLOB_FILE / 4 * 3 = 49152 bytes (base64: 3 bytes in 4 characters)
+#   Go age's blob = 168 (version line, X25519 stanza, MAC) + 32 (payload nonce 16
+#     + tag 16) + payload
+#   margin for one rage grease stanza (about 200 bytes at most) = 256
+#   MAX_PAYLOAD = 49152 - 168 - 32 - 256 = 48696
+# run-test.sh checks this arithmetic against consume.py and a real blob.
+MAX_PAYLOAD=48696
 
 usage() {
   cat >&2 <<'USAGE'
 Usage:
   handoff.sh [--to NAME]                 paste or type JSON, then Enter and Ctrl-D
   handoff.sh [--to NAME] FILE            read JSON from FILE
-  handoff.sh [--to NAME] --fingerprint   print the key's fingerprint and exit
+  handoff.sh [--to NAME] --fingerprint   print the agent's recipient and exit
   handoff.sh --help                      print this usage and exit
 NAME (default muse; up to 64 letters, digits, _ and -, not starting with -)
-picks the agent's public key file, handoff-NAME.pem, in this script's
+picks the agent's recipient file, handoff-NAME.age, in this script's
 directory.
 stdout is ONLY the base64 ciphertext; all prompts go to stderr.
 USAGE
@@ -119,14 +111,35 @@ case "$to" in
 esac
 [ "${#to}" -le "$MAX_NAME" ] || usage_error "--to NAME is at most $MAX_NAME characters"
 
-# --- the agent's public key, from handoff-NAME.pem beside this script ------
-# The key is public: what matters is that it's the agent's (the fingerprint
-# check) and that it's the only key this script can use. There's no key in
-# the script and no fallback: without a usable key file, nothing is encrypted.
+# --- the tools: refused here, before any prompt or file is read -------------
+# age encrypts; jq checks the payload's shape (a refusal, not a warning: a
+# payload that fails the consume side's checks should fail here, where the
+# human can see why). Both come first, ahead of the recipient file.
+if [ "$mode" = encrypt ]; then
+  command -v jq >/dev/null 2>&1 \
+    || { echo "handoff.sh: jq not found. Install jq 1.6 or newer (README.md, Installing age, lists it beside age)" >&2; exit 1; }
+  jq_version=$(jq --version 2>/dev/null) || jq_version=
+  jq_re='^jq-([0-9]+)\.([0-9]+)'
+  if [[ "$jq_version" =~ $jq_re ]] \
+     && { [ "${BASH_REMATCH[1]}" -gt 1 ] || [ "${BASH_REMATCH[2]}" -ge 6 ]; }; then
+    :
+  else
+    echo "handoff.sh: jq 1.6 or newer is required; found ${jq_version:-no version output}. Install a newer jq (README.md, Installing age, lists it beside age)" >&2
+    exit 1
+  fi
+fi
+command -v age >/dev/null 2>&1 \
+  || { echo "handoff.sh: age not found. Install it (README.md, Installing age)" >&2; exit 1; }
+
+# --- the agent's recipient, from handoff-NAME.age beside this script --------
+# The recipient is public: what matters is that it's the agent's (the user
+# compares it with what the agent reports) and that it's the only recipient
+# this script can use. There's none in the script and no fallback: without a
+# usable recipient file, nothing is encrypted.
 src=${BASH_SOURCE[0]-}
 # Fed on stdin or through bash -c, the script has no path, so no directory to
-# find the key in (and the working directory isn't a stand-in for it).
-no_path() { echo "handoff.sh: save handoff.sh to a file and run that file: its key file is found beside it" >&2; exit 1; }
+# find the file in (and the working directory isn't a stand-in for it).
+no_path() { echo "handoff.sh: save handoff.sh to a file and run that file: its recipient file is found beside it" >&2; exit 1; }
 [ -n "$src" ] || no_path
 case "$src" in
   */*) dir=${src%/*}; [ -n "$dir" ] || dir=/ ;;
@@ -134,93 +147,80 @@ case "$src" in
 esac
 case "$dir" in /*|.|./*) ;; *) dir=./$dir ;; esac   # shown as a path, never like an option
 # Run as bash <(cat handoff.sh) or bash /dev/stdin, the path is a descriptor's,
-# and its directory isn't where the user keeps the key. Compared after
+# and its directory isn't where the user keeps the file. Compared after
 # resolving, so //dev/fd or /dev/./fd is caught too.
 cdir=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || cdir=
 while case "$cdir" in //*) true ;; *) false ;; esac; do cdir=${cdir#/}; done   # bash keeps a leading //
 case "$cdir" in /dev|/dev/fd|/proc/*/fd) no_path ;; esac
-keyfile=${dir%/}/handoff-$to.pem
+keyfile=${dir%/}/handoff-$to.age
 
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
 if [ ! -e "$keyfile" ]; then
   [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink that doesn't resolve to a file"
   # A near miss beside it is named, from a short allow-list only: a _ or . in
-  # place of the -, another case (handoff_muse.pem, handoff-Muse.pem), or an
-  # editor's extra extension (handoff-muse.pem.txt, handoff-muse.pem.pem). Anything
-  # else, such as a kept old key (handoff-muse.pem.old, .2025-06-01), isn't
+  # place of the -, another case (handoff_muse.age, handoff-Muse.age), or an
+  # editor's extra extension (handoff-muse.age.txt, handoff-muse.age.age). Anything
+  # else, such as a kept old file (handoff-muse.age.old, .2025-06-01), isn't
   # offered, and the hint asks for a check, never a rename on its own.
   near=
   restore=$(shopt -p nullglob nocaseglob || true)
   shopt -s nullglob nocaseglob
-  for f in "${dir%/}"/handoff[-_.]"$to".pem "${dir%/}"/handoff[-_.]"$to".pem.txt "${dir%/}"/handoff[-_.]"$to".pem.pem; do
+  for f in "${dir%/}"/handoff[-_.]"$to".age "${dir%/}"/handoff[-_.]"$to".age.txt "${dir%/}"/handoff[-_.]"$to".age.age; do
     if [ "$f" != "$keyfile" ] && [ -f "$f" ] && [ ! -L "$f" ]; then near=${f##*/}; break; fi
   done
   eval "$restore"
-  # Only NAME's case differs (--to Muse, with handoff-muse.pem there): the
+  # Only NAME's case differs (--to Muse, with handoff-muse.age there): the
   # remedy is the other --to, not a rename the default run would then miss.
-  nm=${near#handoff-}; nm=${nm%.pem}
+  nm=${near#handoff-}; nm=${nm%.age}
   lc() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
-  if [ -n "$near" ] && [ "$near" = "handoff-$nm.pem" ] && [ "$nm" != "$to" ] && [ "$(lc "$nm")" = "$(lc "$to")" ]; then
-    no_key "no key file for recipient '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. Names are case-sensitive: did you mean --to $(printf '%q' "$nm")?"
+  if [ -n "$near" ] && [ "$near" = "handoff-$nm.age" ] && [ "$nm" != "$to" ] && [ "$(lc "$nm")" = "$(lc "$to")" ]; then
+    no_key "no recipient file for '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. Names are case-sensitive: did you mean --to $(printf '%q' "$nm")?"
   fi
-  [ -z "$near" ] || no_key "no key file for recipient '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current public key, rename it to handoff-$to.pem, then compare --fingerprint with the fingerprint the agent reports"
-  no_key "no key file for recipient '$to': $keyfile doesn't exist. Save the agent's public key there (SETUP.md, setup step 3), or name another recipient with --to NAME"
+  [ -z "$near" ] || no_key "no recipient file for '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current recipient, rename it to handoff-$to.age, then compare --fingerprint with the recipient the agent reports"
+  # A 0.1.0 install: the RSA public key is beside it, the age recipient isn't.
+  if [ -f "${dir%/}/handoff-$to.pem" ]; then
+    no_key "found handoff-$to.pem but no $keyfile. Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$to.age beside handoff.sh"
+  fi
+  no_key "no recipient file for '$to': $keyfile doesn't exist. Save the agent's recipient there (SETUP.md, setup step 3), or name another agent with --to NAME"
 fi
 [ -f "$keyfile" ] || no_key "$keyfile is not a regular file"
-# One bounded read, and the size checked on what was read: a large non-key
-# file makes openssl's decoder very slow, and a file swapped after the check
-# above can't bring that back.
+# One bounded read, and the size checked on what was read: a file swapped
+# after the check above can't bring back an unbounded read.
 # (The x keeps $(...) from dropping trailing newlines before they're counted,
 # and NULs, which $(...) would drop too, are counted as another byte.)
 raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" | LC_ALL=C tr '\000' '\001' && printf x; } 2>/dev/null ) || no_key "cannot read $keyfile"
 size=$(( $(printf '%s' "$raw" | LC_ALL=C wc -c) - 1 ))
-[ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$keyfile is over $MAX_KEY_BYTES bytes; not a public key file"
-PUBKEY=${raw%x}
-case "$PUBKEY" in   # matched in place: a pipe to head -c 2 could break the writer's pipe
+[ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$keyfile is over $MAX_KEY_BYTES bytes; not a recipient file"
+RECIPIENT=${raw%x}
+case "$RECIPIENT" in   # matched in place: a pipe to head -c 2 could break the writer's pipe
   $'\xff\xfe'*|$'\xfe\xff'*) no_key "$keyfile is saved as UTF-16: save it as UTF-8 or plain text" ;;
 esac
-PUBKEY=${PUBKEY#$'\xef\xbb\xbf'}   # a UTF-8 byte-order mark, as some Windows editors save
+RECIPIENT=${RECIPIENT#$'\xef\xbb\xbf'}   # a UTF-8 byte-order mark, as some Windows editors save
 # A copy saved on Windows or by an editor, or copied from an indented block,
-# can carry CRLF line endings or leading or trailing blanks: drop them before
-# the line checks (the DER check and the fingerprint still gate the key).
-PUBKEY=$(printf '%s\n' "$PUBKEY" | tr -d '\r' | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//')
-count() { { grep -cxF -- "$1" <<<"$PUBKEY" || true; } }
-if grep -qF -- 'PRIVATE KEY' <<<"$PUBKEY"; then
-  no_key "$keyfile holds a private key. Only the agent's public key belongs here: delete this file now. If it's the agent's handoff key, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
+# can carry CRLF line endings, leading or trailing blanks or blank lines: drop
+# them before the checks.
+RECIPIENT=$(printf '%s\n' "$RECIPIENT" | tr -d '\r' | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' | grep -v '^$' || true)
+# An identity (private key) here means it left the agent's machine.
+if printf '%s\n' "$RECIPIENT" | grep -q -e '^AGE-SECRET-KEY-' -e '^AGE-PLUGIN-'; then
+  no_key "$keyfile holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
 fi
-begins=$( { grep -cF -- '-----BEGIN ' <<<"$PUBKEY" || true; } )
-if [ "$begins" != 1 ] || [ "$(count '-----BEGIN PUBLIC KEY-----')" != 1 ] \
-   || [ "$(count '-----END PUBLIC KEY-----')" != 1 ]; then
-  no_key "$keyfile must hold exactly one public key (one -----BEGIN PUBLIC KEY----- block), as agent-setup.sh prints it"
-fi
-# From here on only the key block itself goes to openssl: openssl stops reading
-# at its END line, so text after it in a pipe could kill the writer (SIGPIPE,
-# fatal under pipefail) on a small pipe.
-PUBKEY=$(printf '%s\n' "$PUBKEY" | sed -n '/^-----BEGIN PUBLIC KEY-----$/,/^-----END PUBLIC KEY-----$/p')
-# RSA-2048 with e = 65537 only, as agent-setup.sh and consume.py check: its
-# public key in DER is 294 bytes, a fixed 33-byte header (its modulus field's
-# leading 00 means exactly 2048 bits), and the exponent 65537 at the end. In
-# hex, as od prints it, that's 588 characters (2 x 294).
-der=$(printf '%s\n' "$PUBKEY" | openssl pkey -pubin -outform DER 2>/dev/null | od -An -tx1 -v | tr -d ' \n') \
-  || no_key "$keyfile is not a readable public key"
-case "$der" in
-  30820122300d06092a864886f70d01010105000382010f003082010a0282010100*0203010001) ;;
-  *) der=bad ;;
+case "$RECIPIENT" in
+  ''|*$'\n'*) no_key "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it" ;;
 esac
-[ "${#der}" -eq 588 ] || no_key "$keyfile is not an RSA-2048 public key with e = 65537, as agent-setup.sh makes"
-
-fingerprint() {
-  printf '%s\n' "$PUBKEY" | openssl pkey -pubin -outform DER \
-    | openssl dgst -sha256 -binary | openssl base64
-}
+# An X25519 recipient exactly: HRP age, separator 1, then 58 lowercase
+# characters of the bech32 alphabet, 62 in all. That refuses age1pq1... and
+# age1tag1... and every plugin recipient, which also begin age1.
+recipient_re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
+[[ "$RECIPIENT" =~ $recipient_re ]] \
+  || no_key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
+# The bech32 checksum: age itself rejects a recipient that fails it. Asked
+# now, on nothing, so a mistyped file is refused before the secret is typed.
+age -r "$RECIPIENT" </dev/null >/dev/null 2>&1 \
+  || no_key "$keyfile is not a valid age recipient (age rejects it; check for a typo): copy it again from the agent"
 
 if [ "$mode" = fingerprint ]; then
-  # Assign first, echo second: inside an echo argument a failing pipeline
-  # would be masked and the script would print the SHA-256 of empty input
-  # and exit 0. As an assignment under `set -e` + pipefail, it exits 1.
-  fp=$(fingerprint)
   echo "key file: $keyfile" >&2
-  echo "SHA256:$fp"
+  echo "recipient: $RECIPIENT"
   exit 0
 fi
 
@@ -257,42 +257,36 @@ fi
 [ -n "${SECRET_JSON//[[:space:]]/}" ] || { echo "handoff.sh: empty, aborting" >&2; exit 1; }
 
 # --- validate ---------------------------------------------------------
-if command -v jq >/dev/null; then
-  # Exactly one JSON value, an object, carrying a non-empty string "svc"
-  # and only string values: `jq -e .` alone also accepts arrays, bare
-  # strings, and several concatenated values, and a payload that fails the
-  # consume side's binding or shape checks should fail here, early, where
-  # the human can see why.
-  printf '%s' "$SECRET_JSON" | jq -e -s \
-    'length==1 and (.[0]|type)=="object"
-     and (.[0].svc|type)=="string" and (.[0].svc|length)>0
-     and (.[0]|all(.[]; type=="string"))' >/dev/null 2>&1 \
-    || { echo "handoff.sh: input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2; exit 1; }
-else
-  echo "warning: jq not found — skipping JSON validation" >&2
-fi
+# Exactly one JSON value, an object, carrying a non-empty string "svc"
+# and only string values: `jq -e .` alone also accepts arrays, bare
+# strings, and several concatenated values, and a payload that fails the
+# consume side's binding or shape checks should fail here, early, where
+# the human can see why.
+printf '%s' "$SECRET_JSON" | jq -e -s \
+  'length==1 and (.[0]|type)=="object"
+   and (.[0].svc|type)=="string" and (.[0].svc|length)>0
+   and (.[0]|all(.[]; type=="string"))' >/dev/null 2>&1 \
+  || { echo "handoff.sh: input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2; exit 1; }
 
-# RSA-2048 + OAEP(SHA-256) ceiling: 256 - 2*32 - 2 = 190 bytes.
+# The cap (MAX_PAYLOAD, above) keeps the blob within consume.py's limit.
 n=$(printf '%s' "$SECRET_JSON" | wc -c)
-if [ "$n" -gt 190 ]; then
-  echo "handoff.sh: payload is ${n} bytes; RSA-2048/OAEP-SHA256 max is 190 bytes." >&2
-  echo "Shorten the JSON. (Larger payloads need a different, reviewed" >&2
-  echo "construction — see README.md, Variations.)" >&2
+if [ "$n" -gt "$MAX_PAYLOAD" ]; then
+  echo "handoff.sh: payload is ${n} bytes; the most handoff.sh sends is ${MAX_PAYLOAD} bytes." >&2
+  echo "Shorten the JSON. (Larger payloads need a larger limit on both sides;" >&2
+  echo "see README.md.)" >&2
   exit 1
 fi
 
 # --- encrypt (no plaintext ever touches disk) -------------------------
-# Pubkey via process substitution, secret via stdin pipe.
-fp=$(fingerprint)
-echo "pubkey SHA256:$fp (from $keyfile)  <- compare with the fingerprint" >&2
+# The recipient is public, so it can be an argument; the secret goes in on
+# stdin through a pipe, never on a command line. age writes the binary
+# format; base64 makes it one line (tr drops the line breaks that some
+# base64 programs add).
+blob=$(printf '%s' "$SECRET_JSON" | age -r "$RECIPIENT" | base64 | tr -d '\n') \
+  || { echo "handoff.sh: age failed to encrypt, aborting" >&2; exit 1; }
+echo "recipient: $RECIPIENT (from $keyfile)  <- compare with the recipient" >&2
 echo "   your agent reports for its key before trusting this output" >&2
-echo "--- paste everything below into chat with $to (key file $keyfile) ---" >&2
-printf '%s' "$SECRET_JSON" | openssl pkeyutl -encrypt -pubin \
-  -inkey <(printf '%s\n' "$PUBKEY") \
-  -pkeyopt rsa_padding_mode:oaep \
-  -pkeyopt rsa_oaep_md:sha256 \
-  -pkeyopt rsa_mgf1_md:sha256 \
-  | openssl base64 -A
-echo
+echo "--- paste everything below into chat with $to (recipient file $keyfile) ---" >&2
+printf '%s\n' "$blob"
 
 echo "--- end ---" >&2
