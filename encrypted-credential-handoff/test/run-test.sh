@@ -1517,6 +1517,7 @@ other_sh=
 for s in zsh dash ksh mksh; do if command -v "$s" >/dev/null; then other_sh=$s; break; fi; done
 if [ -n "$other_sh" ]; then
   expect_refusal "handoff.sh under $other_sh" 1 "run it with bash" "$other_sh" "$K/handoff.sh" --to other --fingerprint
+  expect_refusal "agent-setup.sh under $other_sh" 1 "agent-setup.sh: run it with bash" "$other_sh" ../agent-setup.sh --fingerprint "$TMPKEY"
 else
   echo "skip: no zsh, dash, ksh or mksh, handoff.sh's bash check not tested"
 fi

@@ -49,8 +49,16 @@
 # SHELLOPTS=xtrace) would print it on stderr, and allexport
 # (SHELLOPTS=allexport) would export it to every command run after it is
 # read. First, before anything is read.
+# Under zsh or sh, say so, rather than fail on an option they don't have (as
+# handoff.sh does).
+[ -n "${BASH_VERSION-}" ] || { echo "agent-setup.sh: run it with bash (./agent-setup.sh, or bash agent-setup.sh)" >&2; exit 1; }
 set +x
 set +a
+# Leave POSIX mode if bash was started in it (POSIXLY_CORRECT, SHELLOPTS=posix
+# or sh), as handoff.sh does: bash before 5.1 refuses process substitution
+# there, which recipient_of uses. Before any function is parsed. The variable
+# stays exported, so the commands run here still parse options as POSIX says.
+set +o posix
 set -euo pipefail
 umask 077
 

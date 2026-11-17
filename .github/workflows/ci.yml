@@ -71,11 +71,16 @@ jobs:
         run: shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*.sh
       - name: The scripts parse under bash 3.2 (macOS /bin/bash)
         # shellcheck doesn't know bash 3.2's parser bugs (a `)` in a case
-        # pattern inside $(...) ends the substitution there).
+        # pattern inside $(...) ends the substitution there). Each script also
+        # runs to its usage text in POSIX mode (POSIXLY_CORRECT, as run-test.sh
+        # sets for BSD-style option parsing), where bash before 5.1 refuses
+        # process substitution unless the script leaves that mode first.
         run: |
           docker run --rm -v "$PWD/encrypted-credential-handoff:/w:ro" -w /w \
             bash:3.2@sha256:2556c2da19c32c1614d318645c73a7bf64d38be21cf69e98e3ca51f053983719 \
-            sh -c 'bash --version | head -1 && for f in agent-setup.sh handoff.sh test/run-test.sh; do bash -n "$f" || exit 1; done'
+            sh -c 'bash --version | head -1 && for f in agent-setup.sh handoff.sh test/run-test.sh; do bash -n "$f" || exit 1; done &&
+              env POSIXLY_CORRECT=1 bash agent-setup.sh --help >/dev/null &&
+              env POSIXLY_CORRECT=1 bash handoff.sh --help >/dev/null'
       - name: ruff
         run: pipx run ruff==0.15.7 check encrypted-credential-handoff/
       - name: A key file owned by another user, for the key-owner refusal
