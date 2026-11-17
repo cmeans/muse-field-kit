@@ -541,6 +541,18 @@ def under_dir(target: str, directory: str) -> bool:
         p = parent
 
 
+# The --rewrap blob file as the user gave it (made absolute, symlinks not
+# followed), keyed by its resolved path. Messages name the blob the way they
+# name the key paths: on macOS /var is a symlink to /private/var, and a blob
+# in resolved form beside a key in given form reads as two places. The
+# resolved path is still what is checked and written.
+SHOWN_AS: "dict[str, str]" = {}
+
+
+def shown(path: str) -> str:
+    return SHOWN_AS.get(path, path)
+
+
 def check_blob_file(path: str) -> os.stat_result:
     """--rewrap's checks on its blob file, run before anything else is
     decided about it (an already-current blob included)."""
@@ -548,7 +560,7 @@ def check_blob_file(path: str) -> os.stat_result:
     try:
         st = os.stat(path)
     except OSError as e:
-        raise fail(f"cannot read the blob file {path!r}: {e.strerror}") from None
+        raise fail(f"cannot read the blob file {shown(path)!r}: {e.strerror}") from None
     # Windows reports any writable file as 0o666: no group or world bits to read.
     if os.name != "nt":
         # Group- or world-writable: anyone who can write it can plant a blob,
@@ -557,19 +569,19 @@ def check_blob_file(path: str) -> os.stat_result:
         # checked: a writable ancestor is the store's setup to get right
         # (SETUP.md, step 6).
         if st.st_mode & 0o022:
-            raise fail(f"the blob file {path!r} is writable by others (mode "
+            raise fail(f"the blob file {shown(path)!r} is writable by others (mode "
                        f"{stat.S_IMODE(st.st_mode):03o}); stop and report it to the user, "
-                       f"who runs: chmod go-w {shell_quote(path)}")
+                       f"who runs: chmod go-w {shell_quote(shown(path))}")
         try:
             dst = os.stat(directory)
         except OSError as e:
-            raise fail(f"cannot read the blob file's directory {directory!r}: {e.strerror}") from None
+            raise fail(f"cannot read the blob file's directory {os.path.dirname(shown(path))!r}: {e.strerror}") from None
         if dst.st_mode & 0o022 and not dst.st_mode & stat.S_ISVTX:
-            raise fail(f"the blob file's directory {directory!r} is writable by others "
+            raise fail(f"the blob file's directory {os.path.dirname(shown(path))!r} is writable by others "
                        f"(mode {stat.S_IMODE(dst.st_mode):04o}); stop and report it to the "
-                       f"user, who runs: chmod go-w {shell_quote(directory)}")
+                       f"user, who runs: chmod go-w {shell_quote(os.path.dirname(shown(path)))}")
     if BLOB_FILE_READ is not None and file_identity(st) != BLOB_FILE_READ:
-        raise fail(f"the blob file {path!r} changed since it was read (a blob staged "
+        raise fail(f"the blob file {shown(path)!r} changed since it was read (a blob staged "
                    "meanwhile?); it is left as it is now: probe the label (SETUP.md, "
                    "Rotation step 4)")
     return st
@@ -596,7 +608,7 @@ def write_atomically(path: str, data: bytes) -> None:
         except OSError as e:
             why = (" (the temporary file goes in the same directory, so that directory "
                    "must be writable)" if e.errno in (errno.EACCES, errno.EROFS) else "")
-            raise fail(f"could not write the new blob beside {path!r}: {e.strerror}{why}; "
+            raise fail(f"could not write the new blob beside {shown(path)!r}: {e.strerror}{why}; "
                        "it is unchanged") from None
         with os.fdopen(fd, "wb") as fh:
             if hasattr(os, "fchmod"):
@@ -611,11 +623,11 @@ def write_atomically(path: str, data: bytes) -> None:
             os.fsync(fh.fileno())
         with open(tmp, "rb") as fh:
             if fh.read(len(data) + 1) != data:
-                raise fail(f"the new blob didn't read back whole from {tmp!r}; {path!r} is unchanged")
+                raise fail(f"the new blob didn't read back whole from {tmp!r}; {shown(path)!r} is unchanged")
         # The file must still be the one read: a blob staged while this ran
         # isn't replaced with the old payload.
         if BLOB_FILE_READ is not None and file_identity(os.stat(path)) != BLOB_FILE_READ:
-            raise fail(f"the blob file {path!r} changed while it was being rewrapped (a "
+            raise fail(f"the blob file {shown(path)!r} changed while it was being rewrapped (a "
                        "blob staged meanwhile?); it is left as it is now: probe the label "
                        "(SETUP.md, Rotation step 4)")
         # TERM, HUP and INT blocked around the rename and the two flags, where
@@ -642,15 +654,15 @@ def write_atomically(path: str, data: bytes) -> None:
         except OSError:
             pass  # some platforms can't sync a directory; the rename is done
     except OSError as e:
-        raise fail(f"could not write the new blob to {path!r}: {e.strerror}; it is unchanged") from None
+        raise fail(f"could not write the new blob to {shown(path)!r}: {e.strerror}; it is unchanged") from None
     except KeyboardInterrupt:
         # After the rename, the file already holds the new blob.
         if renamed or (tmp is not None and not os.path.lexists(tmp)):
             tmp = None
             WRITTEN = path
-            raise fail(f"interrupted after the rename; {path!r} holds the new blob "
+            raise fail(f"interrupted after the rename; {shown(path)!r} holds the new blob "
                        "(probe the label: SETUP.md, Rotation step 4)") from None
-        raise fail(f"interrupted; {path!r} is unchanged") from None
+        raise fail(f"interrupted; {shown(path)!r} is unchanged") from None
     finally:
         if tmp is not None:
             try:
@@ -883,6 +895,8 @@ def parse_args(argv):
     if blob is None:
         raise fail(f"no blob supplied: use --blob, --blob-file, or ${BLOB_ENV}")
     target = os.path.realpath(expand_home(blob_file, "--blob-file")) if do_rewrap else None
+    if do_rewrap:
+        SHOWN_AS[target] = os.path.abspath(expand_home(blob_file, "--blob-file"))
     return label, check, do_rewrap, target, blob, env_map, cmd
 
 
@@ -985,8 +999,8 @@ def main() -> int:
         for key_dir in (os.path.dirname(os.path.realpath(current)),
                         os.path.realpath(os.path.dirname(os.path.abspath(current)))):
             if under_dir(target, key_dir):
-                raise fail(f"--rewrap's --blob-file resolves to {target!r}, under the "
-                           f"key's directory ({key_dir}); the blob belongs in the store")
+                raise fail(f"--rewrap's --blob-file resolves to {shown(target)!r}, under the "
+                           f"key's directory ({os.path.dirname(os.path.abspath(current))}); the blob belongs in the store")
     plaintext, slot = decrypt(blob, current, previous)
     creds = check_payload(parse_payload(plaintext), label, env_map)
     if check:
@@ -999,13 +1013,13 @@ def main() -> int:
         if slot == "current":
             # Already for the current key: rewriting it would only change the
             # bytes (age output is randomized) and confuse a comparison with the store.
-            print(f"consume.py: the blob in {target!r} is already for the current key "
+            print(f"consume.py: the blob in {shown(target)!r} is already for the current key "
                   f"{current}; nothing written", file=sys.stderr)
             return 0
         # The new blob is ciphertext, written over the blob file only once it's
         # whole and checked.
         write_atomically(target, (rewrap(plaintext, current) + "\n").encode("ascii"))
-        print(f"consume.py: rewrapped {target!r} to the current key {current}; the blob "
+        print(f"consume.py: rewrapped {shown(target)!r} to the current key {current}; the blob "
               f"was for the previous key ({previous})", file=sys.stderr)
         return 0
     if slot == "current" and os.path.lexists(previous):
@@ -1064,7 +1078,7 @@ if __name__ == "__main__":
         sys.exit(main())
     except KeyboardInterrupt:
         if WRITTEN is not None:
-            print(f"consume.py: interrupted after the rename; {WRITTEN!r} holds the new "
+            print(f"consume.py: interrupted after the rename; {shown(WRITTEN)!r} holds the new "
                   "blob (probe the label: SETUP.md, Rotation step 4)", file=sys.stderr)
         else:
             print("consume.py: interrupted; nothing written", file=sys.stderr)
