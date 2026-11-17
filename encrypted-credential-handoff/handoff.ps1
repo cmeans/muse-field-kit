@@ -68,7 +68,10 @@ begin {
   }
   # An error nobody planned for gets a fixed message: PowerShell's own error
   # text can quote the input.
-  trap { [Console]::Error.WriteLine("handoff.ps1: unexpected error ($($_.Exception.GetType().Name)), aborting"); Exit-Handoff 1 }
+  trap {
+    if ($_.Exception.GetType().Name -ceq 'PipelineStoppedException') { Exit-Handoff 130 }
+    [Console]::Error.WriteLine("handoff.ps1: unexpected error ($($_.Exception.GetType().Name)), aborting"); Exit-Handoff 1
+  }
 
   # Windows PowerShell 5.1 and PowerShell 7 are the two this is tested on.
   $ver = $PSVersionTable.PSVersion
@@ -322,8 +325,10 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     }
     # The bech32 checksum: age itself rejects a recipient that fails it. Asked
     # now, on nothing, so a mistyped file is refused before the secret is typed.
-    $chk = Invoke-Age "-r $RECIPIENT" $null
-    if ($null -eq $chk -or $chk.Exit -ne 0) {
+    # (-CheckSetup with no age checks the file and its shape alone.)
+    $chk = $null
+    if (-not ($CheckSetup -and $null -eq $AgePath)) { $chk = Invoke-Age "-r $RECIPIENT" $null }
+    if (($null -eq $chk -or $chk.Exit -ne 0) -and -not ($CheckSetup -and $null -eq $AgePath)) {
       Stop-Key "$keyfile is not a valid age recipient: age $AgeVersion did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
     }
     $script:keyfile = $keyfile
@@ -376,7 +381,6 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     $tmp = $null
     $haveAge = $false
     $haveKeygen = $false
-    $completed = $false
     try {
       try {
         $tmp = Join-Path ([IO.Path]::GetTempPath()) ('handoff-check-' + [guid]::NewGuid().ToString('N'))
@@ -391,7 +395,6 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
         Write-Check FAIL tempdir 'cannot make a private temporary folder (check TEMP)'
         if ($null -ne $tmp) { try { [IO.Directory]::Delete($tmp, $true) } catch { } }
         $tmp = $null
-        $completed = $true
         return
       }
       # A TERM ends the process without running finally: a process-exit handler
@@ -455,6 +458,10 @@ public static class HandoffCheckCleanup {
         Get-Recipient
         $probe = 'PASS'
         $probeMsg = "$keyfile is a valid age X25519 recipient"
+        if (-not $haveAge) {
+          $probe = 'INFO'
+          $probeMsg = "$keyfile has the shape of an age X25519 recipient; its checksum is not checked (no age)"
+        }
         $saved = $script:RECIPIENT
       } catch {
         $m = $_.Exception.Message
@@ -509,11 +516,8 @@ public static class HandoffCheckCleanup {
       }
 
       Write-Check $probe 'recipient' $probeMsg
-      $completed = $true
     } finally {
       if ($null -ne $tmp) { try { [IO.Directory]::Delete($tmp, $true) } catch { } }
-      # Interrupted (Ctrl-C): PowerShell would end the script with status 0.
-      if (-not $completed) { [Environment]::Exit(130) }
     }
   }
 

@@ -20,8 +20,10 @@
 #   - -CheckSetup (section 8): every check line, the failure paths (no age, no
 #     age-keygen, a bad recipient file, an age that corrupts its output or
 #     writes a second stanza, the header vectors), the output contract, and no
-#     temporary folder left after an INT or TERM (the stub and signal cases need
-#     a shell: elsewhere they print "n/a on this OS: <case>");
+#     temporary folder left after an INT or TERM (the signal case is Linux and
+#     macOS only; elsewhere it prints "n/a on this OS: <case>"; the age stubs
+#     are shell scripts there and a compiled age.exe on Windows), and the host
+#     surviving a failed run;
 #   - on Windows: Mark of the Web and execution policy, and the documented
 #     ways to run it (prints "n/a on this OS: <case>" elsewhere).
 #
@@ -724,6 +726,12 @@ if ($OnWindows) { $sys = ";$env:SystemRoot\system32;$env:SystemRoot" }
 $lines = Assert-Checks 'no age' 1 (Run-Check $h8 '-CheckSetup' @{ PATH = "$noAge$sys" })
 Assert-Has 'no age' $lines 'FAIL age: '
 Assert-HasNot 'no age' $lines 'PASS (round trip|header|base64): '
+# With no age only the recipient file's shape can be checked: INFO, not a blame.
+Assert-Has 'no age' $lines 'INFO recipient: .*checksum is not checked \(no age\)'
+Assert-HasNot 'no age' $lines 'FAIL recipient'
+[IO.File]::WriteAllText((Join-Path $C8 'handoff-bad.age'), "age1notarecipient`n", $Utf8)
+$lines = Assert-Checks 'no age, a recipient file of the wrong shape' 1 (Run-Check $h8 '-CheckSetup -To bad' @{ PATH = "$noAge$sys" })
+Assert-Has 'no age, bad shape' $lines 'FAIL recipient: '
 $onlyAge = Join-Path $S 'onlyage'
 New-Item -ItemType Directory -Path $onlyAge | Out-Null
 Copy-Item -LiteralPath $AgePath -Destination (Join-Path $onlyAge (Split-Path -Leaf $AgePath))
@@ -737,63 +745,206 @@ $lines = Assert-Checks 'no age-keygen, no recipient file' 0 (Run-Check $h8 '-Che
 Assert-Has 'no keygen, no file' $lines 'INFO round trip: '
 Say 'ok (age, age-keygen)'
 
-# Stubs that need a shell: an age that changes a byte of its output, one that
-# writes a second stanza, and one that writes a given file (the header rule
-# against the vectors). They are shell scripts, so only where there's a shell.
+# Stubs first on PATH that make age misbehave: one that changes a byte of its
+# output, one that writes a second stanza, one whose decrypt returns other
+# (valid) bytes, and one that writes a given file (the header rule against the
+# vectors). On Linux and macOS they are shell scripts; on Windows a tiny
+# age.exe compiled here with the csc that ships with .NET Framework, which
+# reads its mode and the real age's path from a file beside it (Invoke-Age
+# gives a child only PATH and SystemRoot, so nothing can come by environment).
 $stubNames = @('an age that changes a byte of its output: FAIL round trip',
                'an age that writes a second stanza: FAIL header',
+               'an age that decrypts to other bytes: FAIL round trip',
                'the header vectors, through an age that writes the vector',
                'a signal in the middle of a run leaves no temporary folder')
+$st8 = Join-Path $S 'stub8'
+New-Item -ItemType Directory -Path $st8 | Out-Null
+$stub8Path = "$st8$sep$env:PATH"
+$stubCs = @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+public static class AgeStub {
+  static string Quote(string a) {
+    if (a.Length > 0 && a.IndexOfAny(new char[] { ' ', '\t', '"' }) < 0) return a;
+    return "\"" + a.Replace("\"", "\\\"") + "\"";
+  }
+  static void Emit(byte[] b) {
+    Stream so = Console.OpenStandardOutput();
+    so.Write(b, 0, b.Length);
+    so.Flush();
+  }
+  public static int Main(string[] args) {
+    string[] cfg = File.ReadAllLines(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "age-stub.txt"));
+    string mode = cfg[0], real = cfg[1], arg = cfg.Length > 2 ? cfg[2] : "";
+    string first = args.Length > 0 ? args[0] : "";
+    bool decrypt = first == "-d";
+    bool version = first == "--version";
+    if (mode == "differ" && decrypt) {
+      Console.OpenStandardInput().CopyTo(Stream.Null);
+      Emit(Encoding.UTF8.GetBytes("{\"svc\":\"check\",\"password\":\"other\"}"));
+      return 0;
+    }
+    if (mode == "file" && !version && !decrypt) {
+      Console.OpenStandardInput().CopyTo(Stream.Null);
+      Emit(File.ReadAllBytes(arg));
+      return 0;
+    }
+    StringBuilder sb = new StringBuilder();
+    foreach (string a in args) { if (sb.Length > 0) sb.Append(' '); sb.Append(Quote(a)); }
+    if (mode == "two" && !version && !decrypt) sb.Append(" -r ").Append(arg);
+    ProcessStartInfo psi = new ProcessStartInfo(real, sb.ToString());
+    psi.UseShellExecute = false;
+    psi.RedirectStandardInput = true;
+    psi.RedirectStandardOutput = true;
+    psi.RedirectStandardError = true;
+    Process p = Process.Start(psi);
+    MemoryStream outMs = new MemoryStream();
+    var t1 = p.StandardOutput.BaseStream.CopyToAsync(outMs);
+    var t2 = p.StandardError.ReadToEndAsync();
+    try {
+      using (Stream i = Console.OpenStandardInput()) { i.CopyTo(p.StandardInput.BaseStream); }
+      p.StandardInput.Close();
+    } catch (IOException) { }
+    t1.Wait();
+    t2.Wait();
+    p.WaitForExit();
+    byte[] o = outMs.ToArray();
+    if (mode == "flip" && !version && !decrypt && o.Length > 0) o[o.Length - 1] = (byte)(o[o.Length - 1] ^ 1);
+    Emit(o);
+    return p.ExitCode;
+  }
+}
+'@
+if ($OnWindows) {
+  $cscs = @("$env:SystemRoot\Microsoft.NET\Framework64\v4.0.30319\csc.exe", "$env:SystemRoot\Microsoft.NET\Framework\v4.0.30319\csc.exe")
+  $csc = $cscs | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+  if (-not $csc) { Fail 'test setup: csc.exe (.NET Framework 4) not found, so the age stub cannot be built' }
+  $csFile = Join-Path $S 'agestub.cs'
+  [IO.File]::WriteAllText($csFile, $stubCs, $Utf8)
+  $r = Invoke-Proc -Exe $csc -Argv @('/nologo', '/optimize', "/out:$(Join-Path $st8 'age.exe')", $csFile)
+  if ($r.Exit -ne 0) { Fail "test setup: the age stub did not compile: $($r.Out) $($r.Err)" }
+}
+$stubTpl = @{
+  flip = @'
+#!/bin/sh
+case "$1" in --version|-d) exec '@REAL@' "$@" ;; esac
+f=$(mktemp)
+"@REAL@" "$@" >"$f"
+n=$(wc -c <"$f" | tr -d ' ')
+last=$(tail -c 1 "$f" | od -An -c | tr -d ' ')
+head -c $((n - 1)) "$f"
+if [ "$last" = X ]; then printf Y; else printf X; fi
+rm -f "$f"
+'@
+  two = @'
+#!/bin/sh
+case "$1" in --version|-d) exec '@REAL@' "$@" ;; esac
+exec '@REAL@' "$@" -r @ARG@
+'@
+  differ = @'
+#!/bin/sh
+case "$1" in -d) cat >/dev/null; printf '%s' '{"svc":"check","password":"other"}'; exit 0 ;; esac
+exec '@REAL@' "$@"
+'@
+  file = @'
+#!/bin/sh
+case "$1" in --version|-d) exec '@REAL@' "$@" ;; esac
+cat >/dev/null
+cat '@ARG@'
+'@
+}
+function Set-Stub8([string]$mode, [string]$arg = '') {
+  if ($OnWindows) {
+    [IO.File]::WriteAllLines((Join-Path $st8 'age-stub.txt'), [string[]]@($mode, $AgePath, $arg), $Utf8)
+  } else {
+    $f = Join-Path $st8 'age'
+    [IO.File]::WriteAllText($f, $stubTpl[$mode].Replace('@REAL@', $AgePath).Replace('@ARG@', $arg), $Utf8)
+    [void](Invoke-Proc -Exe 'chmod' -Argv @('755', $f))
+  }
+}
+
+Set-Stub8 'flip'
+$lines = Assert-Checks $stubNames[0] 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
+Assert-Has 'flip' $lines 'FAIL round trip: .*could not decrypt'
+Say "ok ($($stubNames[0]))"
+Set-Stub8 'two' $Rcpt
+$lines = Assert-Checks $stubNames[1] 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
+Assert-Has 'second stanza' $lines 'FAIL header: '
+Assert-Has 'second stanza' $lines 'PASS round trip: '
+Say "ok ($($stubNames[1]))"
+# A real age's MAC makes "decrypts to other bytes" unreachable, so the branch
+# is pinned by an age whose decrypt returns valid but different text.
+Set-Stub8 'differ'
+$lines = Assert-Checks $stubNames[2] 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
+Assert-Has 'differ' $lines 'FAIL round trip: .*differ'
+Say "ok ($($stubNames[2]))"
+
+# The vectors (Task 0's): refused ones, then the two real blobs (accepted;
+# the decrypt then fails, as they're not for the throwaway key).
+$vec = Join-Path $S 'vec8'
+New-Item -ItemType Directory -Path $vec | Out-Null
+function Test-Vector([string]$name, [string]$file, [bool]$accepted) {
+  Set-Stub8 'file' $file
+  $lines = Assert-Checks "header vector $name" 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
+  if ($accepted) { Assert-Has $name $lines 'PASS header: '; Assert-Has $name $lines 'PASS base64: ' }
+  else { Assert-Has $name $lines 'FAIL header: ' }
+}
+foreach ($v in @('scrypt', 'two-x25519', 'grease-only', 'plugin-stanza', 'pq-stanza', 'ssh-stanza', 'unknown-stanza', 'armored-b64')) {
+  $f = Join-Path $vec "$v.bin"
+  [IO.File]::WriteAllBytes($f, [Convert]::FromBase64String(([IO.File]::ReadAllText((Join-Path (Join-Path $Here 'vectors') "$v.txt"))).Trim()))
+  Test-Vector $v $f $false
+}
+Test-Vector 'armored-raw' (Join-Path (Join-Path $Here 'vectors') 'armored-raw.txt') $false
+foreach ($v in @('blob-age', 'blob-age-rage')) {
+  $f = Join-Path $vec "$v.bin"
+  [IO.File]::WriteAllBytes($f, [Convert]::FromBase64String(([IO.File]::ReadAllText((Join-Path $Here "$v.txt"))).Trim()))
+  Test-Vector $v $f $true
+}
+$f = Join-Path $vec 'noend.bin'
+[IO.File]::WriteAllText($f, "age-encryption.org/v1`n-> X25519 abc`nAAAA`n", $Utf8)
+Test-Vector 'no end line' $f $false
+# Stanza types are split on a single space, as consume.py does: two spaces, a
+# tab, or a leading tab don't make an X25519 stanza.
+foreach ($c in @(@('two-spaces', "age-encryption.org/v1`n->  X25519 abc`nAAAA`n--- abc`n"),
+                 @('tab-after', "age-encryption.org/v1`n-> X25519`tabc`nAAAA`n--- abc`n"),
+                 @('tab-before', "age-encryption.org/v1`n-> `tX25519 a`nAAAA`n--- abc`n"))) {
+  $f = Join-Path $vec "$($c[0]).bin"
+  [IO.File]::WriteAllText($f, $c[1], $Utf8)
+  Test-Vector $c[0] $f $false
+}
+Say "ok ($($stubNames[3]))"
+
+# The run stays in the caller's PowerShell: a run that ends in FAIL (here a
+# corrupting age, then a temporary folder that can't be made) exits 1 through
+# the script's own exit, the session lives on, no PipelineStoppedException
+# text, and $Error has no entry the run added.
+Set-Stub8 'flip'
+$aFile = Join-Path $S 'a-file'
+[IO.File]::WriteAllText($aFile, 'x', $Utf8)
+foreach ($c in @(@('a failing check', @{ PATH = $stub8Path }), @('a temporary folder that cannot be made', @{ PATH = $stub8Path; TMPDIR = $aFile; TEMP = $aFile; TMP = $aFile }))) {
+  $call = "`$before = `$global:Error.Count`n" +
+    "  & $(Q $h8) -CheckSetup | Out-Null`n" +
+    "  `$code = `$LASTEXITCODE`n" +
+    "  [Console]::Out.WriteLine('SURVIVED ' + `$code + ' ' + (`$global:Error.Count - `$before))`n" +
+    "  exit `$code"
+  $r = Invoke-Handoff -Call $call -EnvSet (Join-Env $c[1])
+  Assert-True ($r.Exit -eq 1) "$($c[0]), in process: exit $($r.Exit), expected 1: $($r.Out) $($r.Err)"
+  Assert-True ($r.Out.Contains('SURVIVED 1 0')) "$($c[0]), in process: the session did not survive, or `$Error changed: $($r.Out)"
+  Assert-True (-not ($r.Out + $r.Err).Contains('PipelineStoppedException')) "$($c[0]), in process: PipelineStoppedException text"
+}
+Say 'ok (in process: the host survives, exit 1, $Error untouched)'
+
+# A signal while age is running: the temporary folder is removed. (Windows has
+# no TERM and no way to send Ctrl-C to a child here.)
 if (-not $OnWindows) {
-  $st8 = Join-Path $S 'stub8'
-  New-Item -ItemType Directory -Path $st8 | Out-Null
-  $stubAge = Join-Path $st8 'age'
-  function Write-Stub8([string]$body) {
-    [IO.File]::WriteAllText($stubAge, "#!/bin/sh`ncase `"`$1`" in --version|-d) exec '$AgePath' `"`$@`" ;; esac`n$body`n", $Utf8)
-    [void](Invoke-Proc -Exe 'chmod' -Argv @('755', $stubAge))
-  }
-  $stub8Path = "$st8$sep$env:PATH"
-  Write-Stub8 "'$AgePath' `"`$@`" | head -c -1"
-  $lines = Assert-Checks $stubNames[0] 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
-  Assert-Has 'flip' $lines 'FAIL round trip: '
-  Say "ok ($($stubNames[0]))"
-  Write-Stub8 "exec '$AgePath' `"`$@`" -r $Rcpt"
-  $lines = Assert-Checks $stubNames[1] 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
-  Assert-Has 'second stanza' $lines 'FAIL header: '
-  Assert-Has 'second stanza' $lines 'PASS round trip: '
-  Say "ok ($($stubNames[1]))"
-
-  # The vectors (Task 0's): refused ones, then the two real blobs (accepted;
-  # the decrypt then fails, as they're not for the throwaway key).
-  $vec = Join-Path $S 'vec8'
-  New-Item -ItemType Directory -Path $vec | Out-Null
-  function Test-Vector([string]$name, [string]$file, [bool]$accepted) {
-    Write-Stub8 "cat >/dev/null`ncat '$file'"
-    $lines = Assert-Checks "header vector $name" 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
-    if ($accepted) { Assert-Has $name $lines 'PASS header: '; Assert-Has $name $lines 'PASS base64: ' }
-    else { Assert-Has $name $lines 'FAIL header: ' }
-  }
-  foreach ($v in @('scrypt', 'two-x25519', 'grease-only', 'plugin-stanza', 'pq-stanza', 'ssh-stanza', 'unknown-stanza', 'armored-b64')) {
-    $f = Join-Path $vec "$v.bin"
-    [IO.File]::WriteAllBytes($f, [Convert]::FromBase64String(([IO.File]::ReadAllText((Join-Path (Join-Path $Here 'vectors') "$v.txt"))).Trim()))
-    Test-Vector $v $f $false
-  }
-  Test-Vector 'armored-raw' (Join-Path (Join-Path $Here 'vectors') 'armored-raw.txt') $false
-  foreach ($v in @('blob-age', 'blob-age-rage')) {
-    $f = Join-Path $vec "$v.bin"
-    [IO.File]::WriteAllBytes($f, [Convert]::FromBase64String(([IO.File]::ReadAllText((Join-Path $Here "$v.txt"))).Trim()))
-    Test-Vector $v $f $true
-  }
-  $f = Join-Path $vec 'noend.bin'
-  [IO.File]::WriteAllText($f, "age-encryption.org/v1`n-> X25519 abc`nAAAA`n", $Utf8)
-  Test-Vector 'no end line' $f $false
-  Say "ok ($($stubNames[2]))"
-
-  # A signal while age is running: the temporary folder is removed.
   function Test-Signal([string]$sig) {
     $marker = Join-Path $S 'age-started'
     if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker }
-    Write-Stub8 ": >'$marker'`nsleep 4`nexec '$AgePath' `"`$@`""
+    $f = Join-Path $st8 'age'
+    [IO.File]::WriteAllText($f, "#!/bin/sh`ncase `"`$1`" in --version|-d) exec '$AgePath' `"`$@`" ;; esac`n: >'$marker'`nsleep 4`nexec '$AgePath' `"`$@`"`n", $Utf8)
+    [void](Invoke-Proc -Exe 'chmod' -Argv @('755', $f))
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $PSExe
     $psi.Arguments = Join-Argv @('-NoProfile', '-NonInteractive', '-File', $h8, '-CheckSetup')
@@ -812,19 +963,20 @@ if (-not $OnWindows) {
     Assert-True (@(Get-ChildItem -LiteralPath $T8 -Force).Count -gt 0) "$sig test: no temporary folder while the run was going"
     [void](Invoke-Proc -Exe 'sh' -Argv @('-c', "kill -$sig $($p.Id)"))
     if (-not $p.WaitForExit(60000)) { $p.Kill(); Fail "$sig test: the run did not end" }
-    Assert-True ($p.ExitCode -ne 0) "$sig test: the interrupted run exited 0"
+    # PowerShell's own status for an interrupted script is what the caller
+    # sees for INT; TERM ends the process (143).
+    if ($sig -eq 'TERM') { Assert-True ($p.ExitCode -ne 0) "$sig test: the interrupted run exited 0" }
     $out = $o.Result + $e.Result
     foreach ($m in $leaks) { Assert-True (-not $out.Contains($m)) "$sig test: the test payload appeared in the output" }
-    # The exit handler may finish just after the process is gone.
     $tries = 0
     while (@(Get-ChildItem -LiteralPath $T8 -Force).Count -gt 0 -and $tries -lt 30) { Start-Sleep -Milliseconds 100; $tries++ }
     Assert-True (@(Get-ChildItem -LiteralPath $T8 -Force).Count -eq 0) "$sig test: the temporary folder was left behind"
   }
   Test-Signal 'INT'
   Test-Signal 'TERM'
-  Say "ok ($($stubNames[3]))"
+  Say "ok ($($stubNames[4]))"
 } else {
-  foreach ($c in $stubNames) { NotHere $c }
+  NotHere $stubNames[4]
 }
 
 # --- Windows: Mark of the Web and execution policy --------------------------------

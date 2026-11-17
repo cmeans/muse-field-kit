@@ -2513,11 +2513,22 @@ hasnt() {
 # A directory of symlinks to the named tools (and none other): a PATH that
 # lacks one of them. mkpath DIR TOOL...
 mkpath() {
-  local d=$1 t; shift
+  local d=$1 t p; shift
   rm -rf "$d"; mkdir -p "$d"
-  for t in "$@"; do ln -s "$(command -v "$t")" "$d/$t"; done
+  for t in "$@"; do
+    p=$(command -v "$t") || fail "test setup: $t is not installed here (mkpath $d)"
+    ln -s "$p" "$d/$t"
+  done
 }
-BASE_TOOLS="timeout sleep sh awk base64 tr cmp sed head cat rm mkdir mktemp chmod env dirname grep uname wc ls id stat sort cut od"
+# sha256 of a file: GNU's tool, else macOS's.
+sha() { sha256sum "$@" 2>/dev/null || shasum -a 256 "$@"; }
+# A bound on a run that might hang: GNU timeout where there is one.
+run_to() {
+  if command -v timeout >/dev/null 2>&1; then timeout 60 "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout 60 "$@"
+  else "$@"; fi
+}
+BASE_TOOLS="sleep sh tail awk base64 tr cmp sed head cat rm mkdir mktemp chmod env dirname grep uname wc ls id stat sort cut od"
 mkpath "$C8/p-all" $BASE_TOOLS bash jq
 ln -s "$REAL_AGE" "$C8/p-all/age"; ln -s "$REAL_KEYGEN" "$C8/p-all/age-keygen"
 ln -s "$PY" "$C8/p-all/python3"
@@ -2537,7 +2548,7 @@ echo "ok (handoff.sh --check-setup)"
 # It reads no stdin: a stdin that never ends doesn't hold it up.
 mkfifo "$C8/stdin.fifo"
 exec 9<>"$C8/stdin.fifo"
-rc=0; env TMPDIR="$C8/tmp" PATH="$P_ALL" timeout 60 "$BASH" "$H8" --check-setup <&9 >"$C8/out" 2>"$C8/err" || rc=$?
+rc=0; run_to env TMPDIR="$C8/tmp" PATH="$P_ALL" "$BASH" "$H8" --check-setup <&9 >"$C8/out" 2>"$C8/err" || rc=$?
 exec 9<&-
 [ "$rc" = 0 ] || fail "handoff.sh --check-setup waited on stdin (exit $rc)"
 echo "ok (handoff.sh --check-setup does not read stdin)"
@@ -2567,6 +2578,11 @@ mkpath "$C8/p-noage" $BASE_TOOLS bash jq age-keygen
 run8 "no age" 1 env TMPDIR="$C8/tmp" PATH="$C8/p-noage" "$BASH" "$H8" --check-setup
 has "no age" "FAIL age: "
 hasnt "no age" "PASS (round trip|header|base64): "
+has "no age" "INFO recipient: .*checksum is not checked \\(no age\\)"
+hasnt "no age" "FAIL recipient"
+printf 'age1notarecipient\n' >"$C8/hd/handoff-bad.age"
+run8 "no age, a recipient file of the wrong shape" 1 env TMPDIR="$C8/tmp" PATH="$C8/p-noage" "$BASH" "$H8" --check-setup --to bad
+has "no age, bad shape" "FAIL recipient: "
 # No age-keygen: INFO, an encrypt-only round trip, header and base64 still checked.
 mkpath "$C8/p-nokg" $BASE_TOOLS bash jq
 ln -s "$REAL_AGE" "$C8/p-nokg/age"
@@ -2604,16 +2620,32 @@ mkdir -p "$C8/stub-flip" "$C8/stub-two"
 cat >"$C8/stub-flip/age" <<EOF
 #!/bin/sh
 case "\$1" in --version|-d) exec "$REAL_AGE" "\$@" ;; esac
-"$REAL_AGE" "\$@" | python3 -c 'import sys; d=bytearray(sys.stdin.buffer.read()); d[-1] ^= 1; sys.stdout.buffer.write(d)'
+f=\$(mktemp)
+"$REAL_AGE" "\$@" >"\$f"
+n=\$(wc -c <"\$f" | tr -d ' ')
+last=\$(tail -c 1 "\$f" | od -An -c | tr -d ' ')
+head -c \$((n - 1)) "\$f"
+if [ "\$last" = X ]; then printf Y; else printf X; fi
+rm -f "\$f"
 EOF
 cat >"$C8/stub-two/age" <<EOF
 #!/bin/sh
 case "\$1" in --version|-d) exec "$REAL_AGE" "\$@" ;; esac
 exec "$REAL_AGE" "\$@" -r "$(cat handoff-test.age)"
 EOF
-chmod 755 "$C8/stub-flip/age" "$C8/stub-two/age"
+mkdir -p "$C8/stub-differ"
+cat >"$C8/stub-differ/age" <<EOF
+#!/bin/sh
+case "\$1" in -d) cat >/dev/null; printf '%s' '{"svc":"check","password":"other"}'; exit 0 ;; esac
+exec "$REAL_AGE" "\$@"
+EOF
+chmod 755 "$C8/stub-flip/age" "$C8/stub-two/age" "$C8/stub-differ/age"
 run8 "an age that flips a byte" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-flip:$P_ALL" "$BASH" "$H8" --check-setup
-has "flip" "FAIL round trip: "
+has "flip" "FAIL round trip: .*could not decrypt"
+# A real age's MAC makes "decrypts to other bytes" unreachable, so the
+# branch is pinned by an age whose decrypt returns valid but different text.
+run8 "an age that decrypts to other bytes" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-differ:$P_ALL" "$BASH" "$H8" --check-setup
+has "differ" "FAIL round trip: .*differ"
 run8 "an age that writes a second stanza" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-two:$P_ALL" "$BASH" "$H8" --check-setup
 has "second stanza" "FAIL header: "
 has "second stanza" "PASS round trip: "
@@ -2647,6 +2679,16 @@ for v in blob-age blob-age-rage; do
   run8 "header vector $v" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" "$BASH" "$H8" --check-setup
   has "vector $v" "PASS header: "
   has "vector $v" "PASS base64: "
+done
+# Stanza types are split on a single space, as consume.py does: two spaces,
+# a tab, or a leading tab don't make an X25519 stanza.
+printf 'age-encryption.org/v1\n->  X25519 abc\nAAAA\n--- abc\n' >"$C8/vec/two-spaces.bin"
+printf 'age-encryption.org/v1\n-> X25519\tabc\nAAAA\n--- abc\n' >"$C8/vec/tab-after.bin"
+printf 'age-encryption.org/v1\n-> \tX25519 a\nAAAA\n--- abc\n' >"$C8/vec/tab-before.bin"
+for v in two-spaces tab-after tab-before; do
+  vec_age "$C8/vec/$v.bin"
+  run8 "header $v" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" "$BASH" "$H8" --check-setup
+  has "$v" "FAIL header: "
 done
 # A header with no end line, and an empty output.
 printf 'age-encryption.org/v1\n-> X25519 abc\nAAAA\n' >"$C8/vec/noend.bin"
@@ -2709,18 +2751,18 @@ echo "ok (handoff.sh: no temporary directory left after INT or TERM)"
 # --- agent-setup.sh ---------------------------------------------------------
 A8="$PWD/../agent-setup.sh"
 AKEY="$S/agent/handoff-identity.txt"
-sum_before=$(sha256sum "$AKEY")
+sum_before=$(sha "$AKEY")
 run8 "agent-setup.sh --check-setup" 0 env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
 for n in age age-keygen python3 "round trip" header base64 identity; do
   has "agent-setup.sh --check-setup" "PASS $n: "
 done
 hasnt "agent-setup.sh --check-setup" "(FAIL|INFO) "
 [ ! -s "$C8/err" ] || { cat "$C8/err" >&2; fail "agent-setup.sh --check-setup wrote to stderr"; }
-[ "$sum_before" = "$(sha256sum "$AKEY")" ] || fail "--check-setup changed the real key"
+[ "$sum_before" = "$(sha "$AKEY")" ] || fail "--check-setup changed the real key"
 echo "ok (agent-setup.sh --check-setup)"
 
 exec 9<>"$C8/stdin.fifo"
-rc=0; env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$AKEY" timeout 60 "$BASH" "$A8" --check-setup <&9 >"$C8/out" 2>"$C8/err" || rc=$?
+rc=0; run_to env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup <&9 >"$C8/out" 2>"$C8/err" || rc=$?
 exec 9<&-
 [ "$rc" = 0 ] || fail "agent-setup.sh --check-setup waited on stdin (exit $rc)"
 expect_refusal "agent-setup.sh --check-setup with an argument" 2 "usage" bash "$A8" --check-setup "$AKEY"
@@ -2753,6 +2795,7 @@ has "agent no age" "FAIL age: "
 mkpath "$C8/pa-nokg" $BASE_TOOLS bash python3 age
 run8 "agent: no age-keygen" 1 env TMPDIR="$C8/tmp" PATH="$C8/pa-nokg" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
 has "agent no age-keygen" "FAIL age-keygen: "
+has "agent no age-keygen" "INFO identity: skipped"
 mkdir -p "$C8/stubpy"
 printf '#!/bin/sh\necho 3.6\n' >"$C8/stubpy/python3"; chmod 755 "$C8/stubpy/python3"
 run8 "agent: python3 3.6" 1 env TMPDIR="$C8/tmp" PATH="$C8/stubpy:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
@@ -2763,6 +2806,8 @@ run8 "agent: no python3" 1 env TMPDIR="$C8/tmp" PATH="$C8/pa-nopy" HANDOFF_PRIVK
 has "no python3" "FAIL python3: "
 run8 "agent: an age that flips a byte" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-flip:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
 has "agent flip" "FAIL round trip: "
+run8 "agent: an age that decrypts to other bytes" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-differ:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+has "agent differ" "FAIL round trip: "
 run8 "agent: an age that writes a second stanza" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-two:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
 has "agent second stanza" "FAIL header: "
 # consume.py's header rule, through the vectors.
@@ -2770,6 +2815,12 @@ for v in scrypt two-x25519 grease-only plugin-stanza pq-stanza ssh-stanza unknow
   vec_age "$C8/vec/$v.bin"
   run8 "agent: header vector $v" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
   has "agent vector $v" "FAIL header: "
+done
+for v in two-spaces tab-after tab-before; do
+  vec_age "$C8/vec/$v.bin"
+  run8 "agent: header $v" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+  has "agent $v" "FAIL header: "
+  has "agent $v" "FAIL round trip: "
 done
 vec_age "$PWD/vectors/armored-raw.txt"
 run8 "agent: header vector armored-raw" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
@@ -2782,7 +2833,7 @@ done
 echo "ok (agent-setup.sh: tools, round trip, header)"
 interrupt_run "agent-setup.sh INT" SIGINT env HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
 interrupt_run "agent-setup.sh TERM" SIGTERM env HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
-[ "$sum_before" = "$(sha256sum "$AKEY")" ] || fail "--check-setup changed the real key"
+[ "$sum_before" = "$(sha "$AKEY")" ] || fail "--check-setup changed the real key"
 echo "ok (agent-setup.sh: no temporary directory left after INT or TERM)"
 echo "ok"
 fi

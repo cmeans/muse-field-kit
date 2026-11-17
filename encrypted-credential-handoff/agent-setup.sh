@@ -326,12 +326,14 @@ check_setup() {
   local p v rc blob rcpt re have_age=0 have_keygen=0 have_py=0 here consume
   local payload rt="" hdr="" b64="" want k kmsg
   set +e
-  newd=$(mktemp -d 2>/dev/null) && [ -d "$newd" ] \
-    || { newd=""; cs_out FAIL tempdir "cannot make a private temporary directory (check TMPDIR)"; exit 1; }
-  chmod 700 "$newd"
+  # The traps first, so no signal can fall between the folder and its cleanup
+  # (newd starts empty, and cleanup removes it only if set).
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM HUP
+  newd=$(mktemp -d 2>/dev/null) && [ -d "$newd" ] \
+    || { newd=""; cs_out FAIL tempdir "cannot make a private temporary directory (check TMPDIR)"; exit 1; }
+  chmod 700 "$newd"
 
   if p=$(command -v age 2>/dev/null) && [ -n "$p" ]; then
     if v=$(env -i PATH="${PATH-}" age --version </dev/null 2>/dev/null | head -n 1) && [ -n "$v" ]; then
@@ -406,7 +408,9 @@ password: 20 bytes"
           kmsg=$(head -n 1 "$newd/cerr" 2>/dev/null)
           kmsg=${kmsg#consume.py: }
           case "$kmsg" in
-            *"age blob"*|*"armored"*|*"header"*) hdr="FAIL|$kmsg" ;;
+            *"age blob"*|*"armored"*|*"header"*)
+              hdr="FAIL|$kmsg"
+              rt="FAIL|not reached: consume.py refused the blob's header, so it never decrypted" ;;
             *) rt="FAIL|consume.py --check failed: ${kmsg:-no message}" ;;
           esac
         fi
@@ -432,6 +436,7 @@ password: 20 bytes"
       cs_out FAIL identity "${kmsg:-the key at $k did not pass the identity checks}"
     fi
   fi
+  [ "$have_keygen" = 1 ] || cs_out INFO identity "skipped (needs age-keygen)"
   exit "$cs_failed"
 }
 

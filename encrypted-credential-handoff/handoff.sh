@@ -136,7 +136,12 @@ if [ "$mode" = encrypt ]; then
     exit 1
   fi
 fi
-if [ "$mode" != check-setup ]; then   # --check-setup reports a missing age itself
+# --check-setup runs --fingerprint with HANDOFF_SHAPE_ONLY=1 when there is no
+# age, to check the recipient file's shape alone (no age, no checksum).
+shape_only=0
+[ "$mode" != fingerprint ] || [ "${HANDOFF_SHAPE_ONLY-}" != 1 ] || shape_only=1
+age_version="(not run)"
+if [ "$mode" != check-setup ] && [ "$shape_only" = 0 ]; then   # --check-setup reports a missing age itself
   command -v age >/dev/null 2>&1 \
     || { echo "handoff.sh: age not found. Install it (README.md, Installing age)" >&2; exit 1; }
   # Read once, for the messages when age fails. Every age run gets an
@@ -171,8 +176,9 @@ cs_header() {  # FILE
     $0 == "---" || substr($0, 1, 4) == "--- " { done = 1; exit }
     substr($0, 1, 3) == "-> " {
       in_stanza = 1
-      split(substr($0, 4), a, " ")
-      kind = a[1]
+      kind = substr($0, 4)
+      i = index(kind, " ")
+      if (i) kind = substr(kind, 1, i - 1)
       if (kind == "X25519") x++
       else if (substr(kind, length(kind) - 6) != "-grease") bad("a recipient kind other than X25519")
       next
@@ -189,12 +195,13 @@ check_setup() {
   local probe_rc=1 probe_info=0 probe_msg="" probe_rcpt=""
   set +e
   cs_out PASS bash "$BASH_VERSION"
-  cs_tmp=$(mktemp -d 2>/dev/null) && [ -d "$cs_tmp" ] \
-    || { cs_out FAIL tempdir "cannot make a private temporary directory (check TMPDIR)"; exit 1; }
-  chmod 700 "$cs_tmp"
-  trap 'rm -rf "$cs_tmp"' EXIT
+  # The traps first, so no signal can fall between the folder and its cleanup.
+  trap '[ -z "$cs_tmp" ] || rm -rf "$cs_tmp"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM HUP
+  cs_tmp=$(mktemp -d 2>/dev/null) && [ -d "$cs_tmp" ] \
+    || { cs_tmp=; cs_out FAIL tempdir "cannot make a private temporary directory (check TMPDIR)"; exit 1; }
+  chmod 700 "$cs_tmp"
 
   # age: found, and it runs.
   if p=$(command -v age 2>/dev/null) && [ -n "$p" ]; then
@@ -251,7 +258,12 @@ check_setup() {
     probe_msg="no $keyfile yet; save the agent's recipient there (SETUP.md, setup step 3)"
     probe_info=1
   else
-    v=$("$BASH" "$src" --fingerprint --to "$to" </dev/null 2>"$cs_tmp/probe-err")
+    # Without age only the file and its shape can be checked.
+    if [ "$have_age" = 1 ]; then
+      v=$("$BASH" "$src" --fingerprint --to "$to" </dev/null 2>"$cs_tmp/probe-err")
+    else
+      v=$(HANDOFF_SHAPE_ONLY=1 "$BASH" "$src" --fingerprint --to "$to" </dev/null 2>"$cs_tmp/probe-err")
+    fi
     probe_rc=$?
     probe_rcpt=$(printf '%s\n' "$v" | sed -n 's/^recipient: //p')
     probe_msg=$(head -n 1 "$cs_tmp/probe-err" 2>/dev/null)
@@ -313,7 +325,9 @@ check_setup() {
   fi
 
   # The recipient file, if it's saved.
-  if [ "$probe_rc" = 0 ]; then
+  if [ "$probe_rc" = 0 ] && [ "$have_age" = 0 ]; then
+    cs_out INFO recipient "$keyfile has the shape of an age X25519 recipient; its checksum is not checked (no age)"
+  elif [ "$probe_rc" = 0 ]; then
     cs_out PASS recipient "$keyfile is a valid age X25519 recipient"
   elif [ "$probe_info" = 1 ]; then
     cs_out INFO recipient "$probe_msg"
@@ -414,7 +428,7 @@ recipient_re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
   || no_key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
 # The bech32 checksum: age itself rejects a recipient that fails it. Asked
 # now, on nothing, so a mistyped file is refused before the secret is typed.
-env -i PATH="${PATH-}" age -r "$RECIPIENT" </dev/null >/dev/null 2>&1 \
+[ "$shape_only" = 1 ] || env -i PATH="${PATH-}" age -r "$RECIPIENT" </dev/null >/dev/null 2>&1 \
   || no_key "$keyfile is not a valid age recipient: age $age_version did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
 
 if [ "$mode" = fingerprint ]; then
