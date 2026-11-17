@@ -4,8 +4,13 @@ name: Release
 # the two scripts, and publishes them as a GitHub Release whose notes are the
 # CHANGELOG section for the version.
 #
-# Publishing rule (one step, "decide", sets the output every publish step
-# checks):
+# Two jobs. "build" has the workflow's read-only token and no OIDC token: it
+# decides, checks, builds, verifies and uploads the files as artifacts. Only
+# "publish" holds write permissions and id-token, and it runs only when
+# build decided to publish, so a dry run never has either.
+#
+# Publishing rule (one step in build, "decide", sets the output publish
+# depends on):
 #   - a push of a v* tag publishes;
 #   - a workflow_dispatch publishes only with dry_run == 'false' AND when run
 #     on a tag (github.ref starts with refs/tags/v);
@@ -26,7 +31,7 @@ on:
         options: ['true', 'false']
         default: 'true'
 
-# Read-only for the whole workflow; the one job below raises what it needs.
+# Read-only for the whole workflow; the publish job raises what it needs.
 permissions:
   contents: read
 
@@ -35,13 +40,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write # create the release and upload its assets
-      id-token: write # sign the attestations
-      attestations: write # store the attestations
+    outputs:
+      publish: ${{ steps.decide.outputs.publish }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,27 +87,19 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          case "$TAG" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "tag '$TAG' is not vX.Y.Z"; exit 1 ;;
-          esac
-          version=${TAG#v}
-          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "tag '$TAG' is not vX.Y.Z"
-            exit 1
-          fi
           # The tagged commit must be on main.
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
             echo "$TAG ($GITHUB_SHA) is not on main"
             exit 1
           fi
-          # The CHANGELOG must have a heading for this version; its section
-          # is the release notes.
-          .github/scripts/changelog-section.sh encrypted-credential-handoff/CHANGELOG.md "$version" > "$RUNNER_TEMP/notes.md"
+          # The tag must be vX.Y.Z with a CHANGELOG heading for it; the
+          # section is the release notes (the script is tested in CI).
+          version=$(.github/scripts/release-notes.sh "$TAG" encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes/notes.md" 2>&1) || { echo "$version"; exit 1; }
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "release notes ($(wc -l < "$RUNNER_TEMP/notes.md") lines):"
-          cat "$RUNNER_TEMP/notes.md"
+          echo "release notes ($(wc -l < "$RUNNER_TEMP/notes/notes.md") lines):"
+          cat "$RUNNER_TEMP/notes/notes.md"
 
       - name: Build the assets
         run: |
@@ -119,29 +116,22 @@ jobs:
           done
           [ "$(printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS handoff.ps1 handoff.sh " ]
 
-      - name: Attest the scripts
-        if: steps.decide.outputs.publish == 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      - name: Upload the assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          subject-path: |
-            ${{ runner.temp }}/assets/handoff.sh
-            ${{ runner.temp }}/assets/handoff.ps1
+          name: release-assets
+          path: ${{ runner.temp }}/assets
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Create the release
-        if: steps.decide.outputs.publish == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-          VERSION: ${{ steps.tag.outputs.version }}
-        run: |
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "encrypted-credential-handoff $VERSION" \
-            --notes-file "$RUNNER_TEMP/notes.md" \
-            "$RUNNER_TEMP/assets/handoff.sh" \
-            "$RUNNER_TEMP/assets/handoff.ps1" \
-            "$RUNNER_TEMP/assets/SHA256SUMS"
+      - name: Upload the release notes
+        if: steps.decide.outputs.on_tag == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/notes
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Summary
         env:
@@ -149,7 +139,7 @@ jobs:
         run: |
           {
             if [ "$PUBLISH" = true ]; then
-              echo "Published the release with handoff.sh, handoff.ps1 and SHA256SUMS."
+              echo "Assets built and verified; the publish job attests and releases them."
             else
               echo "Dry run: the assets were built and verified; nothing was attested or published."
             fi
@@ -157,3 +147,63 @@ jobs:
             cat "$RUNNER_TEMP/assets/SHA256SUMS"
             printf '\140\140\140\n'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # sign the attestations
+      attestations: write # store the attestations
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/assets
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/notes
+
+      - name: Re-verify the downloaded assets
+        run: |
+          cd "$RUNNER_TEMP/assets"
+          sha256sum -c SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 2 ]
+          [ "$(printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS handoff.ps1 handoff.sh " ]
+          [ -s "$RUNNER_TEMP/notes/notes.md" ]
+
+      - name: Refuse if the release already exists
+        # Before attesting, so a re-run does not write another attestation.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; not attesting or publishing again. Delete it first if it must be redone."
+            exit 1
+          fi
+
+      - name: Attest the scripts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/assets/handoff.sh
+            ${{ runner.temp }}/assets/handoff.ps1
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "encrypted-credential-handoff $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes/notes.md" \
+            "$RUNNER_TEMP/assets/handoff.sh" \
+            "$RUNNER_TEMP/assets/handoff.ps1" \
+            "$RUNNER_TEMP/assets/SHA256SUMS"

@@ -224,17 +224,65 @@ jobs:
           cp "$RUNNER_TEMP/assets/handoff.sh" "$RUNNER_TEMP/assets/SHA256SUMS" "$RUNNER_TEMP/sh-only/"
           cd "$RUNNER_TEMP/sh-only"
           bash -euo pipefail -c "$cmd"
-      - name: Release notes come from the CHANGELOG section
+      - name: release-notes.sh on the real CHANGELOG
         # release.yml uses this script; 0.1.0 has a dated heading with a
         # suffix, 9.9.9 has none.
         run: |
-          notes=$(.github/scripts/changelog-section.sh encrypted-credential-handoff/CHANGELOG.md 0.1.0)
-          [ -n "$notes" ]
-          if printf '%s\n' "$notes" | grep -q '^## '; then echo "notes run past the section"; exit 1; fi
-          if .github/scripts/changelog-section.sh encrypted-credential-handoff/CHANGELOG.md 9.9.9 2>/dev/null; then
-            echo "changelog-section.sh found a section that does not exist"
+          v=$(.github/scripts/release-notes.sh v0.1.0 encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes-real.md")
+          [ "$v" = 0.1.0 ]
+          [ -s "$RUNNER_TEMP/notes-real.md" ]
+          if grep -q '^## ' "$RUNNER_TEMP/notes-real.md"; then echo "notes run past the section"; exit 1; fi
+          if .github/scripts/release-notes.sh v9.9.9 encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes-none.md" 2>/dev/null; then
+            echo "release-notes.sh accepted a version with no heading"
             exit 1
           fi
+          [ ! -e "$RUNNER_TEMP/notes-none.md" ]
+      - name: release-notes.sh on synthetic cases
+        run: |
+          cl="$RUNNER_TEMP/CHANGELOG.md"
+          {
+            echo '# Changelog'
+            echo
+            echo '## Unreleased'
+            echo
+            echo 'unreleased text'
+            echo
+            echo '## 0.1.0 — 2026-01-01 — dated'
+            echo
+            echo 'first line'
+            echo
+            echo '### Added'
+            echo
+            echo 'sub text'
+            echo
+            echo '## 0.1.1'
+            echo
+            echo 'patch text'
+            echo
+            echo '## 0.2.0'
+            echo
+          } > "$cl"
+          rn=.github/scripts/release-notes.sh
+          # Good tag, dated heading: the body runs through the ### subheading and stops at the next ##.
+          v=$($rn v0.1.0 "$cl" "$RUNNER_TEMP/n1.md")
+          [ "$v" = 0.1.0 ]
+          grep -q '^first line$' "$RUNNER_TEMP/n1.md"
+          grep -q '^### Added$' "$RUNNER_TEMP/n1.md"
+          grep -q '^sub text$' "$RUNNER_TEMP/n1.md"
+          if grep -Eq 'patch text|unreleased text' "$RUNNER_TEMP/n1.md"; then echo "notes leaked another section"; exit 1; fi
+          # A heading with no suffix.
+          $rn v0.1.1 "$cl" "$RUNNER_TEMP/n2.md" > /dev/null
+          [ "$(cat "$RUNNER_TEMP/n2.md")" = "patch text" ]
+          # Failures write nothing: a prefix (0.1 vs 0.1.0), a missing heading,
+          # an empty section, and bad tag shapes.
+          for t in v0.1 v0.3.0 v0.2.0 0.1.0 v0.1.0-rc1 v1.2 vx.y.z "v0.1.0 " v; do
+            rm -f "$RUNNER_TEMP/nf.md"
+            if $rn "$t" "$cl" "$RUNNER_TEMP/nf.md" 2>/dev/null; then
+              echo "release-notes.sh accepted '$t'"
+              exit 1
+            fi
+            [ ! -e "$RUNNER_TEMP/nf.md" ] || { echo "release-notes.sh wrote notes for '$t'"; exit 1; }
+          done
       - name: README's markers are enforced (a missing or unclosed pair fails)
         run: |
           fence=$(printf "\140\140\140sh")
@@ -249,6 +297,34 @@ jobs:
             done
           done
           .github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-windows > /dev/null
+      - name: release-assets.sh refuses a tree with a missing script
+        # A copy of the script in a tree that has handoff.ps1 but not
+        # handoff.sh: exit status 1, and no output directory.
+        run: |
+          t="$RUNNER_TEMP/broken-tree"
+          mkdir -p "$t/.github/scripts" "$t/encrypted-credential-handoff"
+          cp .github/scripts/release-assets.sh "$t/.github/scripts/"
+          cp encrypted-credential-handoff/handoff.ps1 "$t/encrypted-credential-handoff/"
+          rc=0
+          "$t/.github/scripts/release-assets.sh" "$RUNNER_TEMP/broken-out" 2>"$RUNNER_TEMP/broken.err" || rc=$?
+          cat "$RUNNER_TEMP/broken.err"
+          [ "$rc" -eq 1 ] || { echo "expected exit status 1, got $rc"; exit 1; }
+          grep -q 'missing .*handoff.sh' "$RUNNER_TEMP/broken.err"
+          [ ! -e "$RUNNER_TEMP/broken-out" ] || { echo "release-assets.sh wrote output despite the error"; exit 1; }
+      - name: Collect what the Windows job checks
+        # The Windows job verifies README's PowerShell block against this
+        # SHA256SUMS and handoff.ps1, the ones built here (the ones that ship).
+        run: |
+          mkdir "$RUNNER_TEMP/win-check"
+          cp "$RUNNER_TEMP/assets/SHA256SUMS" "$RUNNER_TEMP/assets/handoff.ps1" "$RUNNER_TEMP/win-check/"
+          .github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-windows > "$RUNNER_TEMP/win-check/verify-windows.ps1"
+      - name: Upload the assets for the Windows job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets-check
+          path: ${{ runner.temp }}/win-check
+          if-no-files-found: error
+          retention-days: 1
 
   # Older age releases, built from source (go install, checked against
   # sum.golang.org), against the agent side. Not required for merging at first.
@@ -343,9 +419,11 @@ jobs:
           fi
 
       - name: Release assets verify with README's macOS command
-        # shasum, because macOS has no sha256sum: release-assets.sh falls back
-        # to it, and the command is read from README's verify-macos-linux block.
+        # release-assets.sh uses sha256sum if the runner has it and falls back
+        # to shasum -a 256; the log shows which exist. The check is README's
+        # shasum line, read from its verify-macos-linux block.
         run: |
+          command -v sha256sum shasum || true
           .github/scripts/release-assets.sh "$RUNNER_TEMP/assets"
           for f in handoff.sh handoff.ps1; do
             cmp "$RUNNER_TEMP/assets/$f" "encrypted-credential-handoff/$f"
@@ -365,6 +443,7 @@ jobs:
   # and run-test.sh are never run here (the agent side is out of scope on
   # Windows). windows-interop opens what this job writes.
   windows:
+    needs: assets
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -420,18 +499,23 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "run-test.ps1 exited $($p.ExitCode)" }
           if ($all | Where-Object { $_ -match '^(skip:|FAIL)' }) { throw 'a check failed or was skipped' }
           if ((Get-Content -LiteralPath $log)[-1] -ne 'PASS') { throw 'run-test.ps1 did not end in PASS' }
-      - name: Build the release assets and extract README's Windows command
-        # Git Bash is on the runner; the product itself needs none of it.
-        shell: bash
+      - name: Download the release assets built on Linux
+        # SHA256SUMS and handoff.ps1 as the assets job built them (the ones
+        # that ship), plus README's verify-windows block it extracted.
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets-check
+          path: ${{ runner.temp }}/assets
+      - name: Show the downloaded files
+        shell: pwsh
         run: |
-          .github/scripts/release-assets.sh "$RUNNER_TEMP/assets"
-          .github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-windows > "$RUNNER_TEMP/verify-windows.ps1"
-          cat "$RUNNER_TEMP/verify-windows.ps1"
+          Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'assets') | Format-Table Name, Length
+          Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'assets\verify-windows.ps1')
       - name: README's Windows verify command, PowerShell 7
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $cmd = Join-Path $env:RUNNER_TEMP 'verify-windows.ps1'
+          $cmd = Join-Path $env:RUNNER_TEMP 'assets\verify-windows.ps1'
           $sb = [scriptblock]::Create((Get-Content -Raw -LiteralPath $cmd))
           $assets = Join-Path $env:RUNNER_TEMP 'assets'
           Push-Location $assets
@@ -449,7 +533,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $cmd = Join-Path $env:RUNNER_TEMP 'verify-windows.ps1'
+          $cmd = Join-Path $env:RUNNER_TEMP 'assets\verify-windows.ps1'
           $sb = [scriptblock]::Create((Get-Content -Raw -LiteralPath $cmd))
           $assets = Join-Path $env:RUNNER_TEMP 'assets'
           Push-Location $assets
