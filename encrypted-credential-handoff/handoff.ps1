@@ -325,10 +325,10 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     }
     # The bech32 checksum: age itself rejects a recipient that fails it. Asked
     # now, on nothing, so a mistyped file is refused before the secret is typed.
-    # (-CheckSetup with no age checks the file and its shape alone.)
+    # (-CheckSetup with no working age checks the file and its shape alone.)
     $chk = $null
-    if (-not ($CheckSetup -and $null -eq $AgePath)) { $chk = Invoke-Age "-r $RECIPIENT" $null }
-    if (($null -eq $chk -or $chk.Exit -ne 0) -and -not ($CheckSetup -and $null -eq $AgePath)) {
+    if (-not ($CheckSetup -and $script:CsNoAge)) { $chk = Invoke-Age "-r $RECIPIENT" $null }
+    if (($null -eq $chk -or $chk.Exit -ne 0) -and -not ($CheckSetup -and $script:CsNoAge)) {
       Stop-Key "$keyfile is not a valid age recipient: age $AgeVersion did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
     }
     $script:keyfile = $keyfile
@@ -340,6 +340,7 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
   # identity in a private temporary folder, removed on every exit. No prompt,
   # no stdin, no real key. The names and details match handoff.sh --check-setup.
   $script:CsFailed = $false
+  $script:CsNoAge = $false   # set once age has been tried: the checksum needs it
   function Write-Check([string]$Status, [string]$Name, [string]$Detail) {
     [Console]::Out.WriteLine("$Status ${Name}: $($Detail -replace '\s*\r?\n\s*', ' ')")
     if ($Status -ceq 'FAIL') { $script:CsFailed = $true }
@@ -428,6 +429,8 @@ public static class HandoffCheckCleanup {
       } else {
         Write-Check FAIL age 'not found on PATH; install it (README.md, Installing age)'
       }
+
+      $script:CsNoAge = -not $haveAge
 
       # age-keygen: the user side never needs it, so a missing one is INFO.
       $kg = Get-Command -Name age-keygen -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1

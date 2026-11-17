@@ -36,7 +36,7 @@ set +o posix
 set +x   # SHELLOPTS=xtrace or bash -x would print the secret
 set -euo pipefail
 # A SECRET_JSON exported by the caller would sit in every child's environment:
-unset SECRET_JSON blob
+unset SECRET_JSON blob HANDOFF_SHAPE_ONLY   # (nothing in the environment may change a check)
 
 # Kept equal to consume.py's MAX_KEY_FILE and agent-setup.sh's MAX_KEY_BYTES
 # (a recipient file is 63 bytes; the same bound keeps the three alike):
@@ -136,12 +136,8 @@ if [ "$mode" = encrypt ]; then
     exit 1
   fi
 fi
-# --check-setup runs --fingerprint with HANDOFF_SHAPE_ONLY=1 when there is no
-# age, to check the recipient file's shape alone (no age, no checksum).
-shape_only=0
-[ "$mode" != fingerprint ] || [ "${HANDOFF_SHAPE_ONLY-}" != 1 ] || shape_only=1
 age_version="(not run)"
-if [ "$mode" != check-setup ] && [ "$shape_only" = 0 ]; then   # --check-setup reports a missing age itself
+if [ "$mode" != check-setup ]; then   # --check-setup reports a missing age itself
   command -v age >/dev/null 2>&1 \
     || { echo "handoff.sh: age not found. Install it (README.md, Installing age)" >&2; exit 1; }
   # Read once, for the messages when age fails. Every age run gets an
@@ -258,11 +254,13 @@ check_setup() {
     probe_msg="no $keyfile yet; save the agent's recipient there (SETUP.md, setup step 3)"
     probe_info=1
   else
-    # Without age only the file and its shape can be checked.
+    # With age: this script's own --fingerprint, in a clean environment (the
+    # whole recipient check). Without: the file and its shape alone, read by
+    # the same function in a subshell (the checksum needs age).
     if [ "$have_age" = 1 ]; then
-      v=$("$BASH" "$src" --fingerprint --to "$to" </dev/null 2>"$cs_tmp/probe-err")
+      v=$(env -i PATH="${PATH-}" "$BASH" "$src" --fingerprint --to "$to" </dev/null 2>"$cs_tmp/probe-err")
     else
-      v=$(HANDOFF_SHAPE_ONLY=1 "$BASH" "$src" --fingerprint --to "$to" </dev/null 2>"$cs_tmp/probe-err")
+      v=$( (load_recipient && printf 'recipient: %s\n' "$RECIPIENT") </dev/null 2>"$cs_tmp/probe-err")
     fi
     probe_rc=$?
     probe_rcpt=$(printf '%s\n' "$v" | sed -n 's/^recipient: //p')
@@ -365,9 +363,12 @@ while case "$cdir" in //*) true ;; *) false ;; esac; do cdir=${cdir#/}; done   #
 case "$cdir" in /dev|/dev/fd|/proc/*/fd) no_path ;; esac
 keyfile=${dir%/}/handoff-$to.age
 
-[ "$mode" != check-setup ] || check_setup
 
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
+# The recipient file: found, read, and its shape checked. Sets RECIPIENT;
+# a refusal is no_key (exit 1). --check-setup runs it in a subshell when
+# there is no age to ask about the checksum.
+load_recipient() {
 if [ ! -e "$keyfile" ]; then
   [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink that doesn't resolve to a file"
   # A near miss beside it is named, from a short allow-list only: a _ or . in
@@ -426,9 +427,12 @@ esac
 recipient_re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
 [[ "$RECIPIENT" =~ $recipient_re ]] \
   || no_key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
+}
+[ "$mode" != check-setup ] || check_setup
+load_recipient
 # The bech32 checksum: age itself rejects a recipient that fails it. Asked
 # now, on nothing, so a mistyped file is refused before the secret is typed.
-[ "$shape_only" = 1 ] || env -i PATH="${PATH-}" age -r "$RECIPIENT" </dev/null >/dev/null 2>&1 \
+env -i PATH="${PATH-}" age -r "$RECIPIENT" </dev/null >/dev/null 2>&1 \
   || no_key "$keyfile is not a valid age recipient: age $age_version did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
 
 if [ "$mode" = fingerprint ]; then

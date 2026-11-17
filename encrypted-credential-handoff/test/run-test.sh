@@ -2571,6 +2571,13 @@ has "bad recipient" "PASS round trip: "
 sed 's/.$/q/' handoff-test.age >"$C8/hd/handoff-bad.age"   # right shape, wrong checksum
 run8 "a recipient with a bad checksum" 1 env TMPDIR="$C8/tmp" PATH="$P_ALL" "$BASH" "$H8" --check-setup --to bad
 has "bad checksum" "FAIL recipient: "
+# No environment variable changes a check: HANDOFF_SHAPE_ONLY (an old internal
+# switch) set by the caller still gets the checksum asked.
+expect_refusal "--fingerprint with HANDOFF_SHAPE_ONLY=1 and a bad checksum" 1 "not a valid age recipient" \
+  env HANDOFF_SHAPE_ONLY=1 bash "$H8" --fingerprint --to bad
+run8 "--check-setup with HANDOFF_SHAPE_ONLY=1 and a bad checksum" 1 env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_SHAPE_ONLY=1 "$BASH" "$H8" --check-setup --to bad
+has "SHAPE_ONLY" "FAIL recipient: "
+hasnt "SHAPE_ONLY" "PASS recipient"
 echo "ok (recipient file)"
 
 # A PATH without age: FAIL age.
