@@ -70,7 +70,7 @@ The check runs where `consume.py` runs, on Linux or macOS. A Windows user copies
 Check a blob like this. The check must print that `svc` matches the label `store-test`, and a password length of 66, 1,791, 5,766, or 47,766 bytes, matching the rung:
 
 ```sh
-HANDOFF_PRIVKEY=/tmp/store-test-id python3 consume.py --label store-test --check --blob-file <fetched-file>
+HANDOFF_PRIVKEY=/tmp/store-test-id python3 -I consume.py --label store-test --check --blob-file <fetched-file>
 ```
 
 ## What to check
