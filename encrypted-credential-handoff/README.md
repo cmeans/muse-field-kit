@@ -111,18 +111,19 @@ Step 4's store is a function, not a product: any place that holds an opaque text
 
 ### What a store must provide
 
-All six. A candidate that fails one isn't a store for this pattern, whatever it calls itself.
+All six. A candidate that fails one isn't a store for this pattern, whatever it calls itself. Two things to check along the way: the largest blob the store holds as *one* item, which is a different limit from its total quota (splitting a blob across items is a partial pass at best); and what a fetch of a missing label returns, and whether "missing" can be told from "damaged" from that result.
 
 1. **R1, separation from the key.** The blobs don't live on the key's disk or disk image, including backups and snapshots of either. A synced or cached local copy (a desktop sync client's mirror, a client-side cache) is a local copy and fails R1 like a plain file. A file a wrapper keeps on a tmpfs while it works (SETUP, Rotation step 4) is off the disk (unless the host swaps it out to a swap area on the key's disk, as the threat model's plaintext caveat says), and is removed when the wrapper is done.
-2. **R2, addressable by label.** A blob can be stored, fetched and *replaced* under its label: re-staging and rotation replace a label's blob in place. It can also be *deleted*, which retires a label.
+2. **R2, addressable by label.** A blob can be stored, fetched and *replaced* under its label: re-staging and rotation replace a label's blob in place. It can also be *deleted*, which retires a label. Check how fetch addresses an item: by a stable id or path, not by name or search alone. Check whether two items can share a name, whether a new item takes time to appear in search, and whether labels that differ only in letter case share a slot.
 3. **R3, private.** Only the user and the agent can read it. Every reader holds a copy that becomes plaintext if the key ever leaks (invariant 2), so a store shared with other people or agents widens that set.
 4. **R4, a fetch that doesn't recreate the problem.** Fetching a blob needs no password, token or key file stored on the agent's machine: otherwise a copy of the agent's disk yields both the key and the means to fetch every blob, and separation has bought nothing. Access through the agent platform's own authenticated session meets R4: a connected service the platform reaches for the agent, or a custom connection whose token the platform swaps in at egress, so the real token never reaches the machine. If a store's fetch credential has to live on the agent's machine, it is the **weaker form**: say so plainly, scope that credential to the blob store alone, and record the store as the weaker form. It still defends against a reader of the store alone, not against a copy of the agent's disk. A platform session isn't free either: what the agent reaches through it, any process on its machine can reach too, so the connected account's whole reach counts (below).
-5. **R5, a ciphertext-only path to the helper.** The fetch returns the blob straight to the label's wrapper, which hands it to the consume helper. It never passes through the agent's context, a tool output the agent reads, or a log. (Ciphertext in context wouldn't leak the secret, but a fetch path the agent reads is one a planted blob can be injected into, against invariant 7.)
+5. **R5, a ciphertext-only path to the helper.** The fetch returns the blob straight to the label's wrapper, which hands it to the consume helper. It never passes through the agent's context, a tool output the agent reads, or a log. (Ciphertext in context wouldn't leak the secret, but a fetch path the agent reads is one a planted blob can be injected into, against invariant 7.) Also note where the fetched blob lands on the agent's side, in memory or in a file, and on which disk.
 6. **R6, checkable.** The agent can say where the blobs live and why R1 holds there, and records both (SETUP step 8). An agent that can't observe its provider's snapshot or backup policy says so, rather than claiming R1 holds.
 
-Two properties don't disqualify a store, but change what a rotation leaves behind and who could act on a leak, so know them before you choose:
+Three properties don't disqualify a store, but change what a rotation leaves behind and who could act on a leak, so know them before you choose:
 
 - **History.** A store that keeps old versions (revisions, a changelog, a trash folder, a soft delete) keeps every replaced blob, each still readable with the key it was made for. After a rotation, or a compromise, purge them where the store allows it, and where it doesn't, know that they remain (invariant 2).
+- **Idle expiry.** Whether the store expires, evicts or archives an idle item or database. A missing blob looks like a vanished credential, so check the plan's idle rules before you rely on it.
 - **Reach.** What else the store's access opens. A connection to a whole account (a whole Drive, a whole workspace) gives standing access to everything in that account, not only the blobs. An account or database used for the blobs and nothing else keeps that reach to the blobs.
 
 ### On Muse (as of November 2026)
@@ -172,7 +173,7 @@ These weren't tested for this release, and free tiers and limits change, so chec
 - **GitHub Gist:** a "secret" gist is only unlisted, not private, and it keeps every revision. It doesn't fit.
 - **Airtable:** check the long-text field limits and the revision history.
 
-<!-- STORE-TEST: link when STORE-TEST.md lands -->
+To test a store yourself, with dummy data only, give your agent the prompt in [STORE-TEST.md](STORE-TEST.md); it ends with a scorecard you can paste into an issue.
 
 ### Approving a connection: Allow or Allow Always
 
