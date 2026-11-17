@@ -454,6 +454,20 @@ import os
 print(len(os.environ["SERVICE_PRIVATE_KEY"]))
 ')
 [ "$out" = "$(( max_payload - 34 ))" ] || fail "the maximum payload did not round-trip ($out)"
+# The same blob saved wrapped at 76 columns (as base64 tools wrap): the line
+# breaks don't count toward the cap, from a file as from --blob.
+fold -w 76 "$S/blob-max" >"$S/blob-max-wrapped"
+[ "$(wc -c < "$S/blob-max-wrapped")" -gt "$max_blob" ] || fail "test setup: the wrapped maximum blob is not over $max_blob characters raw"
+consume --label example --check --blob-file "$S/blob-max-wrapped" >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "a maximum blob wrapped at 76 columns was refused from a file"; }
+grep -qxF "svc: matches label 'example'" "$S/out" || fail "a wrapped maximum blob from a file did not pass --check"
+consume --label example --check --blob "$(cat "$S/blob-max-wrapped")" >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "a maximum blob wrapped at 76 columns was refused from --blob"; }
+# A file over the raw bound (twice the cap, line breaks included) is refused
+# as it is read, with that bound named.
+head -c "$(( 2 * max_blob + 1 ))" /dev/zero | tr '\0' 'A' >"$S/blob-raw-over.txt"
+expect_refusal "a blob file over the raw bound" 1 "is over $(( 2 * max_blob )) characters (line breaks and blanks included)" \
+  consume --label example --check --blob-file "$S/blob-raw-over.txt"
 over=$(pad "$(( max_payload + 1 ))")
 expect_refusal "handoff.sh payload one byte over the cap" 1 "payload is $(( max_payload + 1 )) bytes; the most handoff.sh sends is $max_payload bytes" \
   bash "$S/hd/handoff.sh" <<<"$over"

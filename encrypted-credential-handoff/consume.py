@@ -142,8 +142,15 @@ AGE_SECRET_RE = re.compile(r"AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{
 AGE_RECIPIENT_RE = re.compile(r"age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}")
 AGE_MAGIC = b"age-encryption.org/v1\n"
 AGE_ARMOR_BEGIN = b"-----BEGIN AGE ENCRYPTED FILE-----"
-MAX_BLOB_FILE = 65536   # characters; provisional (a reference blob is about 370)
+# Characters of base64, whitespace dropped. Measured 2026-11-17: every store
+# tested, and the chat path, carried a 64,000-character blob (a reference blob
+# is about 370).
+MAX_BLOB_FILE = 65536
 MAX_BLOB_BYTES = MAX_BLOB_FILE // 4 * 3  # the most that many characters decode to
+# What a blob file may hold as it is read, line breaks and blanks included: a
+# blob at the cap saved wrapped (76 columns, as base64 tools wrap) is about
+# 860 characters longer. Still a bound; decode_blob checks the cap itself.
+MAX_BLOB_FILE_RAW = 2 * MAX_BLOB_FILE
 
 DEFAULT_ENV_MAP = {
     "username": "SERVICE_USERNAME",
@@ -890,14 +897,15 @@ def parse_args(argv):
             BLOB_FILE_READ = file_identity(read_st)
             # utf-8-sig: some editors save a byte-order mark first.
             with os.fdopen(fd, "r", encoding="utf-8-sig") as fh:
-                blob = fh.read(MAX_BLOB_FILE + 1)
+                blob = fh.read(MAX_BLOB_FILE_RAW + 1)
         except OSError as e:
             # strerror comes from the OS, never from the file's contents.
             raise fail(f"cannot read blob file at {blob_file}: {e.strerror}") from None
         except UnicodeError:
             raise fail(f"cannot read blob file at {blob_file} as text") from None
-        if len(blob) > MAX_BLOB_FILE:
-            raise fail(f"blob file at {blob_file} is over {MAX_BLOB_FILE} characters; not a blob")
+        if len(blob) > MAX_BLOB_FILE_RAW:
+            raise fail(f"blob file at {blob_file} is over {MAX_BLOB_FILE_RAW} characters "
+                       "(line breaks and blanks included); not a blob")
     if blob is None:
         blob = os.environ.get(BLOB_ENV)
     if blob is None:
