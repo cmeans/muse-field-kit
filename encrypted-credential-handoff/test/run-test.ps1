@@ -421,47 +421,47 @@ Say '== 5b-ps. the payload: checks, cap, -File and pipeline input =='
 Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $K 'handoff-muse.age')
 $jsonMsg = 'input must be a single JSON object with a string "svc" and string values only, aborting'
 # The payload shapes, one table shared with run-test.sh (payload-cases.json):
-# {name, payload, exit, stderr_contains}. Each runs piped in and with -File;
-# an accepted one's blob goes to interop, to open to the same bytes.
+# {name, payload or payload_base64 (bytes that aren't text), exit,
+# stderr_contains}. A text case runs piped in and with -File; a bytes case
+# with -File and as stdin's bytes (a pipeline carries text, not bytes). An
+# accepted one's blob goes to interop, to open to the same bytes.
 $pcases = @(ConvertFrom-Json -InputObject ([IO.File]::ReadAllText((Join-Path $Here 'payload-cases.json'))))
 if ($pcases.Count -eq 1 -and $pcases[0] -is [array]) { $pcases = @($pcases[0]) }
 Assert-True ($pcases.Count -gt 0) 'payload-cases.json is empty'
 foreach ($c in $pcases) {
   $keys = (@($c.PSObject.Properties | ForEach-Object { $_.Name }) | Sort-Object) -join ','
-  Assert-True ($keys -eq 'exit,name,payload,stderr_contains') "payload-cases.json: case $($c.name) has the wrong keys ($keys)"
   $f = Join-Path $S "pc-$($c.name).json"
-  [IO.File]::WriteAllText($f, $c.payload, $Utf8)
+  if ($keys -eq 'exit,name,payload,stderr_contains') {
+    $isText = $true
+    [IO.File]::WriteAllText($f, $c.payload, $Utf8)
+  } elseif ($keys -eq 'exit,name,payload_base64,stderr_contains') {
+    $isText = $false
+    [IO.File]::WriteAllBytes($f, [Convert]::FromBase64String($c.payload_base64))
+  } else {
+    Fail "payload-cases.json: case $($c.name) has the wrong keys ($keys)"
+  }
+  $raw = [IO.File]::ReadAllBytes($f)
   if ([int]$c.exit -eq 0) {
-    $r = Invoke-Handoff -Script $hk -Pipe $f
+    if ($isText) { $r = Invoke-Handoff -Script $hk -Pipe $f } else { $r = Invoke-Handoff -Script $hk -Stdin $raw }
     $blob = Assert-Blob "payload $($c.name)" $r
     Assert-True ($r.Err.Contains($c.stderr_contains)) "payload $($c.name): stderr lacks `"$($c.stderr_contains)`""
     [void](Assert-Blob "payload $($c.name) (-File)" (Invoke-Handoff -Script $hk -ArgText "-File $(Q $f)"))
-    Save-Interop "payload-$($c.name)" $blob $c.payload $Utf8.GetBytes($c.payload.TrimEnd("`r", "`n"))
+    # What age gets: the text without a leading byte-order mark (dropped) or
+    # trailing line ends.
+    $t = $Utf8.GetString($raw)
+    if ($t.Length -gt 0 -and $t[0] -eq [char]0xFEFF) { $t = $t.Substring(1) }
+    $t = $t.TrimEnd("`r", "`n")
+    Save-Interop "payload-$($c.name)" $blob $t $Utf8.GetBytes($t)
     Say "ok (accepted: payload $($c.name))"
   } else {
-    Assert-Refusal "payload $($c.name)" ([int]$c.exit) $c.stderr_contains (Invoke-Handoff -Script $hk -Pipe $f)
+    if ($isText) { $r = Invoke-Handoff -Script $hk -Pipe $f } else { $r = Invoke-Handoff -Script $hk -Stdin $raw }
+    Assert-Refusal "payload $($c.name)" ([int]$c.exit) $c.stderr_contains $r
     Assert-Refusal "payload $($c.name) (-File)" ([int]$c.exit) $c.stderr_contains (Invoke-Handoff -Script $hk -ArgText "-File $(Q $f)")
   }
 }
-# Lone surrogates, either half, escaped or raw: refused with the JSON message
-# (handoff.ps1's alone; jq differs, see run-test.sh). Built from [char] codes.
-$bs = [string][char]0x5C
-$i = 0
-foreach ($c in @(@('a lone high surrogate in svc', ('{"svc":"' + $bs + 'ud800"}')),
-                 @('a lone high surrogate', ('{"svc":"example","password":"mk-Zq9' + $bs + 'ud800"}')),
-                 @('a lone low surrogate', ('{"svc":"example","password":"' + $bs + 'udc00mk-Zq9"}')),
-                 @('a high surrogate before a non-surrogate', ('{"svc":"example","password":"mk-Zq9' + $bs + 'ud800' + $bs + 'u0041"}')),
-                 @('two high surrogates', ('{"svc":"example","password":"mk-Zq9' + $bs + 'ud800' + $bs + 'ud800"}')))) {
-  $i++
-  $f = Join-Path $S "lone-$i.json"
-  [IO.File]::WriteAllText($f, $c[1], $Utf8)
-  Assert-Refusal "payload: $($c[0])" 1 $jsonMsg (Invoke-Handoff -Script $hk -Pipe $f)
-}
+# A raw lone surrogate, which only a PowerShell string can hold (UTF-8 can't
+# carry one): refused with the JSON message. The escaped forms are in the table.
 Assert-Refusal 'payload: a raw lone surrogate in a piped string' 1 $jsonMsg (Invoke-Handoff -Call "('{`"svc`":`"example`",`"password`":`"mk-Zq9' + [char]0xD800 + '`"}') | & $(Q $hk)")
-# An unpaired escape in a key is refused too.
-$f = Join-Path $S 'lone-key.json'
-[IO.File]::WriteAllText($f, ('{"svc":"example","' + $bs + 'udfff":"mk-Zq9"}'), $Utf8)
-Assert-Refusal 'payload: a lone surrogate in a key' 1 $jsonMsg (Invoke-Handoff -Script $hk -Pipe $f)
 # Nothing piped and nothing on stdin: empty.
 Assert-Refusal 'an empty pipeline' 1 'empty, aborting' (Invoke-Handoff -Call "@() | & $(Q $hk)")
 Assert-Refusal 'no input at all' 1 'empty, aborting' (Invoke-Handoff -Script $hk)

@@ -471,9 +471,18 @@ else
   SECRET_JSON=$(cat)            # piped input: no terminal to manage
 fi
 
+# A UTF-8 byte-order mark, as some Windows editors save: dropped, as
+# handoff.ps1 does (consume.py would refuse the payload with one).
+SECRET_JSON=${SECRET_JSON#$'\xef\xbb\xbf'}
 [ -n "${SECRET_JSON//[[:space:]]/}" ] || { echo "handoff.sh: empty, aborting" >&2; exit 1; }
 
 # --- validate ---------------------------------------------------------
+bad_json() { echo "handoff.sh: input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2; exit 1; }
+# UTF-8 text only, as consume.py decodes it: jq -R replaces each invalid
+# byte sequence with U+FFFD, so its copy differs from the input exactly when
+# the input isn't valid UTF-8. (printf is a builtin: the secret is in no
+# command's arguments, and <(...) is a pipe, not a file.)
+printf '%s' "$SECRET_JSON" | jq -Rjs . 2>/dev/null | cmp -s - <(printf '%s' "$SECRET_JSON") || bad_json
 # Exactly one JSON value, an object, carrying a non-empty string "svc"
 # and only string values: `jq -e .` alone also accepts arrays, bare
 # strings, and several concatenated values, and a payload that fails the
@@ -483,10 +492,26 @@ printf '%s' "$SECRET_JSON" | jq -e -s \
   'length==1 and (.[0]|type)=="object"
    and (.[0].svc|type)=="string" and (.[0].svc|length)>0
    and (.[0]|all(.[]; type=="string"))' >/dev/null 2>&1 \
-  || { echo "handoff.sh: input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2; exit 1; }
+  || bad_json
+# No \uD800-\uDFFF escape that isn't half of a pair (a lone surrogate): jq
+# accepts some (1.8 takes a lone low half), and consume.py refuses them as
+# not UTF-8 text. jq has parsed the JSON, so once the escaped backslashes are
+# gone every \u left starts an escape with four hex digits; the valid pairs
+# go next, and any surrogate escape still there is a lone one. Bash
+# patterns, so the secret stays in this shell; the hex digits are listed,
+# not ranges, which can match more in some locales.
+bs=\\   # one backslash
+hx='[0123456789abcdefABCDEF]'
+sj=${SECRET_JSON//"$bs$bs"/}
+sj=${sj//"$bs"u[dD][89abAB]$hx$hx"$bs"u[dD][cdefCDEF]$hx$hx/}
+case "$sj" in
+  *"$bs"u[dD][89abcdefABCDEF]$hx$hx*) sj=; bad_json ;;
+esac
+sj=
 
 # The cap (MAX_PAYLOAD, above) keeps the blob within consume.py's limit.
-n=$(printf '%s' "$SECRET_JSON" | wc -c)
+# $(( )) drops the padding BSD wc (macOS) puts before the count.
+n=$(( $(printf '%s' "$SECRET_JSON" | wc -c) ))
 if [ "$n" -gt "$MAX_PAYLOAD" ]; then
   echo "handoff.sh: payload is ${n} bytes; the most handoff.sh sends is ${MAX_PAYLOAD} bytes." >&2
   echo "Shorten the JSON. (Larger payloads need a larger limit on both sides;" >&2

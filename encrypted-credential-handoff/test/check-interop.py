@@ -15,6 +15,9 @@ Three named blobs also go through consume.py:
   private-key   the injected SERVICE_PRIVATE_KEY equals the CRLF PEM byte
                 for byte
 
+and every payload-* blob (payload-cases.json's accepted cases) must open
+with consume.py --check under its own svc.
+
 Exits non-zero, with a message, on the first mismatch, or when a directory
 lacks one of the three named blobs.
 """
@@ -79,6 +82,12 @@ def main(dirs):
                     fail("%s/%s: decrypted JSON differs from %s.expect.json" % (d, name, name))
                 total += 1
                 label = expect.get("svc")
+                if name.startswith("payload-"):
+                    rc, out, err = run([sys.executable, "-I", str(CONSUME), "--label", label, "--check",
+                                        "--blob-file", str(blob)], env=env)
+                    if rc != 0:
+                        fail("%s/%s: consume.py --check refused it: %s"
+                             % (d, name, err.decode("utf-8", "replace")))
                 if name == "expected":
                     rc, out, err = run([sys.executable, "-I", str(CONSUME), "--label", label, "--check",
                                         "--blob-file", str(blob)], env=env)
