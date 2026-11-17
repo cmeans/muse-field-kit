@@ -28,49 +28,54 @@ You need four blobs, one line each, of exactly 400, 2,700, 8,000, and
 64,000 characters. Each holds the same dummy payload shape, with the
 password field padded with the letter `x` to reach the size.
 
-In bash:
+In bash (the files go in a new private folder from `mktemp -d`, never at a fixed name in `/tmp`, where another user of the machine could have put a link first):
 
 ```sh
 cd encrypted-credential-handoff
+T=$(mktemp -d)
 R=$(cat test/handoff-test.age)
 for t in 400 2700 8000 64000; do
   n=$(( t*3/4 - 200 ))
   pre='{"svc":"store-test","password":"'; post='"}'
   pl=$(( n - ${#pre} - ${#post} ))
   { printf '%s' "$pre"; head -c "$pl" /dev/zero | tr '\0' x; printf '%s' "$post"; } \
-    | age -r "$R" | base64 | tr -d '\n' > /tmp/blob-$t.txt
-  echo "$t: $(wc -c < /tmp/blob-$t.txt)"
+    | age -r "$R" | base64 | tr -d '\n' > "$T/blob-$t.txt"
+  echo "$t: $(wc -c < "$T/blob-$t.txt")"
 done
-cp test/test-dummy-identity.txt /tmp/store-test-id && chmod 600 /tmp/store-test-id
+cp test/test-dummy-identity.txt "$T/store-test-id" && chmod 600 "$T/store-test-id"
+echo "temp folder: $T"
 ```
 
-In PowerShell (the payload is dummy, so its temp file is safe to delete):
+In PowerShell (a new folder with a random name in the temp folder; the payload is dummy, so its temp file is safe to delete):
 
 ```powershell
 cd encrypted-credential-handoff
+$TempDir = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $TempDir | Out-Null
 $R = (Get-Content .\test\handoff-test.age -Raw).Trim()
 foreach ($t in 400, 2700, 8000, 64000) {
   $n = $t * 3 / 4 - 200
   $pre = '{"svc":"store-test","password":"'; $post = '"}'
   $payload = $pre + ('x' * ($n - $pre.Length - $post.Length)) + $post
-  [IO.File]::WriteAllText("$env:TEMP\payload-$t.json", $payload, [Text.Encoding]::ASCII)
-  & age -r $R -o "$env:TEMP\blob-$t.age" "$env:TEMP\payload-$t.json"
-  $blob = [Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:TEMP\blob-$t.age"))
-  [IO.File]::WriteAllText("$env:TEMP\blob-$t.txt", $blob)
-  Remove-Item "$env:TEMP\payload-$t.json", "$env:TEMP\blob-$t.age"
+  [IO.File]::WriteAllText((Join-Path $TempDir "payload-$t.json"), $payload, [Text.Encoding]::ASCII)
+  & age -r $R -o (Join-Path $TempDir "blob-$t.age") (Join-Path $TempDir "payload-$t.json")
+  $blob = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $TempDir "blob-$t.age")))
+  [IO.File]::WriteAllText((Join-Path $TempDir "blob-$t.txt"), $blob)
+  Remove-Item (Join-Path $TempDir "payload-$t.json"), (Join-Path $TempDir "blob-$t.age")
   "$t`: $($blob.Length)"
 }
-Copy-Item .\test\test-dummy-identity.txt "$env:TEMP\store-test-id"
+Copy-Item .\test\test-dummy-identity.txt (Join-Path $TempDir 'store-test-id')
+"temp folder: $TempDir"
 ```
 
 If a printed length is not the target size, stop and report that. Do not test with a blob of the wrong size.
 
 The check runs where `consume.py` runs, on Linux or macOS. A Windows user copies the fetched blob and the temp identity there, or runs the check under WSL.
 
-Check a blob like this. The check must print that `svc` matches the label `store-test`, and a password length of 66, 1,791, 5,766, or 47,766 bytes, matching the rung:
+Check a blob like this, with `T` set to the temp folder the bash block printed (set it again in a new shell). The check must print that `svc` matches the label `store-test`, and a password length of 66, 1,791, 5,766, or 47,766 bytes, matching the rung:
 
 ```sh
-HANDOFF_PRIVKEY=/tmp/store-test-id python3 -I consume.py --label store-test --check --blob-file <fetched-file>
+HANDOFF_PRIVKEY="$T/store-test-id" python3 -I consume.py --label store-test --check --blob-file <fetched-file>
 ```
 
 ## What to check
@@ -125,7 +130,7 @@ Also say where a fetched blob lands on your side (in memory, or in a file, and o
 
 ## Clean up
 
-Delete every item, file, and temp copy this test made, in the store and on your machine, including the temp identity copy. Then check the scratch location once more and confirm in the scorecard that nothing is left.
+Delete every item, file, and temp copy this test made, in the store and on your machine, including the temp folder with the identity copy in it (`rm -rf "$T"`, or in PowerShell `Remove-Item -Recurse -Force $TempDir`). Then check the scratch location once more and confirm in the scorecard that nothing is left.
 
 ## Scorecard
 
