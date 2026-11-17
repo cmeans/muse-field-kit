@@ -2520,7 +2520,12 @@ for s in "opened with the current key (a rotation is under way)" "decrypted with
   grep -qF "'$s'" ../SETUP.md || fail "SETUP.md's Current-key probe doesn't count: $s"
 done
 mnt=$(sed -n "s/.*find '\([^']*\)' -xdev.*/\1/p" "$S/err")
-case "$S/" in "${mnt%/}/"*) [ -d "$mnt" ] ;; *) false ;; esac || fail "the link refusal's mount point ($mnt) doesn't hold the key"
+# Under the mount point by path, or (macOS: /var/folders is on the Data volume,
+# mounted at /System/Volumes/Data and reached through a firmlink) by the same
+# directory appearing beneath it.
+s_real=$(cd -P "$S" && pwd)
+{ case "$S/" in "${mnt%/}/"*) [ -d "$mnt" ] ;; *) false ;; esac ||
+  { [ "$(uname -s)" = Darwin ] && [ -d "$mnt" ] && [ "$S" -ef "${mnt%/}$s_real" ]; }; } || fail "the link refusal's mount point ($mnt) doesn't hold the key"
 rm "$S/tmpname/backup.txt"
 # A find that fails is a refusal, not a pass.
 mkdir -p "$S/nofind"; ln -sf "$real_keygen" "$S/nofind/age-keygen"

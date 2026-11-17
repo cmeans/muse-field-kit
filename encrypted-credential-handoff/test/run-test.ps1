@@ -984,6 +984,12 @@ if (-not $OnWindows) {
     $psi.RedirectStandardInput = $true
     foreach ($k in $tmpEnv.Keys) { $psi.EnvironmentVariables[$k] = $tmpEnv[$k] }
     $psi.EnvironmentVariables['PATH'] = $stub8Path
+    # .NET 10 (PowerShell 7.6) puts its debugger and diagnostics endpoints
+    # (clr-debug-pipe-*, dotnet-diagnostic-*) in TMPDIR and leaves them there
+    # when a TERM ends it. They are the runtime's, not the script's, and they
+    # would be counted as the script's leftover folder; so the runtime doesn't
+    # make them.
+    $psi.EnvironmentVariables['DOTNET_EnableDiagnostics'] = '0'
     $p = [System.Diagnostics.Process]::Start($psi)
     $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
     $p.StandardInput.Close()
@@ -1009,21 +1015,16 @@ if (-not $OnWindows) {
   NotHere $stubNames[4]
 }
 
-# An execution-policy block. Windows PowerShell 5.1 prints the error record's
-# FullyQualifiedErrorId (UnauthorizedAccess) and category (PSSecurityException);
-# PowerShell 7's concise view prints only the category, "SecurityError:", in
-# color, then the message. So, with the ANSI escapes removed: that id together
-# with the exception, or the SecurityError category together with a policy
-# phrase. A generic access-denied error has neither pairing. When stderr
-# arrives CLIXML-wrapped, which hides the fields, the policy phrase alone.
+# An execution-policy block, with the ANSI escapes removed: Windows PowerShell
+# 5.1's FullyQualifiedErrorId UnauthorizedAccess together with its category
+# PSSecurityException, or (PowerShell 7's concise view prints neither) a phrase
+# only an execution-policy error has. A generic access-denied error has
+# neither. The callers also require a non-zero exit.
 function Test-PolicyBlock($r) {
   $esc = [string][char]27
   $e = ([string]$r.Err) -replace ($esc + '\[[0-9;]*m'), ''
-  $phrase = 'is not digitally signed|running scripts is disabled on this system'
   if (($e -match 'UnauthorizedAccess') -and ($e -match 'PSSecurityException|SecurityError')) { return $true }
-  if (($e -match 'SecurityError:') -and ($e -match $phrase)) { return $true }
-  if ($e.StartsWith('#< CLIXML') -and ($e -match $phrase)) { return $true }
-  return $false
+  return [bool]($e -match 'running scripts is disabled|is not digitally signed|about_Execution_Policies')
 }
 
 # --- Windows: Mark of the Web and execution policy --------------------------------
@@ -1054,7 +1055,7 @@ if ($OnWindows) {
     $r = Invoke-Proc -Exe $PSExe -Argv @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-File', $h, '-Fingerprint') -Cwd (Split-Path $h)
     Assert-True ($r.Exit -ne 0 -and $r.Out.Length -eq 0 -and (Test-PolicyBlock $r)) "Restricted ran $h : exit $($r.Exit) $($r.Err)"
     $r = Invoke-Proc -Exe $PSExe -Argv @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-Command', '.\handoff.ps1 -Fingerprint') -Cwd (Split-Path $h)
-    Assert-True ($r.Out.Length -eq 0 -and (Test-PolicyBlock $r)) "Restricted ran .\handoff.ps1 in $h : $($r.Err)"
+    Assert-True ($r.Exit -ne 0 -and $r.Out.Length -eq 0 -and (Test-PolicyBlock $r)) "Restricted ran .\handoff.ps1 in $h : $($r.Err)"
   }
   Say "ok ($($epCases[1]))"
 
