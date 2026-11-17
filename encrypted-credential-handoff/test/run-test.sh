@@ -650,6 +650,25 @@ expect_refusal "a symlinked KEY" 1 "is a symbolic link" \
 cp test-dummy-identity.txt "$S/loose.txt"; chmod 644 "$S/loose.txt"
 expect_refusal "a group/other-readable identity" 1 "is mode 644; it must be owner-only (0600)" \
   bash ../agent-setup.sh --fingerprint "$S/loose.txt"
+# The key file is read once, bounded: MAX_KEY_BYTES (padded with comment
+# lines) is read, one byte more is refused, and a FIFO at the key path is
+# refused without waiting for a writer.
+max_key=$(sed -n 's/^MAX_KEY_BYTES=\([0-9]*\).*/\1/p' ../agent-setup.sh)
+[ -n "$max_key" ] || fail "test setup: MAX_KEY_BYTES not found in agent-setup.sh"
+python3 -c 'import sys; k = open(sys.argv[1], "rb").read(); n = int(sys.argv[2]) - len(k); sys.stdout.buffer.write(k + b"#" * (n - 1) + b"\n")' \
+  "$TMPKEY" "$max_key" >"$S/id-max.txt"
+chmod 600 "$S/id-max.txt"
+[ "$(( $(wc -c <"$S/id-max.txt") ))" -eq "$max_key" ] || fail "test setup: id-max.txt is not $max_key bytes"
+[ "$(bash ../agent-setup.sh --fingerprint "$S/id-max.txt" 2>"$S/err")" = "recipient: $("$AGE_KEYGEN" -y "$TMPKEY")" ] \
+  || { cat "$S/err" >&2; fail "agent-setup.sh --fingerprint refused an identity file of exactly $max_key bytes"; }
+echo "ok (a $max_key-byte identity file is read)"
+printf '#\n' >>"$S/id-max.txt"
+expect_refusal "an identity file over MAX_KEY_BYTES (agent-setup.sh)" 1 "is over $max_key bytes; not an age identity file" \
+  bash ../agent-setup.sh --fingerprint "$S/id-max.txt"
+mkfifo -m 600 "$S/id.fifo"
+expect_refusal "a FIFO at the key path (agent-setup.sh)" 1 "no key file at" \
+  run_to_n 20 bash ../agent-setup.sh --fingerprint "$S/id.fifo"
+rm -f "$S/id.fifo"
 cat "$TMPKEY" "$TMPKEY" >"$S/id-two.txt"
 expect_refusal "an identity with two secret keys" 1 "holds 2 secret keys" \
   bash ../agent-setup.sh --fingerprint "$S/id-two.txt"

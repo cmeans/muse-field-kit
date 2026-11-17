@@ -143,7 +143,7 @@ keygen_cannot_run() {  # RC
 # 0.1.0, another text, a plugin or post-quantum identity, a recipient, two
 # secret keys). The recipient is age-keygen -y's, never a comment's.
 recipient_of() {  # FILE
-  local f=$1 mode size nonul data line secrets=0 recipient=0 out rc=0
+  local f=$1 mode size data line secrets=0 recipient=0 out rc=0
   if [ -L "$f" ]; then
     echo "key file at $(qp "$f") is a symbolic link; give the identity file itself. Refusing." >&2
     return 1
@@ -158,20 +158,26 @@ recipient_of() {  # FILE
     return 1
   fi
   [ -O "$f" ] || { echo "key file at $(qp "$f") is not owned by this user. Refusing." >&2; return 1; }
-  size=$( { wc -c < "$f"; } 2>/dev/null ) || { echo "cannot read key file at $(qp "$f")" >&2; return 1; }
-  size=${size//[[:space:]]/}
+  # One bounded read, as handoff.sh reads a recipient file, and every check
+  # below is on what was read: a file swapped after the checks above can't
+  # bring back an unbounded read, and the size is that of the bytes read.
+  # (The x keeps $(...) from dropping trailing newlines; a NUL, which $(...)
+  # would drop, is read as \001 and counted, and then refused.) A FIFO or
+  # device at the path is refused by [ -f ] above; only a swap in the moment
+  # between, by someone who can write the key's directory, could still make
+  # the read wait.
+  data=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$f" | LC_ALL=C tr '\000' '\001' && printf x; } 2>/dev/null ) \
+    || { echo "cannot read key file at $(qp "$f")" >&2; return 1; }
+  data=${data%x}
+  size=$(( $(printf '%s' "$data" | LC_ALL=C wc -c) ))
   if [ "$size" -gt "$MAX_KEY_BYTES" ]; then
     echo "key file at $(qp "$f") is over $MAX_KEY_BYTES bytes; not an age identity file" >&2
     return 1
   fi
-  data=$( { LC_ALL=C cat -- "$f"; } 2>/dev/null ) || { echo "cannot read key file at $(qp "$f")" >&2; return 1; }
-  # A NUL byte is never in an identity (bash would drop it): not one.
-  nonul=$( { LC_ALL=C tr -d '\000' < "$f" | wc -c; } 2>/dev/null ) || nonul=-1
-  nonul=${nonul//[[:space:]]/}
-  if [ "$nonul" != "$size" ]; then
-    echo "the file at $(qp "$f") is not an age identity file" >&2
-    return 2
-  fi
+  # A NUL byte is never in an identity: not one.
+  case "$data" in
+    *$'\001'*) echo "the file at $(qp "$f") is not an age identity file" >&2; return 2 ;;
+  esac
   case "$data" in
     *"-----BEGIN RSA PRIVATE KEY-----"*|*"-----BEGIN PRIVATE KEY-----"*|*"-----BEGIN ENCRYPTED PRIVATE KEY-----"*)
       echo "the key at $(qp "$f") is an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again (README.md)" >&2
