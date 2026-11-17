@@ -254,7 +254,7 @@ $shKnown = [regex]::Match($sh, "(?m)^KNOWN_FIELDS='([a-z_ ]+)'$")
 $psKnown = [regex]::Match($ps, "(?m)^[ ]*\`$KNOWN_FIELDS = '([a-z_ ]+)'$")
 if (-not $shKnown.Success -or -not $psKnown.Success) { Fail 'test setup: KNOWN_FIELDS not found in handoff.sh or handoff.ps1' }
 if ($shKnown.Groups[1].Value -cne $psKnown.Groups[1].Value) { Fail 'KNOWN_FIELDS differs between handoff.sh and handoff.ps1' }
-$shRe = [regex]::Match($sh, "(?m)^recipient_re='\^(age1\[[a-z0-9]+\]\{58\})\$'")
+$shRe = [regex]::Match($sh, "(?m)^[ ]*recipient_re='\^(age1\[[a-z0-9]+\]\{58\})\$'")
 $psRe = [regex]::Match($ps, "(?m)^[ ]*\`$RECIPIENT_RE = '\^(age1\[[a-z0-9]+\]\{58\})\\z'")
 if (-not $shRe.Success -or -not $psRe.Success) { Fail 'test setup: the recipient rule not found in handoff.sh or handoff.ps1' }
 if ($shRe.Groups[1].Value -ne $psRe.Groups[1].Value) { Fail 'the recipient rule differs between handoff.sh and handoff.ps1' }
