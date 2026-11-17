@@ -449,7 +449,8 @@ password: 20 bytes"
   # The real key, if there is one: read with the same checks as --fingerprint.
   # HANDOFF_KEY_DIR alone: the same refusal as --fingerprint's, since the
   # default path would be the wrong key, and "no key yet" the wrong advice.
-  if [ "$have_keygen" = 1 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
+  # Before the age-keygen gate: it's a setup error with or without the tools.
+  if [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
     cs_out FAIL identity "HANDOFF_KEY_DIR applies only to generating a key; for --check-setup, set HANDOFF_PRIVKEY=<dir>/handoff-identity.txt as the wrappers do"
   elif [ "$have_keygen" = 1 ]; then
     k=$( { resolve_key; printf '%s' "$key"; } 2>"$newd/kerr" )
@@ -464,8 +465,9 @@ password: 20 bytes"
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null)
       cs_out FAIL identity "${kmsg:-the key at $k did not pass the identity checks}"
     fi
+  else
+    cs_out INFO identity "skipped (needs age-keygen)"
   fi
-  [ "$have_keygen" = 1 ] || cs_out INFO identity "skipped (needs age-keygen)"
   exit "$cs_failed"
 }
 

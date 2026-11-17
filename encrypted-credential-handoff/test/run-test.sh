@@ -566,12 +566,15 @@ env -u HANDOFF_KEY_DIR HANDOFF_PRIVKEY="$XT/handoff-identity.txt" SHELLOPTS=xtra
 env -u HANDOFF_KEY_DIR HANDOFF_PRIVKEY="$XT/handoff-identity.txt" bash -x ../agent-setup.sh --retire --yes >"$S/out" 2>"$S/err" \
   || { cat "$S/err" >&2; fail "--retire failed under bash -x"; }
 ! secret_in "$S/out" "$S/err" || fail "bash -x agent-setup.sh --retire printed a secret key"
-# No here-string or here-document in agent-setup.sh's code: bash before 5.1
+# No here-string or here-document in either script's code: bash before 5.1
 # (macOS's /bin/bash is 3.2) backs both with a temporary file, which would put
-# an identity's text on disk. Comment lines are skipped.
-if grep -nE '<<' ../agent-setup.sh | grep -vE '^[0-9]+:[[:space:]]*#'; then
-  fail "agent-setup.sh uses a here-string or here-document (a temporary file on bash < 5.1)"
-fi
+# an identity's text or a payload on disk. Comment lines are skipped, and so is
+# handoff.sh's fixed usage text.
+for f in ../agent-setup.sh ../handoff.sh; do
+  if grep -nE '<<' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -vF "cat >&2 <<'USAGE'"; then
+    fail "$f uses a here-string or here-document (a temporary file on bash < 5.1)"
+  fi
+done
 # The caller's allexport (SHELLOPTS=allexport) never exports the identity's
 # text: no command agent-setup.sh runs (shims of the ones that run after it
 # is read, logging their environment) sees it.
@@ -1626,6 +1629,50 @@ for i in $(seq 0 $(( npc - 1 ))); do
     expect_refusal "payload case $c_name (FILE)" "$c_exit" "$c_msg" bash "$S/hd/handoff.sh" "$S/pc-in" </dev/null
   fi
 done
+# The terminal read (stty -echo, then everything up to Ctrl-D) maps a NUL too:
+# a raw NUL typed at the prompt is refused, never encrypted shortened. A
+# pseudo-terminal from Python's pty, which types the payload, Enter and Ctrl-D,
+# bounded at 20 s. Prints the exit status, then everything the terminal showed.
+pty_type() {  # PAYLOAD-FILE CMD...
+  python3 - "$@" <<'PY'
+import os, pty, select, sys, time
+data = open(sys.argv[1], "rb").read()
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[2], sys.argv[2:])
+out, sent, end = b"", False, time.time() + 20
+while time.time() < end:
+    r, _, _ = select.select([fd], [], [], 0.2)
+    if r:
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+    if not sent and b"Paste or type" in out:
+        time.sleep(0.3)  # let stty -echo take effect
+        os.write(fd, data + b"\n")
+        time.sleep(0.2)
+        os.write(fd, b"\x04")
+        sent = True
+else:
+    os.kill(pid, 9)
+_, st = os.waitpid(pid, 0)
+sys.stdout.write("%d\n" % (os.WEXITSTATUS(st) if os.WIFEXITED(st) else 128))
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+}
+printf '{"svc":"example","password":"mk-\000Zq9"}' >"$S/pty-nul.json"
+out=$(pty_type "$S/pty-nul.json" "$BASH_BIN" "$S/hd/handoff.sh")
+[ "${out%%$'\n'*}" = 1 ] || fail "a raw NUL typed at the terminal: exit ${out%%$'\n'*}, expected 1: $out"
+case "$out" in
+  *"input must be a single JSON object"*) ;;
+  *) fail "a raw NUL typed at the terminal: no JSON refusal: $out" ;;
+esac
+! printf '%s' "$out" | grep -q -e '--- end ---' || fail "a raw NUL typed at the terminal: a blob was printed"
+echo "ok (refused: a raw NUL typed at the terminal)"
 # The tools, refused before any prompt. jq: absent, then too old, then 1.6 (the
 # floor, accepted). age: absent. Each runs under a pseudo-terminal when script(1)
 # is there, where a prompt would show; the refusal must come first.
@@ -3066,6 +3113,10 @@ mkpath "$C8/pa-nokg" $BASE_TOOLS bash python3 age
 run8 "agent: no age-keygen" 1 env TMPDIR="$C8/tmp" PATH="$C8/pa-nokg" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
 has "agent no age-keygen" "FAIL age-keygen: "
 has "agent no age-keygen" "INFO identity: skipped"
+# HANDOFF_KEY_DIR alone is a setup error with or without age-keygen.
+run8 "agent: no age-keygen, HANDOFF_KEY_DIR alone" 1 env -u HANDOFF_PRIVKEY TMPDIR="$C8/tmp" PATH="$C8/pa-nokg" HOME="$C8/home" HANDOFF_KEY_DIR="${AKEY%/*}" "$BASH" "$A8" --check-setup
+has "no age-keygen, HANDOFF_KEY_DIR alone" "FAIL identity: HANDOFF_KEY_DIR applies only to generating a key"
+hasnt "no age-keygen, HANDOFF_KEY_DIR alone" "INFO identity: "
 mkdir -p "$C8/stubpy"
 printf '#!/bin/sh\necho 3.6\n' >"$C8/stubpy/python3"; chmod 755 "$C8/stubpy/python3"
 run8 "agent: python3 3.6" 1 env TMPDIR="$C8/tmp" PATH="$C8/stubpy:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
