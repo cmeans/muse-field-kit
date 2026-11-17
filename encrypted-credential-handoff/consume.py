@@ -553,6 +553,14 @@ def shown(path: str) -> str:
     return SHOWN_AS.get(path, path)
 
 
+def both(given: str, resolved: str) -> str:
+    """A path as the user gave it, and, when that is another spelling of the
+    place that was checked (a symlink, macOS /var), the place too."""
+    if given == resolved:
+        return repr(resolved)
+    return f"{given!r} (that is {resolved!r})"
+
+
 def check_blob_file(path: str) -> os.stat_result:
     """--rewrap's checks on its blob file, run before anything else is
     decided about it (an already-current blob included)."""
@@ -569,17 +577,17 @@ def check_blob_file(path: str) -> os.stat_result:
         # checked: a writable ancestor is the store's setup to get right
         # (SETUP.md, step 6).
         if st.st_mode & 0o022:
-            raise fail(f"the blob file {shown(path)!r} is writable by others (mode "
+            raise fail(f"the blob file {both(shown(path), path)} is writable by others (mode "
                        f"{stat.S_IMODE(st.st_mode):03o}); stop and report it to the user, "
-                       f"who runs: chmod go-w {shell_quote(shown(path))}")
+                       f"who runs: chmod go-w {shell_quote(path)}")
         try:
             dst = os.stat(directory)
         except OSError as e:
-            raise fail(f"cannot read the blob file's directory {os.path.dirname(shown(path))!r}: {e.strerror}") from None
+            raise fail(f"cannot read the blob file's directory {both(os.path.dirname(shown(path)), directory)}: {e.strerror}") from None
         if dst.st_mode & 0o022 and not dst.st_mode & stat.S_ISVTX:
-            raise fail(f"the blob file's directory {os.path.dirname(shown(path))!r} is writable by others "
+            raise fail(f"the blob file's directory {both(os.path.dirname(shown(path)), directory)} is writable by others "
                        f"(mode {stat.S_IMODE(dst.st_mode):04o}); stop and report it to the "
-                       f"user, who runs: chmod go-w {shell_quote(os.path.dirname(shown(path)))}")
+                       f"user, who runs: chmod go-w {shell_quote(directory)}")
     if BLOB_FILE_READ is not None and file_identity(st) != BLOB_FILE_READ:
         raise fail(f"the blob file {shown(path)!r} changed since it was read (a blob staged "
                    "meanwhile?); it is left as it is now: probe the label (SETUP.md, "
@@ -623,7 +631,7 @@ def write_atomically(path: str, data: bytes) -> None:
             os.fsync(fh.fileno())
         with open(tmp, "rb") as fh:
             if fh.read(len(data) + 1) != data:
-                raise fail(f"the new blob didn't read back whole from {tmp!r}; {shown(path)!r} is unchanged")
+                raise fail(f"the new blob didn't read back whole from the temporary file beside it; {shown(path)!r} is unchanged")
         # The file must still be the one read: a blob staged while this ran
         # isn't replaced with the old payload.
         if BLOB_FILE_READ is not None and file_identity(os.stat(path)) != BLOB_FILE_READ:
@@ -996,11 +1004,18 @@ def main() -> int:
         # put the rewrite on a key, and a blob doesn't land beside it.
         # Both the directory the key file is in and the one the wrappers name
         # (a symlinked HANDOFF_PRIVKEY, where .previous is looked up).
-        for key_dir in (os.path.dirname(os.path.realpath(current)),
-                        os.path.realpath(os.path.dirname(os.path.abspath(current)))):
+        asked = os.path.dirname(os.path.abspath(current))
+        # The directory is named as given when the key's own is that one (not
+        # a symlinked key file, whose real directory is somewhere else).
+        key_real = os.path.dirname(os.path.realpath(current))
+        for key_dir, given_dir in ((key_real,
+                                    asked if key_real == os.path.realpath(asked) else key_real),
+                                   (os.path.realpath(asked), asked)):
             if under_dir(target, key_dir):
-                raise fail(f"--rewrap's --blob-file resolves to {shown(target)!r}, under the "
-                           f"key's directory ({os.path.dirname(os.path.abspath(current))}); the blob belongs in the store")
+                raise fail(f"--rewrap's --blob-file {shown(target)!r} resolves to {target!r}, "
+                           f"under the key's directory ({given_dir}"
+                           + ("" if given_dir == key_dir else f", that is {key_dir}") + "); "
+                           "the blob belongs in the store")
     plaintext, slot = decrypt(blob, current, previous)
     creds = check_payload(parse_payload(plaintext), label, env_map)
     if check:

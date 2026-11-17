@@ -1663,18 +1663,26 @@ cmp -s "$ST/new.txt" "$ST/new2.txt" || fail "--rewrap rewrote a blob already for
 cp blob-age.txt "$ST/mode.txt"; chmod 640 "$ST/mode.txt"
 rk python3 ../consume.py --label example --rewrap --blob-file "$ST/mode.txt" 2>/dev/null || fail "--rewrap of a 0640 file failed"
 [ "$(stat_of %a "$ST/mode.txt")" = 640 ] || fail "--rewrap changed its blob file's mode"
+# bq GIVEN RESOLVED: how consume.py names a path (quoted; both when they differ).
+bq() { if [ "$1" = "$2" ]; then printf "'%s'" "$2"; else printf "'%s' (that is '%s')" "$1" "$2"; fi; }
+RST=$(cd -P "$ST" && pwd); RR=$(cd -P "$R" && pwd)
 cp blob-age.txt "$ST/gw.txt"; chmod 660 "$ST/gw.txt"
-expect_refusal "--rewrap of a group-writable blob file" 1 "is writable by others (mode 660); stop and report it to the user, who runs: chmod go-w '$ST/gw.txt'" \
+expect_refusal "--rewrap of a group-writable blob file" 1 "the blob file $(bq "$ST/gw.txt" "$RST/gw.txt") is writable by others (mode 660); stop and report it to the user, who runs: chmod go-w '$RST/gw.txt'" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gw.txt"
 # A directory others can write (without the sticky bit) is refused too; with it, not.
 mkdir -p "$ST/gwd"; cp blob-age.txt "$ST/gwd/b.txt"; chmod 770 "$ST/gwd"
-expect_refusal "--rewrap in a group-writable directory" 1 "directory '$ST/gwd' is writable by others (mode 0770)" \
+expect_refusal "--rewrap in a group-writable directory" 1 "directory $(bq "$ST/gwd" "$RST/gwd") is writable by others (mode 0770); stop and report it to the user, who runs: chmod go-w '$RST/gwd'" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gwd/b.txt"
+# Through a symlinked blob file the directory named, and the chmod, are the one checked.
+ln -s "$ST/gwd/b.txt" "$ST/lnk-gw.txt"
+expect_refusal "--rewrap of a symlink into a group-writable directory" 1 "directory $(bq "$ST" "$RST/gwd") is writable by others (mode 0770); stop and report it to the user, who runs: chmod go-w '$RST/gwd'" \
+  rk python3 ../consume.py --label example --rewrap --blob-file "$ST/lnk-gw.txt"
+rm "$ST/lnk-gw.txt"
 cmp -s blob-age.txt "$ST/gwd/b.txt" || fail "a refused --rewrap changed a file in a group-writable directory"
 # Checked before anything else is decided: a blob already for the current key
 # in such a directory is refused too, not reported done.
 cp "$ST/new.txt" "$ST/gwd/cur.txt"
-expect_refusal "--rewrap of a current blob in a group-writable directory" 1 "directory '$ST/gwd' is writable by others" \
+expect_refusal "--rewrap of a current blob in a group-writable directory" 1 "directory $(bq "$ST/gwd" "$RST/gwd") is writable by others" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gwd/cur.txt"
 rm "$ST/gwd/cur.txt"
 chmod 1770 "$ST/gwd"
@@ -2002,9 +2010,12 @@ cmp -s blob-age.txt "$ST/late.txt" && fail "an interrupt after the write: the fi
 cp blob-age.txt "$R/beside.txt"; mkdir -p "$R/sub"; cp blob-age.txt "$R/sub/b.txt"
 ln -s "$R" "$ST/s"; ln -s "$R/beside.txt" "$ST/to-beside.txt"
 for target in "$R/beside.txt" "$R/sub/b.txt" "$ST/s/beside.txt" "$ST/s/sub/../beside.txt" "$ST/to-beside.txt"; do
-  expect_refusal "--rewrap of a blob file under the key's directory ($target)" 1 "under the key's directory ($R)" \
+  expect_refusal "--rewrap of a blob file under the key's directory ($target)" 1 "under the key's directory ($R" \
     rk python3 ../consume.py --label example --rewrap --blob-file "$target"
+  # It names the file as given and where it resolved to.
+  grep -qF "' resolves to '" "$S/err" || fail "the key-directory refusal doesn't name $target as given and resolved: $(cat "$S/err")"
 done
+grep -qF "'$ST/to-beside.txt' resolves to '$RR/beside.txt'" "$S/err" || fail "a symlinked blob file's refusal doesn't say where it points: $(cat "$S/err")"
 # The same file by identity, not by path (a bind mount or a case-insensitive
 # spelling): with the path comparison disabled, the parent walk still refuses it.
 expect_refusal "--rewrap beside the key, by identity only" 1 "under the key's directory" \

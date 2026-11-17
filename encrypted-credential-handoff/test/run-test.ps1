@@ -1009,12 +1009,16 @@ if (-not $OnWindows) {
   NotHere $stubNames[4]
 }
 
-# An execution-policy block, told by its error id (UnauthorizedAccess, category
-# PSSecurityException) and not by English text: Windows PowerShell 5.1 and 7 word
-# it differently, and a localized Windows differently again. The text of 5.1 and
-# 7 is accepted too, for a host whose error view leaves the id out.
+# An execution-policy block, told by its error id and category and not by English
+# text: FullyQualifiedErrorId UnauthorizedAccess together with category
+# SecurityError / PSSecurityException (a generic access-denied error has the id
+# but not the exception). Only when stderr arrives CLIXML-wrapped, which hides
+# those fields, are the policy phrases of 5.1 and 7 accepted instead.
 function Test-PolicyBlock($r) {
-  return [bool]($r.Err -match 'UnauthorizedAccess|PSSecurityException|not digitally signed|running scripts is disabled|cannot be loaded')
+  $e = [string]$r.Err
+  if (($e -match 'UnauthorizedAccess') -and ($e -match 'PSSecurityException|SecurityError')) { return $true }
+  if ($e.StartsWith('#< CLIXML') -and ($e -match 'is not digitally signed|running scripts is disabled on this system')) { return $true }
+  return $false
 }
 
 # --- Windows: Mark of the Web and execution policy --------------------------------
