@@ -23,7 +23,7 @@
 #      output.
 #
 # Section ids (the "== ID." headings): 1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b
-# 6 7. HANDOFF_TEST_ONLY="3b 5a" runs only those and prints "ran: <ids>";
+# 6 7 8. HANDOFF_TEST_ONLY="3b 5a" runs only those and prints "ran: <ids>";
 # unset runs them all. The age vectors (test-dummy-identity.txt,
 # handoff-test.age, blob-age.txt, blob-age-rage.txt, vectors/) were made by
 # make-vectors.sh, which this suite never runs. HANDOFF_TEST_AGE and
@@ -84,7 +84,7 @@ echo "age: $age_version ($AGE)"
 echo "jq: $(jq --version 2>&1)"
 
 # HANDOFF_TEST_ONLY="3b 5a" runs only those sections (ids as in the
-# "== ID." headings: 1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7) and prints
+# "== ID." headings: 1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7 8) and prints
 # "ran: <ids>" at the end; unset runs everything.
 RAN=
 section() {
@@ -2469,6 +2469,321 @@ expect_refusal "HANDOFF_LABEL set by the caller" 1 "\$HANDOFF_LABEL is set" \
   env HANDOFF_LABEL=mk-Zq9-outer python3 ../consume.py --label example --check --blob-file blob-age.txt
 expect_refusal "HANDOFF_LABEL set, empty" 1 "\$HANDOFF_LABEL is set" \
   env HANDOFF_LABEL= python3 ../consume.py --label example --check --blob-file blob-age.txt
+echo "ok"
+fi
+
+if section 8; then
+echo "== 8. --check-setup (handoff.sh, agent-setup.sh) =="
+REAL_AGE=$(command -v "$AGE")
+REAL_KEYGEN=$(command -v "$AGE_KEYGEN")
+C8="$S/c8"
+mkdir -p "$C8/tmp"
+install_handoff handoff-test.age "$C8/hd/handoff.sh"
+prep_agent
+# The payload the check encrypts, in the forms that must never be printed.
+pay_leak() {  # FILE...
+  local f
+  for f in "$@"; do
+    ! grep -qF -e 'pässwörd' -e '日本' -e '"svc":"check"' "$f" || fail "the check's test payload appeared in the output ($(basename "$f"))"
+  done
+}
+# Every stdout line is a check line: PASS, INFO or FAIL, a name, a colon, a detail.
+only_check_lines() {  # DESC
+  if grep -qvE '^(PASS|INFO|FAIL) [a-z0-9][a-z0-9. -]*: .+' "$C8/out"; then
+    cat "$C8/out" >&2; fail "$1: stdout holds something besides check lines"
+  fi
+  ! grep -q 'skip:' "$C8/out" || fail "$1: a skip: line"
+}
+# run8 DESC WANT_RC CMD...: stdin is /dev/null; leaves $C8/out and $C8/err.
+run8() {
+  local desc=$1 want=$2 rc=0
+  shift 2
+  "$@" </dev/null >"$C8/out" 2>"$C8/err" || rc=$?
+  [ "$rc" = "$want" ] || { cat "$C8/out" "$C8/err" >&2; fail "$desc: exit $rc, expected $want"; }
+  only_check_lines "$desc"
+  pay_leak "$C8/out" "$C8/err"
+  [ -z "$(ls -A "$C8/tmp")" ] || fail "$desc: the temporary directory was left behind: $(ls -A "$C8/tmp")"
+}
+has() {  # DESC LINE-PREFIX-REGEX: a check line matching it is in out
+  grep -qE -- "^$2" "$C8/out" || { cat "$C8/out" >&2; fail "$1: no line starting '$2'"; }
+}
+hasnt() {
+  ! grep -qE -- "^$2" "$C8/out" || { cat "$C8/out" >&2; fail "$1: unexpected line '$2'"; }
+}
+# A directory of symlinks to the named tools (and none other): a PATH that
+# lacks one of them. mkpath DIR TOOL...
+mkpath() {
+  local d=$1 t; shift
+  rm -rf "$d"; mkdir -p "$d"
+  for t in "$@"; do ln -s "$(command -v "$t")" "$d/$t"; done
+}
+BASE_TOOLS="timeout sleep sh awk base64 tr cmp sed head cat rm mkdir mktemp chmod env dirname grep uname wc ls id stat sort cut od"
+mkpath "$C8/p-all" $BASE_TOOLS bash jq
+ln -s "$REAL_AGE" "$C8/p-all/age"; ln -s "$REAL_KEYGEN" "$C8/p-all/age-keygen"
+ln -s "$PY" "$C8/p-all/python3"
+P_ALL="$C8/p-all"
+
+# --- handoff.sh -------------------------------------------------------------
+H8="$C8/hd/handoff.sh"
+run8 "handoff.sh --check-setup" 0 env TMPDIR="$C8/tmp" PATH="$P_ALL" "$BASH" "$H8" --check-setup
+for n in bash age age-keygen jq "jq rawfile" "round trip" header base64 recipient; do
+  has "handoff.sh --check-setup" "PASS $n: "
+done
+hasnt "handoff.sh --check-setup" "(FAIL|INFO) "
+[ "$(wc -l <"$C8/out")" = 9 ] || { cat "$C8/out" >&2; fail "handoff.sh --check-setup: not nine lines"; }
+[ ! -s "$C8/err" ] || { cat "$C8/err" >&2; fail "handoff.sh --check-setup wrote to stderr"; }
+echo "ok (handoff.sh --check-setup)"
+
+# It reads no stdin: a stdin that never ends doesn't hold it up.
+mkfifo "$C8/stdin.fifo"
+exec 9<>"$C8/stdin.fifo"
+rc=0; env TMPDIR="$C8/tmp" PATH="$P_ALL" timeout 60 "$BASH" "$H8" --check-setup <&9 >"$C8/out" 2>"$C8/err" || rc=$?
+exec 9<&-
+[ "$rc" = 0 ] || fail "handoff.sh --check-setup waited on stdin (exit $rc)"
+echo "ok (handoff.sh --check-setup does not read stdin)"
+
+# Usage errors.
+expect_refusal "--check-setup with a FILE" 2 "--check-setup takes no FILE" bash "$H8" --check-setup x.json
+expect_refusal "--check-setup --fingerprint" 2 "one mode at a time" bash "$H8" --check-setup --fingerprint
+expect_refusal "--fingerprint --check-setup" 2 "one mode at a time" bash "$H8" --fingerprint --check-setup
+bash "$H8" --help 2>&1 | grep -q -e '--check-setup' || fail "handoff.sh --help doesn't list --check-setup"
+
+# A missing recipient file is INFO, not a failure; another NAME picks its file.
+run8 "--to NAME without a file" 0 env TMPDIR="$C8/tmp" PATH="$P_ALL" "$BASH" "$H8" --check-setup --to nosuch
+has "--to nosuch" "INFO recipient: "
+has "--to nosuch" "PASS round trip: "
+# A bad recipient file.
+printf 'age1notarecipient\n' >"$C8/hd/handoff-bad.age"
+run8 "a bad recipient file" 1 env TMPDIR="$C8/tmp" PATH="$P_ALL" "$BASH" "$H8" --check-setup --to bad
+has "bad recipient" "FAIL recipient: "
+has "bad recipient" "PASS round trip: "
+sed 's/.$/q/' handoff-test.age >"$C8/hd/handoff-bad.age"   # right shape, wrong checksum
+run8 "a recipient with a bad checksum" 1 env TMPDIR="$C8/tmp" PATH="$P_ALL" "$BASH" "$H8" --check-setup --to bad
+has "bad checksum" "FAIL recipient: "
+echo "ok (recipient file)"
+
+# A PATH without age: FAIL age.
+mkpath "$C8/p-noage" $BASE_TOOLS bash jq age-keygen
+run8 "no age" 1 env TMPDIR="$C8/tmp" PATH="$C8/p-noage" "$BASH" "$H8" --check-setup
+has "no age" "FAIL age: "
+hasnt "no age" "PASS (round trip|header|base64): "
+# No age-keygen: INFO, an encrypt-only round trip, header and base64 still checked.
+mkpath "$C8/p-nokg" $BASE_TOOLS bash jq
+ln -s "$REAL_AGE" "$C8/p-nokg/age"
+run8 "no age-keygen" 0 env TMPDIR="$C8/tmp" PATH="$C8/p-nokg" "$BASH" "$H8" --check-setup
+has "no age-keygen" "INFO age-keygen: "
+has "no age-keygen" "INFO round trip: .*decrypt skipped"
+has "no age-keygen" "PASS header: "
+has "no age-keygen" "PASS base64: "
+# ... and with no recipient file either, there is nothing to encrypt to.
+run8 "no age-keygen, no recipient file" 0 env TMPDIR="$C8/tmp" PATH="$C8/p-nokg" "$BASH" "$H8" --check-setup --to nosuch
+has "no keygen, no file" "INFO round trip: "
+echo "ok (age and age-keygen)"
+
+# jq: a stub that says 1.5, one that says 1.6 and works, one whose --rawfile
+# fails, and no jq.
+mkdir -p "$C8/stubjq"
+printf '#!/bin/sh\necho jq-1.5\n' >"$C8/stubjq/jq"; chmod 755 "$C8/stubjq/jq"
+run8 "jq 1.5" 1 env TMPDIR="$C8/tmp" PATH="$C8/stubjq:$P_ALL" "$BASH" "$H8" --check-setup
+has "jq 1.5" "FAIL jq: .*jq-1.5"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.6; else exec %s "$@"; fi\n' "$(command -v jq)" >"$C8/stubjq/jq"
+run8 "jq 1.6" 0 env TMPDIR="$C8/tmp" PATH="$C8/stubjq:$P_ALL" "$BASH" "$H8" --check-setup
+has "jq 1.6" "PASS jq: jq-1.6"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.6; else echo wrong; fi\n' >"$C8/stubjq/jq"
+run8 "jq whose --rawfile fails" 1 env TMPDIR="$C8/tmp" PATH="$C8/stubjq:$P_ALL" "$BASH" "$H8" --check-setup
+has "jq rawfile" "FAIL jq rawfile: "
+mkpath "$C8/p-nojq" $BASE_TOOLS bash
+ln -s "$REAL_AGE" "$C8/p-nojq/age"; ln -s "$REAL_KEYGEN" "$C8/p-nojq/age-keygen"
+run8 "no jq" 1 env TMPDIR="$C8/tmp" PATH="$C8/p-nojq" "$BASH" "$H8" --check-setup
+has "no jq" "FAIL jq: "
+echo "ok (jq)"
+
+# An age that changes a byte of its output: FAIL round trip. One that writes a
+# second stanza: FAIL header (the file still decrypts).
+mkdir -p "$C8/stub-flip" "$C8/stub-two"
+cat >"$C8/stub-flip/age" <<EOF
+#!/bin/sh
+case "\$1" in --version|-d) exec "$REAL_AGE" "\$@" ;; esac
+"$REAL_AGE" "\$@" | python3 -c 'import sys; d=bytearray(sys.stdin.buffer.read()); d[-1] ^= 1; sys.stdout.buffer.write(d)'
+EOF
+cat >"$C8/stub-two/age" <<EOF
+#!/bin/sh
+case "\$1" in --version|-d) exec "$REAL_AGE" "\$@" ;; esac
+exec "$REAL_AGE" "\$@" -r "$(cat handoff-test.age)"
+EOF
+chmod 755 "$C8/stub-flip/age" "$C8/stub-two/age"
+run8 "an age that flips a byte" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-flip:$P_ALL" "$BASH" "$H8" --check-setup
+has "flip" "FAIL round trip: "
+run8 "an age that writes a second stanza" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-two:$P_ALL" "$BASH" "$H8" --check-setup
+has "second stanza" "FAIL header: "
+has "second stanza" "PASS round trip: "
+echo "ok (round trip, header)"
+
+# The header rule against the vectors, through an age that writes the vector.
+# Refused: every one in vectors/. Accepted: the two real blobs (the check then
+# fails the decrypt, as the vector isn't for the throwaway key).
+mkdir -p "$C8/stub-vec" "$C8/vec"
+vec_age() {  # FILE: an age stub that writes FILE as its output
+  cat >"$C8/stub-vec/age" <<EOF
+#!/bin/sh
+case "\$1" in --version|-d) exec "$REAL_AGE" "\$@" ;; esac
+cat >/dev/null
+cat "$1"
+EOF
+  chmod 755 "$C8/stub-vec/age"
+}
+for v in scrypt two-x25519 grease-only plugin-stanza pq-stanza ssh-stanza unknown-stanza armored-b64; do
+  base64 -d <"vectors/$v.txt" >"$C8/vec/$v.bin"
+  vec_age "$C8/vec/$v.bin"
+  run8 "header vector $v" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" "$BASH" "$H8" --check-setup
+  has "vector $v" "FAIL header: "
+done
+vec_age "$PWD/vectors/armored-raw.txt"
+run8 "header vector armored-raw" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" "$BASH" "$H8" --check-setup
+has "vector armored-raw" "FAIL header: "
+for v in blob-age blob-age-rage; do
+  base64 -d <"$v.txt" >"$C8/vec/$v.bin"
+  vec_age "$C8/vec/$v.bin"
+  run8 "header vector $v" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" "$BASH" "$H8" --check-setup
+  has "vector $v" "PASS header: "
+  has "vector $v" "PASS base64: "
+done
+# A header with no end line, and an empty output.
+printf 'age-encryption.org/v1\n-> X25519 abc\nAAAA\n' >"$C8/vec/noend.bin"
+vec_age "$C8/vec/noend.bin"
+run8 "header with no end line" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" "$BASH" "$H8" --check-setup
+has "no end line" "FAIL header: "
+: >"$C8/vec/empty.bin"
+vec_age "$C8/vec/empty.bin"
+run8 "empty age output" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" "$BASH" "$H8" --check-setup
+has "empty output" "FAIL (round trip|header|base64): "
+echo "ok (header vectors)"
+
+# The temporary directory is gone after a signal in the middle of a run.
+interrupt_run() {  # DESC SIG CMD... : stub age sleeps; signal the run once it is in it
+  local desc=$1 sig=$2
+  shift 2
+  mkdir -p "$C8/stub-slow"
+  cat >"$C8/stub-slow/age" <<EOF
+#!/bin/sh
+case "\$1" in --version|-d) exec "$REAL_AGE" "\$@" ;; esac
+: >"$C8/age-started"
+sleep 3
+exec "$REAL_AGE" "\$@"
+EOF
+  chmod 755 "$C8/stub-slow/age"
+  rm -f "$C8/age-started"
+  python3 -I - "$C8" "$sig" "$@" <<'PYEOF' || fail "$desc: the run did not end as expected"
+import os, signal, subprocess, sys, time
+c8, sig = sys.argv[1], sys.argv[2]
+cmd = sys.argv[3:]
+env = dict(os.environ, TMPDIR=c8 + "/tmp", PATH=c8 + "/stub-slow:" + c8 + "/p-all")
+# A child started from a script has SIGINT ignored: restore the default.
+p = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                     preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+for _ in range(100):
+    if os.path.exists(c8 + "/age-started"):
+        break
+    time.sleep(0.1)
+else:
+    p.kill()
+    sys.exit("the run never reached age")
+if not os.listdir(c8 + "/tmp"):
+    p.kill()
+    sys.exit("no temporary directory while the run was going")
+p.send_signal(getattr(signal, sig))
+out, err = p.communicate(timeout=30)
+if p.returncode == 0:
+    sys.exit("the interrupted run exited 0")
+if os.listdir(c8 + "/tmp"):
+    sys.exit("left behind: %r" % os.listdir(c8 + "/tmp"))
+for blob in (out, err):
+    if "pässwörd".encode() in blob or "日本".encode() in blob:
+        sys.exit("payload in output")
+PYEOF
+}
+interrupt_run "handoff.sh INT" SIGINT "$BASH" "$H8" --check-setup
+interrupt_run "handoff.sh TERM" SIGTERM "$BASH" "$H8" --check-setup
+echo "ok (handoff.sh: no temporary directory left after INT or TERM)"
+
+# --- agent-setup.sh ---------------------------------------------------------
+A8="$PWD/../agent-setup.sh"
+AKEY="$S/agent/handoff-identity.txt"
+sum_before=$(sha256sum "$AKEY")
+run8 "agent-setup.sh --check-setup" 0 env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+for n in age age-keygen python3 "round trip" header base64 identity; do
+  has "agent-setup.sh --check-setup" "PASS $n: "
+done
+hasnt "agent-setup.sh --check-setup" "(FAIL|INFO) "
+[ ! -s "$C8/err" ] || { cat "$C8/err" >&2; fail "agent-setup.sh --check-setup wrote to stderr"; }
+[ "$sum_before" = "$(sha256sum "$AKEY")" ] || fail "--check-setup changed the real key"
+echo "ok (agent-setup.sh --check-setup)"
+
+exec 9<>"$C8/stdin.fifo"
+rc=0; env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$AKEY" timeout 60 "$BASH" "$A8" --check-setup <&9 >"$C8/out" 2>"$C8/err" || rc=$?
+exec 9<&-
+[ "$rc" = 0 ] || fail "agent-setup.sh --check-setup waited on stdin (exit $rc)"
+expect_refusal "agent-setup.sh --check-setup with an argument" 2 "usage" bash "$A8" --check-setup "$AKEY"
+bash "$A8" --help 2>&1 | grep -q -e '--check-setup' || fail "agent-setup.sh --help doesn't list --check-setup"
+
+# The real key is only read: a missing one is INFO, a loose one FAIL, a
+# recipient file in its place FAIL; none is created.
+run8 "no key yet" 0 env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$C8/nokey/handoff-identity.txt" "$BASH" "$A8" --check-setup
+has "no key yet" "INFO identity: "
+has "no key yet" "PASS round trip: "
+[ ! -e "$C8/nokey" ] || fail "--check-setup made the key's directory"
+cp "$AKEY" "$C8/loose.txt"; chmod 644 "$C8/loose.txt"
+run8 "a loose key" 1 env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$C8/loose.txt" "$BASH" "$A8" --check-setup
+has "loose key" "FAIL identity: "
+! grep -q 'AGE-SECRET-KEY' "$C8/out" "$C8/err" || fail "the key was printed"
+cp handoff-test.age "$C8/rcpt.txt"; chmod 600 "$C8/rcpt.txt"
+run8 "a recipient in place of the key" 1 env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$C8/rcpt.txt" "$BASH" "$A8" --check-setup
+has "recipient as key" "FAIL identity: "
+# The default key path, with HOME as the only way to it.
+mkdir -p "$C8/home"
+run8 "the default key path" 0 env TMPDIR="$C8/tmp" PATH="$P_ALL" HOME="$C8/home" HANDOFF_PRIVKEY= "$BASH" "$A8" --check-setup
+has "default key path" "INFO identity: "
+[ ! -e "$C8/home/.config" ] || fail "--check-setup made the default key directory"
+echo "ok (identity)"
+
+# Missing tools and failing ones.
+mkpath "$C8/pa-noage" $BASE_TOOLS bash python3 age-keygen
+run8 "agent: no age" 1 env TMPDIR="$C8/tmp" PATH="$C8/pa-noage" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+has "agent no age" "FAIL age: "
+mkpath "$C8/pa-nokg" $BASE_TOOLS bash python3 age
+run8 "agent: no age-keygen" 1 env TMPDIR="$C8/tmp" PATH="$C8/pa-nokg" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+has "agent no age-keygen" "FAIL age-keygen: "
+mkdir -p "$C8/stubpy"
+printf '#!/bin/sh\necho 3.6\n' >"$C8/stubpy/python3"; chmod 755 "$C8/stubpy/python3"
+run8 "agent: python3 3.6" 1 env TMPDIR="$C8/tmp" PATH="$C8/stubpy:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+has "python3 3.6" "FAIL python3: .*3.6"
+mkpath "$C8/pa-nopy" $BASE_TOOLS bash
+ln -s "$REAL_AGE" "$C8/pa-nopy/age"; ln -s "$REAL_KEYGEN" "$C8/pa-nopy/age-keygen"
+run8 "agent: no python3" 1 env TMPDIR="$C8/tmp" PATH="$C8/pa-nopy" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+has "no python3" "FAIL python3: "
+run8 "agent: an age that flips a byte" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-flip:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+has "agent flip" "FAIL round trip: "
+run8 "agent: an age that writes a second stanza" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-two:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+has "agent second stanza" "FAIL header: "
+# consume.py's header rule, through the vectors.
+for v in scrypt two-x25519 grease-only plugin-stanza pq-stanza ssh-stanza unknown-stanza armored-b64; do
+  vec_age "$C8/vec/$v.bin"
+  run8 "agent: header vector $v" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+  has "agent vector $v" "FAIL header: "
+done
+vec_age "$PWD/vectors/armored-raw.txt"
+run8 "agent: header vector armored-raw" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+has "agent vector armored-raw" "FAIL header: "
+for v in blob-age blob-age-rage; do
+  vec_age "$C8/vec/$v.bin"
+  run8 "agent: header vector $v" 1 env TMPDIR="$C8/tmp" PATH="$C8/stub-vec:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+  hasnt "agent vector $v" "FAIL header: "
+done
+echo "ok (agent-setup.sh: tools, round trip, header)"
+interrupt_run "agent-setup.sh INT" SIGINT env HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+interrupt_run "agent-setup.sh TERM" SIGTERM env HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+[ "$sum_before" = "$(sha256sum "$AKEY")" ] || fail "--check-setup changed the real key"
+echo "ok (agent-setup.sh: no temporary directory left after INT or TERM)"
 echo "ok"
 fi
 

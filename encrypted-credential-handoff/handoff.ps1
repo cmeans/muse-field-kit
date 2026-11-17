@@ -35,6 +35,7 @@ param(
   [string]$To = 'muse',
   [Parameter(Position = 0)][string]$File,
   [switch]$Fingerprint,
+  [switch]$CheckSetup,
   [switch]$Help,
   # The payload as pipeline input: one string (ConvertTo-Json's output), or
   # lines (Get-Content's), joined with newlines.
@@ -72,7 +73,9 @@ begin {
   # Windows PowerShell 5.1 and PowerShell 7 are the two this is tested on.
   $ver = $PSVersionTable.PSVersion
   if ($ver.Major -lt 5 -or ($ver.Major -eq 5 -and $ver.Minor -lt 1) -or $ver.Major -eq 6) {
-    [Console]::Error.WriteLine("handoff.ps1: needs Windows PowerShell 5.1 or PowerShell 7 (this is $ver)")
+    # -CheckSetup answers in its own words, on stdout.
+    if ($CheckSetup) { [Console]::Out.WriteLine("FAIL powershell: needs Windows PowerShell 5.1 or PowerShell 7 (this is $ver)") }
+    else { [Console]::Error.WriteLine("handoff.ps1: needs Windows PowerShell 5.1 or PowerShell 7 (this is $ver)") }
     Exit-Handoff 1
   }
   $Desktop = $PSVersionTable.PSEdition -eq 'Desktop'
@@ -101,6 +104,7 @@ Usage:
   handoff.ps1 [-To NAME] -File FILE      read JSON from FILE
   ... | handoff.ps1 [-To NAME]           read JSON from the pipeline
   handoff.ps1 [-To NAME] -Fingerprint    print the agent's recipient and exit
+  handoff.ps1 [-To NAME] -CheckSetup     check that age works on this machine
   handoff.ps1 -Help                      print this usage and exit
 NAME (default muse; up to 64 letters, digits, _ and -, not starting with -)
 picks the agent's recipient file, handoff-NAME.age, in this script's
@@ -120,7 +124,9 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     if ($x.StartsWith('-')) { Stop-Usage "unknown option $x" }
     Stop-Usage 'at most one FILE'
   }
+  if ($Fingerprint -and $CheckSetup) { Stop-Usage 'one mode at a time' }
   if ($Fingerprint -and $fileGiven) { Stop-Usage '-Fingerprint takes no FILE' }
+  if ($CheckSetup -and $fileGiven) { Stop-Usage '-CheckSetup takes no FILE' }
 
   # The name becomes part of a file name: ASCII letters, digits, _ and - only
   # (-cmatch: a case-blind match lets the KELVIN SIGN pass for k), so it can't
@@ -130,9 +136,11 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
   if ($To.Length -gt $MAX_NAME) { Stop-Usage "-To NAME is at most $MAX_NAME characters" }
 
   # --- age: refused here, before any prompt or file is read ---------------
+  # (-CheckSetup reports a missing age itself.)
   $ageCmd = Get-Command -Name age -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($null -eq $ageCmd) { Stop-Run 'age not found. Install it (README.md, Installing age)' }
-  $AgePath = $ageCmd.Path
+  if ($null -eq $ageCmd -and -not $CheckSetup) { Stop-Run 'age not found. Install it (README.md, Installing age)' }
+  $AgePath = $null
+  if ($null -ne $ageCmd) { $AgePath = $ageCmd.Path }
 
   # Run age with ARGS, BYTES on its stdin; returns @{ Exit; Out } or $null if
   # it didn't start. Bytes both ways, never the PowerShell pipeline (5.1, and
@@ -142,9 +150,12 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
   # like); on Windows also SystemRoot, without which Win32 and .NET can fail
   # to start a process or load system libraries. The recipient is public, so
   # it can be an argument; the secret only ever goes in on stdin.
-  function Invoke-Age([string]$Arguments, [byte[]]$Bytes) {
+  # EXE is age's path unless another tool of the age package is asked for.
+  function Invoke-Age([string]$Arguments, [byte[]]$Bytes, [string]$Exe = '') {
+    if (-not $Exe) { $Exe = $AgePath }
+    if (-not $Exe) { return $null }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $AgePath
+    $psi.FileName = $Exe
     $psi.Arguments = $Arguments
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
@@ -208,104 +219,310 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
   # compares it with what the agent reports) and that it's the only recipient
   # this script can use. There's none in the script and no fallback: without a
   # usable recipient file, nothing is encrypted.
-  $dir = $PSScriptRoot
-  # Run from text (a script block, or pasted in), it has no folder to find the
-  # file in, and the current location isn't a stand-in for one.
-  if (-not $dir) { Stop-Run 'save handoff.ps1 to a file and run that file: its recipient file is found beside it' }
-  $keyfile = Join-Path $dir "handoff-$To.age"
+  # The agent's recipient, read and checked from handoff-NAME.age. Sets
+  # $script:keyfile and $script:RECIPIENT. A refusal is Stop-Run (exit 1), or
+  # under -CheckSetup a thrown 'INFO|text' (no file yet) or 'FAIL|text'.
+  function Stop-Key([string]$m, [bool]$Absent = $false) {
+    if (-not $CheckSetup) { Stop-Run $m }
+    if ($Absent) { throw "INFO|$m" }
+    throw "FAIL|$m"
+  }
+  function Get-Recipient {
+    $dir = $PSScriptRoot
+    # Run from text (a script block, or pasted in), it has no folder to find the
+    # file in, and the current location isn't a stand-in for one.
+    if (-not $dir) { Stop-Key 'save handoff.ps1 to a file and run that file: its recipient file is found beside it' $true }
+    $keyfile = Join-Path $dir "handoff-$To.age"
 
-  $attrs = $null
-  try { $attrs = [IO.File]::GetAttributes($keyfile) } catch { }   # the entry itself, link or not
-  $stream = $null
-  try { $stream = [IO.File]::Open($keyfile, 'Open', 'Read', 'ReadWrite') } catch { }   # follows links
-  if ($null -eq $stream) {
-    if ([IO.Directory]::Exists($keyfile)) { Stop-Run "$keyfile is not a regular file" }
-    # A link (symbolic link or junction) whose target won't open. A link that
-    # resolves to a file is used, as handoff.sh follows a symlink; so is a
-    # OneDrive placeholder, also a reparse point, once it opens.
-    if ($null -ne $attrs -and ($attrs -band [IO.FileAttributes]::ReparsePoint)) { Stop-Run "$keyfile is a symlink that doesn't resolve to a file" }
-    if ($null -ne $attrs) { Stop-Run "cannot read $keyfile" }
+    $attrs = $null
+    try { $attrs = [IO.File]::GetAttributes($keyfile) } catch { }   # the entry itself, link or not
+    $stream = $null
+    try { $stream = [IO.File]::Open($keyfile, 'Open', 'Read', 'ReadWrite') } catch { }   # follows links
+    if ($null -eq $stream) {
+      if ([IO.Directory]::Exists($keyfile)) { Stop-Key "$keyfile is not a regular file" }
+      # A link (symbolic link or junction) whose target won't open. A link that
+      # resolves to a file is used, as handoff.sh follows a symlink; so is a
+      # OneDrive placeholder, also a reparse point, once it opens.
+      if ($null -ne $attrs -and ($attrs -band [IO.FileAttributes]::ReparsePoint)) { Stop-Key "$keyfile is a symlink that doesn't resolve to a file" }
+      if ($null -ne $attrs) { Stop-Key "cannot read $keyfile" }
 
-    # A near miss beside it is named, from a short allow-list only: a _ or . in
-    # place of the -, another case (handoff_muse.age, handoff-Muse.age), or an
-    # editor's extra extension (handoff-muse.age.txt, handoff-muse.age.age).
-    # Anything else, such as a kept old file (handoff-muse.age.old), isn't
-    # offered, and the hint asks for a check, never a rename on its own.
-    $near = $null
-    $names = @()
-    try { $names = @([IO.Directory]::GetFileSystemEntries($dir) | ForEach-Object { [IO.Path]::GetFileName($_) }) } catch { }
-    $opts = [Text.RegularExpressions.RegexOptions]'IgnoreCase, CultureInvariant'
-    $base = 'handoff[-_.]' + [regex]::Escape($To) + '\.age'
-    foreach ($suffix in @('', '\.txt', '\.age')) {
-      $re = New-Object System.Text.RegularExpressions.Regex ('^' + $base + $suffix + '\z'), $opts
-      foreach ($n in @($names | Where-Object { $re.IsMatch($_) } | Sort-Object -CaseSensitive)) {
-        if ($n -ceq "handoff-$To.age") { continue }
-        $a = $null
-        try { $a = [IO.File]::GetAttributes((Join-Path $dir $n)) } catch { }
-        if ($null -ne $a -and -not ($a -band ([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint))) { $near = $n; break }
-      }
-      if ($near) { break }
-    }
-    if ($near) {
-      # Only NAME's case differs (-To Muse, with handoff-muse.age there): the
-      # remedy is the other -To, not a rename the default run would then miss.
-      if ($near.StartsWith('handoff-', [StringComparison]::Ordinal) -and $near.EndsWith('.age', [StringComparison]::Ordinal)) {
-        $nm = $near.Substring(8, $near.Length - 12)
-        if ($nm -cne $To -and $nm.ToLowerInvariant() -ceq $To.ToLowerInvariant()) {
-          Stop-Run "no recipient file for '$To': $keyfile doesn't exist, but $near does. Names are case-sensitive: did you mean -To $($nm)?"
+      # A near miss beside it is named, from a short allow-list only: a _ or . in
+      # place of the -, another case (handoff_muse.age, handoff-Muse.age), or an
+      # editor's extra extension (handoff-muse.age.txt, handoff-muse.age.age).
+      # Anything else, such as a kept old file (handoff-muse.age.old), isn't
+      # offered, and the hint asks for a check, never a rename on its own.
+      $near = $null
+      $names = @()
+      try { $names = @([IO.Directory]::GetFileSystemEntries($dir) | ForEach-Object { [IO.Path]::GetFileName($_) }) } catch { }
+      $opts = [Text.RegularExpressions.RegexOptions]'IgnoreCase, CultureInvariant'
+      $base = 'handoff[-_.]' + [regex]::Escape($To) + '\.age'
+      foreach ($suffix in @('', '\.txt', '\.age')) {
+        $re = New-Object System.Text.RegularExpressions.Regex ('^' + $base + $suffix + '\z'), $opts
+        foreach ($n in @($names | Where-Object { $re.IsMatch($_) } | Sort-Object -CaseSensitive)) {
+          if ($n -ceq "handoff-$To.age") { continue }
+          $a = $null
+          try { $a = [IO.File]::GetAttributes((Join-Path $dir $n)) } catch { }
+          if ($null -ne $a -and -not ($a -band ([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint))) { $near = $n; break }
         }
+        if ($near) { break }
       }
-      Stop-Run "no recipient file for '$To': $keyfile doesn't exist, but $near does. If that file is the agent's current recipient, rename it to handoff-$To.age, then compare -Fingerprint with the recipient the agent reports"
+      if ($near) {
+        # Only NAME's case differs (-To Muse, with handoff-muse.age there): the
+        # remedy is the other -To, not a rename the default run would then miss.
+        if ($near.StartsWith('handoff-', [StringComparison]::Ordinal) -and $near.EndsWith('.age', [StringComparison]::Ordinal)) {
+          $nm = $near.Substring(8, $near.Length - 12)
+          if ($nm -cne $To -and $nm.ToLowerInvariant() -ceq $To.ToLowerInvariant()) {
+            Stop-Key "no recipient file for '$To': $keyfile doesn't exist, but $near does. Names are case-sensitive: did you mean -To $($nm)?" $true
+          }
+        }
+        Stop-Key "no recipient file for '$To': $keyfile doesn't exist, but $near does. If that file is the agent's current recipient, rename it to handoff-$To.age, then compare -Fingerprint with the recipient the agent reports" $true
+      }
+      # A 0.1.0 install: the RSA public key is beside it, the age recipient isn't.
+      if ([IO.File]::Exists((Join-Path $dir "handoff-$To.pem"))) {
+        Stop-Key "found handoff-$To.pem but no $keyfile. Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$To.age beside handoff.ps1" $true
+      }
+      Stop-Key "no recipient file for '$To': $keyfile doesn't exist. Save the agent's recipient there (SETUP.md, setup step 3), or name another agent with -To NAME" $true
     }
-    # A 0.1.0 install: the RSA public key is beside it, the age recipient isn't.
-    if ([IO.File]::Exists((Join-Path $dir "handoff-$To.pem"))) {
-      Stop-Run "found handoff-$To.pem but no $keyfile. Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$To.age beside handoff.ps1"
+
+    # One bounded read, and the size checked on what was read.
+    $buf = New-Object byte[] ($MAX_KEY_BYTES + 1)
+    $size = 0
+    $readOk = $true
+    try {
+      while ($size -lt $buf.Length) {
+        $got = $stream.Read($buf, $size, $buf.Length - $size)
+        if ($got -le 0) { break }
+        $size += $got
+      }
+    } catch { $readOk = $false } finally { $stream.Dispose() }
+    if (-not $readOk) { Stop-Key "cannot read $keyfile" }
+    if ($size -gt $MAX_KEY_BYTES) { Stop-Key "$keyfile is over $MAX_KEY_BYTES bytes; not a recipient file" }
+    if ($size -ge 2 -and (($buf[0] -eq 0xFF -and $buf[1] -eq 0xFE) -or ($buf[0] -eq 0xFE -and $buf[1] -eq 0xFF))) {
+      Stop-Key "$keyfile is saved as UTF-16: save it as UTF-8 or plain text"
     }
-    Stop-Run "no recipient file for '$To': $keyfile doesn't exist. Save the agent's recipient there (SETUP.md, setup step 3), or name another agent with -To NAME"
+    $start = 0
+    if ($size -ge 3 -and $buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF) { $start = 3 }   # a UTF-8 byte-order mark
+    # Byte for character (ISO-8859-1), as handoff.sh works on bytes: anything
+    # not ASCII fails the checks below as it does there.
+    $text = [Text.Encoding]::GetEncoding(28591).GetString($buf, $start, $size - $start)
+    # A copy saved on Windows or by an editor, or copied from an indented block,
+    # can carry CRLF line endings, leading or trailing blanks or blank lines: drop
+    # them before the checks.
+    $lines = @($text.Replace("`r", '').Split("`n") | ForEach-Object { $_.Trim([char[]]@(' ', "`t")) } | Where-Object { $_ -ne '' })
+    # An identity (private key) here means it left the agent's machine.
+    foreach ($l in $lines) {
+      if ($l.StartsWith('AGE-SECRET-KEY-', [StringComparison]::Ordinal) -or $l.StartsWith('AGE-PLUGIN-', [StringComparison]::Ordinal)) {
+        Stop-Key "$keyfile holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
+      }
+    }
+    if ($lines.Count -ne 1) { Stop-Key "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it" }
+    $RECIPIENT = $lines[0]
+    if ($RECIPIENT -cnotmatch $RECIPIENT_RE) {
+      Stop-Key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
+    }
+    # The bech32 checksum: age itself rejects a recipient that fails it. Asked
+    # now, on nothing, so a mistyped file is refused before the secret is typed.
+    $chk = Invoke-Age "-r $RECIPIENT" $null
+    if ($null -eq $chk -or $chk.Exit -ne 0) {
+      Stop-Key "$keyfile is not a valid age recipient: age $AgeVersion did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
+    }
+    $script:keyfile = $keyfile
+    $script:RECIPIENT = $RECIPIENT
+  }
+  # --- -CheckSetup: prove the tools work on this machine, by running them -------
+  # One line per check on stdout (PASS, INFO or FAIL, a name, a detail), nothing
+  # else there; exit 0 unless a line is FAIL. The round trip uses a throwaway
+  # identity in a private temporary folder, removed on every exit. No prompt,
+  # no stdin, no real key. The names and details match handoff.sh --check-setup.
+  $script:CsFailed = $false
+  function Write-Check([string]$Status, [string]$Name, [string]$Detail) {
+    [Console]::Out.WriteLine("$Status ${Name}: $($Detail -replace '\s*\r?\n\s*', ' ')")
+    if ($Status -ceq 'FAIL') { $script:CsFailed = $true }
+  }
+  # consume.py's check_age_header: a binary age file for exactly one X25519
+  # recipient (other stanzas only "*-grease"). Returns the reason it is
+  # refused, or '' if it's fine.
+  function Test-AgeHeader([byte[]]$Raw) {
+    $lines = [Text.Encoding]::GetEncoding(28591).GetString($Raw).Split("`n")
+    if ($lines[0] -ceq '-----BEGIN AGE ENCRYPTED FILE-----') { return 'armored (ASCII) age text, not the binary format' }
+    if ($lines[0] -cne 'age-encryption.org/v1') { return 'not a binary age file' }
+    $x = 0
+    $inStanza = $false
+    $done = $false
+    for ($i = 1; $i -lt $lines.Length; $i++) {
+      $l = $lines[$i]
+      if ($l -ceq '---' -or $l.StartsWith('--- ', [StringComparison]::Ordinal)) { $done = $true; break }
+      if ($l.StartsWith('-> ', [StringComparison]::Ordinal)) {
+        $inStanza = $true
+        $kind = $l.Substring(3).Split(' ')[0]
+        if ($kind -ceq 'X25519') { $x++ }
+        elseif (-not $kind.EndsWith('-grease', [StringComparison]::Ordinal)) { return 'a recipient kind other than X25519' }
+        continue
+      }
+      if (-not $inStanza) { return 'the header is malformed' }
+    }
+    if (-not $done) { return 'the header has no end line' }
+    if ($x -ne 1) { return "expected exactly one X25519 stanza, found $x" }
+    return ''
+  }
+  function Test-BytesEqual([byte[]]$A, [byte[]]$B) {
+    if ($A.Length -ne $B.Length) { return $false }
+    for ($i = 0; $i -lt $A.Length; $i++) { if ($A[$i] -ne $B[$i]) { return $false } }
+    return $true
+  }
+  function Invoke-CheckSetup {
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    Write-Check PASS powershell "$($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
+    $tmp = $null
+    $haveAge = $false
+    $haveKeygen = $false
+    $completed = $false
+    try {
+      try {
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ('handoff-check-' + [guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($tmp)
+        # Windows: the new folder inherits the user's temp folder's access list.
+        # Elsewhere the mode is set by hand (the umask can't be relied on):
+        # .NET's own call where it has one, else chmod.
+        if (-not $OnWindows) {
+          try { [IO.File]::SetUnixFileMode($tmp, [IO.UnixFileMode]448) } catch { & chmod 700 $tmp }
+        }
+      } catch {
+        Write-Check FAIL tempdir 'cannot make a private temporary folder (check TEMP)'
+        if ($null -ne $tmp) { try { [IO.Directory]::Delete($tmp, $true) } catch { } }
+        $tmp = $null
+        $completed = $true
+        return
+      }
+      # A TERM ends the process without running finally: a process-exit handler
+      # in compiled code (a script block has no runspace to run in at that
+      # point) removes the folder then. Not on Windows, which has no TERM: there
+      # Ctrl-C runs finally, and Add-Type on Windows PowerShell 5.1 would leave
+      # its compiled assembly in the user's TEMP.
+      if (-not $OnWindows) { try {
+        if (-not ('HandoffCheckCleanup' -as [type])) {
+          Add-Type -TypeDefinition @'
+public static class HandoffCheckCleanup {
+  static string dir;
+  public static void Arm(string d) {
+    dir = d;
+    System.AppDomain.CurrentDomain.ProcessExit += delegate {
+      try { if (dir != null) System.IO.Directory.Delete(dir, true); } catch { }
+    };
+  }
+}
+'@
+        }
+        [HandoffCheckCleanup]::Arm($tmp)
+      } catch { } }
+
+      if ($null -ne $AgePath) {
+        $v = Invoke-Age '--version' $null
+        $ver = ''
+        if ($null -ne $v -and $v.Exit -eq 0) { $ver = ((New-Object System.Text.UTF8Encoding $false).GetString($v.Out) -split "`r?`n")[0].Trim() }
+        if ($ver) { Write-Check PASS age $ver; $haveAge = $true }
+        else { Write-Check FAIL age "found at $AgePath, but 'age --version' did not run; reinstall age (README.md, Installing age)" }
+      } else {
+        Write-Check FAIL age 'not found on PATH; install it (README.md, Installing age)'
+      }
+
+      # age-keygen: the user side never needs it, so a missing one is INFO.
+      $kg = Get-Command -Name age-keygen -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+      $idFile = Join-Path $tmp 'id.txt'
+      if ($null -ne $kg) {
+        $m = Invoke-Age "-o `"$idFile`"" $null $kg.Path
+        if ($null -ne $m -and $m.Exit -eq 0 -and [IO.File]::Exists($idFile)) {
+          $v = Invoke-Age '--version' $null $kg.Path
+          $ver = 'made a throwaway identity'
+          if ($null -ne $v -and $v.Exit -eq 0) {
+            $t = ((New-Object System.Text.UTF8Encoding $false).GetString($v.Out) -split "`r?`n")[0].Trim()
+            if ($t) { $ver = $t }
+          }
+          Write-Check PASS age-keygen $ver
+          $haveKeygen = $true
+        } else {
+          Write-Check FAIL age-keygen "found at $($kg.Path), but it did not make an identity; reinstall age"
+        }
+      } else {
+        Write-Check INFO age-keygen 'not found; this side never needs it. The round trip below is encrypt-only (decrypt skipped)'
+      }
+
+      # The saved recipient file, read by the same code as -Fingerprint.
+      $probe = ''      # PASS, INFO or FAIL
+      $probeMsg = ''
+      $saved = $null
+      try {
+        Get-Recipient
+        $probe = 'PASS'
+        $probeMsg = "$keyfile is a valid age X25519 recipient"
+        $saved = $script:RECIPIENT
+      } catch {
+        $m = $_.Exception.Message
+        if ($m -clike 'INFO|*' -or $m -clike 'FAIL|*') { $probe = $m.Substring(0, 4); $probeMsg = $m.Substring(5) }
+        else { $probe = 'FAIL'; $probeMsg = 'the recipient check failed' }
+      }
+
+      # The round trip. With age-keygen: a throwaway recipient, encrypt as
+      # handoff.ps1 does (bytes both ways, Invoke-Age), decrypt with age -d -i.
+      # Without it: encrypt to the saved recipient, and check the blob only.
+      if ($haveAge) {
+        $nonAscii = ([string][char]0xE4) + 'ssw' + [char]0xF6 + 'rd-' + [char]0xFC + '-' + [char]0x65E5 + [char]0x672C
+        $payload = $Utf8NoBom.GetBytes('{"svc":"check","password":"p' + $nonAscii + '"}')
+        $rcpt = $null
+        $rt = $null
+        if ($haveKeygen) {
+          $y = Invoke-Age "-y `"$idFile`"" $null $kg.Path
+          if ($null -ne $y -and $y.Exit -eq 0) { $rcpt = ($Utf8NoBom.GetString($y.Out) -split "`r?`n")[0].Trim() }
+          if ($rcpt -cnotmatch $RECIPIENT_RE) { $rcpt = $null; $rt = @('FAIL', 'age-keygen -y did not print a recipient for the throwaway identity') }
+        } elseif ($null -ne $saved) {
+          $rcpt = $saved
+        } else {
+          $rt = @('INFO', 'skipped: with no age-keygen there is no throwaway recipient, and no usable recipient file to encrypt to')
+        }
+        $hdr = $null
+        $b64 = $null
+        if ($null -ne $rcpt) {
+          $enc = Invoke-Age "-r $rcpt" $payload
+          if ($null -eq $enc -or $enc.Exit -ne 0 -or $enc.Out.Length -eq 0) {
+            $rt = @('FAIL', 'age failed to encrypt to the recipient')
+          } else {
+            $blob = [Convert]::ToBase64String($enc.Out)
+            $back = $null
+            try { $back = [Convert]::FromBase64String($blob) } catch { }
+            if ($null -ne $back -and (Test-BytesEqual $back $enc.Out)) { $b64 = @('PASS', "the blob decodes and re-encodes to itself ($($enc.Out.Length) bytes)") }
+            else { $b64 = @('FAIL', 'base64 does not round-trip the blob here') }
+            $why = Test-AgeHeader $enc.Out
+            if (-not $why) { $hdr = @('PASS', 'exactly one X25519 stanza') } else { $hdr = @('FAIL', $why) }
+            if ($haveKeygen) {
+              $dec = Invoke-Age "-d -i `"$idFile`"" $enc.Out
+              if ($null -eq $dec -or $dec.Exit -ne 0) { $rt = @('FAIL', 'age could not decrypt what it had just encrypted') }
+              elseif (Test-BytesEqual $dec.Out $payload) { $rt = @('PASS', "encrypted and decrypted $($payload.Length) bytes of UTF-8, unchanged") }
+              else { $rt = @('FAIL', 'the decrypted bytes differ from what was encrypted') }
+            } else {
+              $rt = @('INFO', "encrypt-only: decrypt skipped (no age-keygen here, so no throwaway key); the blob's header and base64 are checked")
+            }
+          }
+        }
+        if ($null -ne $rt) { Write-Check $rt[0] 'round trip' $rt[1] }
+        if ($null -ne $hdr) { Write-Check $hdr[0] 'header' $hdr[1] }
+        if ($null -ne $b64) { Write-Check $b64[0] 'base64' $b64[1] }
+      }
+
+      Write-Check $probe 'recipient' $probeMsg
+      $completed = $true
+    } finally {
+      if ($null -ne $tmp) { try { [IO.Directory]::Delete($tmp, $true) } catch { } }
+      # Interrupted (Ctrl-C): PowerShell would end the script with status 0.
+      if (-not $completed) { [Environment]::Exit(130) }
+    }
   }
 
-  # One bounded read, and the size checked on what was read.
-  $buf = New-Object byte[] ($MAX_KEY_BYTES + 1)
-  $size = 0
-  $readOk = $true
-  try {
-    while ($size -lt $buf.Length) {
-      $got = $stream.Read($buf, $size, $buf.Length - $size)
-      if ($got -le 0) { break }
-      $size += $got
-    }
-  } catch { $readOk = $false } finally { $stream.Dispose() }
-  if (-not $readOk) { Stop-Run "cannot read $keyfile" }
-  if ($size -gt $MAX_KEY_BYTES) { Stop-Run "$keyfile is over $MAX_KEY_BYTES bytes; not a recipient file" }
-  if ($size -ge 2 -and (($buf[0] -eq 0xFF -and $buf[1] -eq 0xFE) -or ($buf[0] -eq 0xFE -and $buf[1] -eq 0xFF))) {
-    Stop-Run "$keyfile is saved as UTF-16: save it as UTF-8 or plain text"
+  if ($CheckSetup) {
+    Invoke-CheckSetup
+    if ($script:CsFailed) { Exit-Handoff 1 }
+    Exit-Handoff 0
   }
-  $start = 0
-  if ($size -ge 3 -and $buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF) { $start = 3 }   # a UTF-8 byte-order mark
-  # Byte for character (ISO-8859-1), as handoff.sh works on bytes: anything
-  # not ASCII fails the checks below as it does there.
-  $text = [Text.Encoding]::GetEncoding(28591).GetString($buf, $start, $size - $start)
-  # A copy saved on Windows or by an editor, or copied from an indented block,
-  # can carry CRLF line endings, leading or trailing blanks or blank lines: drop
-  # them before the checks.
-  $lines = @($text.Replace("`r", '').Split("`n") | ForEach-Object { $_.Trim([char[]]@(' ', "`t")) } | Where-Object { $_ -ne '' })
-  # An identity (private key) here means it left the agent's machine.
-  foreach ($l in $lines) {
-    if ($l.StartsWith('AGE-SECRET-KEY-', [StringComparison]::Ordinal) -or $l.StartsWith('AGE-PLUGIN-', [StringComparison]::Ordinal)) {
-      Stop-Run "$keyfile holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
-    }
-  }
-  if ($lines.Count -ne 1) { Stop-Run "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it" }
-  $RECIPIENT = $lines[0]
-  if ($RECIPIENT -cnotmatch $RECIPIENT_RE) {
-    Stop-Run "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
-  }
-  # The bech32 checksum: age itself rejects a recipient that fails it. Asked
-  # now, on nothing, so a mistyped file is refused before the secret is typed.
-  $chk = Invoke-Age "-r $RECIPIENT" $null
-  if ($null -eq $chk -or $chk.Exit -ne 0) {
-    Stop-Run "$keyfile is not a valid age recipient: age $AgeVersion did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
-  }
+  Get-Recipient
 
   if ($Fingerprint) {
     [Console]::Error.WriteLine("key file: $keyfile")

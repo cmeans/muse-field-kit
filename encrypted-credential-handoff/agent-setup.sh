@@ -26,6 +26,9 @@
 #                                       delete, keeps the old key, removing
 #                                       only a leftover temporary link to it,
 #                                       and exits 1)
+#   agent-setup.sh --check-setup        run age, age-keygen and consume.py --check
+#                                       on a throwaway identity; prints PASS,
+#                                       INFO or FAIL lines, exits 1 on a FAIL
 # Exit codes: 0 done (or, for --rotate during a rotation, shown), 1 refused
 # or failed (the reason on stderr), 2 a usage error.
 #
@@ -303,6 +306,133 @@ usage() {
   echo "       agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous (blobs still made for it stop opening);" >&2
   echo "                                           without --yes, says what it would delete and keeps the old key, removing only" >&2
   echo "                                           a leftover temporary link to it (exit 1)" >&2
+  echo "       agent-setup.sh --check-setup        check that age, age-keygen and python3 work here (PASS, INFO or FAIL lines)" >&2
+}
+
+# --- --check-setup: prove the tools work on this machine, by running them -----
+# One line per check on stdout (PASS, INFO or FAIL, a name, a detail), nothing
+# else there; exit 0 unless a line is FAIL. The round trip goes through
+# consume.py --check itself, with HANDOFF_PRIVKEY pointed at a throwaway
+# identity in a private temporary directory (removed on every exit), so the
+# helper's own header check and decrypt are what's tested. The real key is
+# only read, by recipient_of's checks, and never printed. No prompt, no stdin.
+cs_failed=0
+cs_out() {  # STATUS NAME DETAIL
+  local d=${3//$'\n'/ }
+  printf '%s %s: %s\n' "$1" "$2" "$d"
+  [ "$1" != FAIL ] || cs_failed=1
+}
+check_setup() {
+  local p v rc blob rcpt re have_age=0 have_keygen=0 have_py=0 here consume
+  local payload rt="" hdr="" b64="" want k kmsg
+  set +e
+  newd=$(mktemp -d 2>/dev/null) && [ -d "$newd" ] \
+    || { newd=""; cs_out FAIL tempdir "cannot make a private temporary directory (check TMPDIR)"; exit 1; }
+  chmod 700 "$newd"
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+
+  if p=$(command -v age 2>/dev/null) && [ -n "$p" ]; then
+    if v=$(env -i PATH="${PATH-}" age --version </dev/null 2>/dev/null | head -n 1) && [ -n "$v" ]; then
+      cs_out PASS age "$v"; have_age=1
+    else
+      cs_out FAIL age "found at $p, but 'age --version' did not run; reinstall age (README.md, Installing age)"
+    fi
+  else
+    cs_out FAIL age "not found on PATH; install it (README.md, Installing age) $(path_was)"
+  fi
+  if p=$(command -v age-keygen 2>/dev/null) && [ -n "$p" ]; then
+    if env -i PATH="${PATH-}" age-keygen -o "$newd/id.txt" </dev/null >/dev/null 2>&1 && [ -s "$newd/id.txt" ]; then
+      v=$(env -i PATH="${PATH-}" age-keygen --version </dev/null 2>/dev/null | head -n 1)
+      cs_out PASS age-keygen "${v:-made a throwaway identity}"; have_keygen=1
+    else
+      cs_out FAIL age-keygen "found at $p, but it did not make an identity; reinstall age"
+    fi
+  else
+    cs_out FAIL age-keygen "not found on PATH; install age (README.md, Installing age) $(path_was)"
+  fi
+  # python3 3.7 or newer: consume.py needs it.
+  if command -v python3 >/dev/null 2>&1; then
+    v=$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' </dev/null 2>/dev/null) || v=
+    if [[ "$v" =~ ^([0-9]+)\.([0-9]+) ]] \
+       && { [ "${BASH_REMATCH[1]}" -gt 3 ] || { [ "${BASH_REMATCH[1]}" -eq 3 ] && [ "${BASH_REMATCH[2]}" -ge 7 ]; }; }; then
+      cs_out PASS python3 "$v"; have_py=1
+    else
+      cs_out FAIL python3 "Python 3.7 or newer is required; found ${v:-no version output}"
+    fi
+  else
+    cs_out FAIL python3 "not found on PATH; consume.py needs Python 3.7 or newer"
+  fi
+
+  if [ "$have_age" = 1 ] && [ "$have_keygen" = 1 ] && [ "$have_py" = 1 ]; then
+    here=${BASH_SOURCE[0]-}
+    case "$here" in */*) here=${here%/*} ;; *) here=. ;; esac
+    consume=$here/consume.py
+    re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
+    payload='{"svc":"check","password":"pässwörd-ü-日本"}'
+    rcpt=$(env -i PATH="${PATH-}" age-keygen -y "$newd/id.txt" </dev/null 2>/dev/null)
+    if [[ ! "$rcpt" =~ $re ]]; then
+      rt="FAIL|age-keygen -y did not print a recipient for the throwaway identity"
+    elif [ ! -f "$consume" ]; then
+      rt="FAIL|consume.py is not beside agent-setup.sh ($here)"
+    else
+      blob=$(printf '%s' "$payload" | env -i PATH="${PATH-}" age -r "$rcpt" 2>/dev/null | base64 | tr -d '\n')
+      rc=$?
+      if [ "$rc" -ne 0 ] || [ -z "$blob" ]; then
+        rt="FAIL|age failed to encrypt to the throwaway recipient"
+      else
+        printf '%s\n' "$blob" >"$newd/blob.txt"
+        if printf '%s' "$blob" | base64 -d >"$newd/blob.bin" 2>/dev/null || printf '%s' "$blob" | base64 -D >"$newd/blob.bin" 2>/dev/null; then
+          if [ "$(base64 <"$newd/blob.bin" | tr -d '\n')" = "$blob" ]; then
+            b64="PASS|the blob decodes and re-encodes to itself ($(wc -c <"$newd/blob.bin" | tr -d ' ') bytes)"
+          else
+            b64="FAIL|base64 does not round-trip the blob here"
+          fi
+        else
+          b64="FAIL|this base64 cannot decode the blob"
+        fi
+        v=$(HANDOFF_PRIVKEY="$newd/id.txt" python3 "$consume" --label check --check --blob-file "$newd/blob.txt" </dev/null 2>"$newd/cerr")
+        rc=$?
+        want="svc: matches label 'check'
+password: 20 bytes"
+        if [ "$rc" -eq 0 ] && [ "$v" = "$want" ]; then
+          hdr="PASS|consume.py accepted the header: exactly one X25519 stanza"
+          rt="PASS|encrypted, then decrypted by consume.py --check: the 20-byte UTF-8 password came back unchanged"
+        elif [ "$rc" -eq 0 ]; then
+          hdr="PASS|consume.py accepted the header: exactly one X25519 stanza"
+          rt="FAIL|consume.py --check decrypted something other than what was encrypted"
+        else
+          kmsg=$(head -n 1 "$newd/cerr" 2>/dev/null)
+          kmsg=${kmsg#consume.py: }
+          case "$kmsg" in
+            *"age blob"*|*"armored"*|*"header"*) hdr="FAIL|$kmsg" ;;
+            *) rt="FAIL|consume.py --check failed: ${kmsg:-no message}" ;;
+          esac
+        fi
+      fi
+    fi
+    [ -z "$rt" ] || cs_out "${rt%%|*}" "round trip" "${rt#*|}"
+    [ -z "$hdr" ] || cs_out "${hdr%%|*}" header "${hdr#*|}"
+    [ -z "$b64" ] || cs_out "${b64%%|*}" base64 "${b64#*|}"
+  fi
+
+  # The real key, if there is one: read with the same checks as --fingerprint.
+  if [ "$have_keygen" = 1 ]; then
+    k=$( { resolve_key; printf '%s' "$key"; } 2>"$newd/kerr" )
+    if [ -z "$k" ]; then
+      kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null); kmsg=${kmsg#agent-setup.sh: }
+      cs_out FAIL identity "${kmsg:-cannot work out where the key is}"
+    elif [ ! -e "$k" ] && [ ! -L "$k" ]; then
+      cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
+    elif recipient_of "$k" >/dev/null 2>"$newd/kerr"; then
+      cs_out PASS identity "the key at $k passes the identity checks (owner-only, one plain age identity)"
+    else
+      kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null)
+      cs_out FAIL identity "${kmsg:-the key at $k did not pass the identity checks}"
+    fi
+  fi
+  exit "$cs_failed"
 }
 
 # Recompute the recipient of an EXISTING identity, e.g. at comparison time.
@@ -362,6 +492,10 @@ case "${1-}" in
     resolve_key "$@"
     ;;
   "") mode=generate ;;
+  --check-setup)
+    [ $# -eq 1 ] || { echo "usage: agent-setup.sh --check-setup (takes no argument)" >&2; exit 2; }
+    mode=--check-setup
+    ;;
   *)
     # Anything else (--help, a typo of --fingerprint) must not fall through
     # to generating a key.
@@ -372,6 +506,7 @@ case "${1-}" in
 esac
 
 case "$mode" in
+  --check-setup) check_setup ;;
   --fingerprint)
     key_recipient "$key"
     echo "key file: $key" >&2

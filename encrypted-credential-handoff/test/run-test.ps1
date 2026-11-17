@@ -17,6 +17,11 @@
 #     near-miss allow-list, links and directories, the payload checks and cap,
 #     -File and pipeline input, a missing or failing age, age's environment;
 #   - no dummy value in handoff.ps1's own output;
+#   - -CheckSetup (section 8): every check line, the failure paths (no age, no
+#     age-keygen, a bad recipient file, an age that corrupts its output or
+#     writes a second stanza, the header vectors), the output contract, and no
+#     temporary folder left after an INT or TERM (the stub and signal cases need
+#     a shell: elsewhere they print "n/a on this OS: <case>");
 #   - on Windows: Mark of the Web and execution policy, and the documented
 #     ways to run it (prints "n/a on this OS: <case>" elsewhere).
 #
@@ -650,6 +655,177 @@ Assert-True ($r.Out.Contains('DEBUG:')) 'test setup: Set-PSDebug -Trace 2 traced
 Assert-True (($r.Out.TrimEnd("`r", "`n") -split "`r?`n")[-1] -match '\A[A-Za-z0-9+/]+={0,2}\z') 'under Set-PSDebug -Trace 2: no blob on the last line'
 No-Dummy 'under Set-PSDebug -Trace 2' @($r.Out, $r.Err)
 Say 'ok (failing age, tracing)'
+
+# --- -CheckSetup ------------------------------------------------------------------
+Say '== 8. -CheckSetup: age works here, proved by running it =='
+$C8 = Join-Path $S 'c8'
+$T8 = Join-Path $S 'tmp8'
+New-Item -ItemType Directory -Path $T8 | Out-Null
+$h8 = Install-Handoff $C8 $RcptFile
+$tmpEnv = @{ TMPDIR = $T8; TEMP = $T8; TMP = $T8 }
+function Join-Env([hashtable]$extra) { $h = @{}; foreach ($k in $tmpEnv.Keys) { $h[$k] = $tmpEnv[$k] }; foreach ($k in $extra.Keys) { $h[$k] = $extra[$k] }; return $h }
+# The payload the check encrypts, in the forms that must never be printed.
+$leaks = @(('p' + [char]0xE4 + 'ssw' + [char]0xF6 + 'rd'), ([string][char]0x65E5 + [char]0x672C), '"svc":"check"')
+# A -CheckSetup run: every stdout line is a check line, nothing else is on
+# stdout or stderr, the payload is nowhere, and the temporary folder is gone.
+function Assert-Checks([string]$desc, [int]$wantExit, $r) {
+  if ($r.Exit -ne $wantExit) { [Console]::Error.WriteLine($r.Out + $r.Err); Fail "${desc}: exit $($r.Exit), expected $wantExit" }
+  $lines = @($r.Out -split "`r?`n" | Where-Object { $_ -ne '' })
+  foreach ($l in $lines) {
+    if ($l -cnotmatch '\A(PASS|INFO|FAIL) [a-z0-9][a-z0-9. -]*: .+\z') { [Console]::Error.WriteLine($r.Out); Fail "${desc}: not a check line: $l" }
+    if ($l.Contains('skip:')) { Fail "${desc}: a skip: line" }
+  }
+  $failed = @($lines | Where-Object { $_.StartsWith('FAIL ') }).Count
+  Assert-True (($failed -gt 0) -eq ($wantExit -ne 0)) "${desc}: the exit code and the FAIL lines disagree"
+  foreach ($t in @($r.Out, $r.Err)) { foreach ($m in $leaks) { Assert-True (-not $t.Contains($m)) "${desc}: the test payload appeared in the output" } }
+  Assert-True ($r.Err.Length -eq 0) "${desc}: wrote to stderr: $($r.Err)"
+  Assert-True (@(Get-ChildItem -LiteralPath $T8 -Force).Count -eq 0) "${desc}: the temporary folder was left behind"
+  return $lines
+}
+function Assert-Has([string]$desc, $lines, [string]$pattern) {
+  Assert-True (@($lines | Where-Object { $_ -cmatch ('\A' + $pattern) }).Count -ge 1) "${desc}: no line matching '$pattern' in: $($lines -join ' | ')"
+}
+function Assert-HasNot([string]$desc, $lines, [string]$pattern) {
+  Assert-True (@($lines | Where-Object { $_ -cmatch ('\A' + $pattern) }).Count -eq 0) "${desc}: unexpected line '$pattern' in: $($lines -join ' | ')"
+}
+function Run-Check([string]$script, [string]$argText, [hashtable]$extra = @{}) {
+  return Invoke-Handoff -Script $script -ArgText $argText -EnvSet (Join-Env $extra)
+}
+
+$lines = Assert-Checks '-CheckSetup' 0 (Run-Check $h8 '-CheckSetup')
+foreach ($n in @('powershell', 'age', 'age-keygen', 'round trip', 'header', 'base64', 'recipient')) { Assert-Has '-CheckSetup' $lines "PASS ${n}: " }
+Assert-HasNot '-CheckSetup' $lines '(FAIL|INFO) '
+Assert-True ($lines.Count -eq 7) "-CheckSetup: not seven lines: $($lines -join ' | ')"
+Say 'ok (-CheckSetup)'
+
+# Usage errors.
+Assert-Refusal '-CheckSetup with a FILE' 2 '-CheckSetup takes no FILE' (Invoke-Handoff -Script $h8 -ArgText '-CheckSetup x.json')
+Assert-Refusal '-CheckSetup -Fingerprint' 2 'one mode at a time' (Invoke-Handoff -Script $h8 -ArgText '-CheckSetup -Fingerprint')
+$r = Invoke-Handoff -Script $h8 -ArgText '-Help'
+Assert-True ($r.Err.Contains('-CheckSetup')) '-Help does not list -CheckSetup'
+
+# The recipient file: missing is INFO, a bad one FAIL.
+$lines = Assert-Checks '-CheckSetup -To nosuch' 0 (Run-Check $h8 '-CheckSetup -To nosuch')
+Assert-Has 'nosuch' $lines 'INFO recipient: '
+Assert-Has 'nosuch' $lines 'PASS round trip: '
+[IO.File]::WriteAllText((Join-Path $C8 'handoff-bad.age'), "age1notarecipient`n", $Utf8)
+$lines = Assert-Checks 'a bad recipient file' 1 (Run-Check $h8 '-CheckSetup -To bad')
+Assert-Has 'bad recipient' $lines 'FAIL recipient: '
+Assert-Has 'bad recipient' $lines 'PASS round trip: '
+[IO.File]::WriteAllText((Join-Path $C8 'handoff-bad.age'), ($Rcpt.Substring(0, $Rcpt.Length - 1) + 'q' + "`n"), $Utf8)
+$lines = Assert-Checks 'a recipient with a bad checksum' 1 (Run-Check $h8 '-CheckSetup -To bad')
+Assert-Has 'bad checksum' $lines 'FAIL recipient: '
+Say 'ok (recipient file)'
+
+# A PATH without age: FAIL age. A PATH with age alone: INFO age-keygen, an
+# encrypt-only round trip, header and base64 still checked.
+$sys = ''
+if ($OnWindows) { $sys = ";$env:SystemRoot\system32;$env:SystemRoot" }
+$lines = Assert-Checks 'no age' 1 (Run-Check $h8 '-CheckSetup' @{ PATH = "$noAge$sys" })
+Assert-Has 'no age' $lines 'FAIL age: '
+Assert-HasNot 'no age' $lines 'PASS (round trip|header|base64): '
+$onlyAge = Join-Path $S 'onlyage'
+New-Item -ItemType Directory -Path $onlyAge | Out-Null
+Copy-Item -LiteralPath $AgePath -Destination (Join-Path $onlyAge (Split-Path -Leaf $AgePath))
+if (-not $OnWindows) { [void](Invoke-Proc -Exe 'chmod' -Argv @('755', (Join-Path $onlyAge (Split-Path -Leaf $AgePath)))) }
+$lines = Assert-Checks 'no age-keygen' 0 (Run-Check $h8 '-CheckSetup' @{ PATH = "$onlyAge$sys" })
+Assert-Has 'no age-keygen' $lines 'INFO age-keygen: '
+Assert-Has 'no age-keygen' $lines 'INFO round trip: .*decrypt skipped'
+Assert-Has 'no age-keygen' $lines 'PASS header: '
+Assert-Has 'no age-keygen' $lines 'PASS base64: '
+$lines = Assert-Checks 'no age-keygen, no recipient file' 0 (Run-Check $h8 '-CheckSetup -To nosuch' @{ PATH = "$onlyAge$sys" })
+Assert-Has 'no keygen, no file' $lines 'INFO round trip: '
+Say 'ok (age, age-keygen)'
+
+# Stubs that need a shell: an age that changes a byte of its output, one that
+# writes a second stanza, and one that writes a given file (the header rule
+# against the vectors). They are shell scripts, so only where there's a shell.
+$stubNames = @('an age that changes a byte of its output: FAIL round trip',
+               'an age that writes a second stanza: FAIL header',
+               'the header vectors, through an age that writes the vector',
+               'a signal in the middle of a run leaves no temporary folder')
+if (-not $OnWindows) {
+  $st8 = Join-Path $S 'stub8'
+  New-Item -ItemType Directory -Path $st8 | Out-Null
+  $stubAge = Join-Path $st8 'age'
+  function Write-Stub8([string]$body) {
+    [IO.File]::WriteAllText($stubAge, "#!/bin/sh`ncase `"`$1`" in --version|-d) exec '$AgePath' `"`$@`" ;; esac`n$body`n", $Utf8)
+    [void](Invoke-Proc -Exe 'chmod' -Argv @('755', $stubAge))
+  }
+  $stub8Path = "$st8$sep$env:PATH"
+  Write-Stub8 "'$AgePath' `"`$@`" | head -c -1"
+  $lines = Assert-Checks $stubNames[0] 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
+  Assert-Has 'flip' $lines 'FAIL round trip: '
+  Say "ok ($($stubNames[0]))"
+  Write-Stub8 "exec '$AgePath' `"`$@`" -r $Rcpt"
+  $lines = Assert-Checks $stubNames[1] 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
+  Assert-Has 'second stanza' $lines 'FAIL header: '
+  Assert-Has 'second stanza' $lines 'PASS round trip: '
+  Say "ok ($($stubNames[1]))"
+
+  # The vectors (Task 0's): refused ones, then the two real blobs (accepted;
+  # the decrypt then fails, as they're not for the throwaway key).
+  $vec = Join-Path $S 'vec8'
+  New-Item -ItemType Directory -Path $vec | Out-Null
+  function Test-Vector([string]$name, [string]$file, [bool]$accepted) {
+    Write-Stub8 "cat >/dev/null`ncat '$file'"
+    $lines = Assert-Checks "header vector $name" 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $stub8Path })
+    if ($accepted) { Assert-Has $name $lines 'PASS header: '; Assert-Has $name $lines 'PASS base64: ' }
+    else { Assert-Has $name $lines 'FAIL header: ' }
+  }
+  foreach ($v in @('scrypt', 'two-x25519', 'grease-only', 'plugin-stanza', 'pq-stanza', 'ssh-stanza', 'unknown-stanza', 'armored-b64')) {
+    $f = Join-Path $vec "$v.bin"
+    [IO.File]::WriteAllBytes($f, [Convert]::FromBase64String(([IO.File]::ReadAllText((Join-Path (Join-Path $Here 'vectors') "$v.txt"))).Trim()))
+    Test-Vector $v $f $false
+  }
+  Test-Vector 'armored-raw' (Join-Path (Join-Path $Here 'vectors') 'armored-raw.txt') $false
+  foreach ($v in @('blob-age', 'blob-age-rage')) {
+    $f = Join-Path $vec "$v.bin"
+    [IO.File]::WriteAllBytes($f, [Convert]::FromBase64String(([IO.File]::ReadAllText((Join-Path $Here "$v.txt"))).Trim()))
+    Test-Vector $v $f $true
+  }
+  $f = Join-Path $vec 'noend.bin'
+  [IO.File]::WriteAllText($f, "age-encryption.org/v1`n-> X25519 abc`nAAAA`n", $Utf8)
+  Test-Vector 'no end line' $f $false
+  Say "ok ($($stubNames[2]))"
+
+  # A signal while age is running: the temporary folder is removed.
+  function Test-Signal([string]$sig) {
+    $marker = Join-Path $S 'age-started'
+    if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker }
+    Write-Stub8 ": >'$marker'`nsleep 4`nexec '$AgePath' `"`$@`""
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $PSExe
+    $psi.Arguments = Join-Argv @('-NoProfile', '-NonInteractive', '-File', $h8, '-CheckSetup')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardInput = $true
+    foreach ($k in $tmpEnv.Keys) { $psi.EnvironmentVariables[$k] = $tmpEnv[$k] }
+    $psi.EnvironmentVariables['PATH'] = $stub8Path
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+    $p.StandardInput.Close()
+    $tries = 0
+    while (-not (Test-Path -LiteralPath $marker) -and $tries -lt 200) { Start-Sleep -Milliseconds 100; $tries++ }
+    Assert-True (Test-Path -LiteralPath $marker) "$sig test: the run never reached age"
+    Assert-True (@(Get-ChildItem -LiteralPath $T8 -Force).Count -gt 0) "$sig test: no temporary folder while the run was going"
+    [void](Invoke-Proc -Exe 'sh' -Argv @('-c', "kill -$sig $($p.Id)"))
+    if (-not $p.WaitForExit(60000)) { $p.Kill(); Fail "$sig test: the run did not end" }
+    Assert-True ($p.ExitCode -ne 0) "$sig test: the interrupted run exited 0"
+    $out = $o.Result + $e.Result
+    foreach ($m in $leaks) { Assert-True (-not $out.Contains($m)) "$sig test: the test payload appeared in the output" }
+    # The exit handler may finish just after the process is gone.
+    $tries = 0
+    while (@(Get-ChildItem -LiteralPath $T8 -Force).Count -gt 0 -and $tries -lt 30) { Start-Sleep -Milliseconds 100; $tries++ }
+    Assert-True (@(Get-ChildItem -LiteralPath $T8 -Force).Count -eq 0) "$sig test: the temporary folder was left behind"
+  }
+  Test-Signal 'INT'
+  Test-Signal 'TERM'
+  Say "ok ($($stubNames[3]))"
+} else {
+  foreach ($c in $stubNames) { NotHere $c }
+}
 
 # --- Windows: Mark of the Web and execution policy --------------------------------
 Say '== win. Mark of the Web, execution policy, the documented invocations =='

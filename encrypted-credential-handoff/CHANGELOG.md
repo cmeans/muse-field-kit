@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **`--check-setup`** (`handoff.sh`, `agent-setup.sh`) and **`-CheckSetup`** (`handoff.ps1`): a functional compatibility check on each machine. It runs the tools instead of comparing version strings: `age` and `age-keygen` start, a round trip through a throwaway identity (made in a private temporary directory, removed on every exit, including an interrupt) encrypts and decrypts a non-ASCII payload unchanged, the blob's header is exactly one `X25519` stanza (the rule `consume.py` applies), and the blob survives `base64`. `handoff.sh` also checks `jq` 1.6 or newer and `jq --rawfile`; `agent-setup.sh` checks `python3` 3.7 or newer and runs the round trip through `consume.py --check` itself. The saved recipient file (or, on the agent side, the key) is checked if it exists; a missing one is `INFO`. `age-keygen` is not needed on the user side: without it the round trip is encrypt-only. Output is one `PASS`, `INFO` or `FAIL` line per check on stdout and nothing else; the exit status is 1 if any line is `FAIL`. It reads no stdin and never prints the test payload.
+
 ### Changed
 
 - **Changes go upstream as issues.** README's "Variations" and SETUP's mechanism-change rule offered changes "as an issue or pull request"; pull requests in this repository are now opened by its collaborators only, so both say to open an issue, pointing to the repository's new `CONTRIBUTING.md`.

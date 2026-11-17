@@ -20,6 +20,7 @@
 # in ~/bin.
 #
 # Needs age and jq 1.6 or newer on PATH (README.md, "Installing age").
+# handoff.sh --check-setup runs them and reports PASS, INFO or FAIL lines.
 #
 # Usage: handoff.sh --help (the usage() text below is the one copy).
 #
@@ -58,6 +59,7 @@ Usage:
   handoff.sh [--to NAME]                 paste or type JSON, then Enter and Ctrl-D
   handoff.sh [--to NAME] FILE            read JSON from FILE
   handoff.sh [--to NAME] --fingerprint   print the agent's recipient and exit
+  handoff.sh [--to NAME] --check-setup   check that age and jq work on this machine
   handoff.sh --help                      print this usage and exit
 NAME (default muse; up to 64 letters, digits, _ and -, not starting with -)
 picks the agent's recipient file, handoff-NAME.age, in this script's
@@ -78,7 +80,10 @@ file=
 while [ $# -gt 0 ]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --fingerprint) mode=fingerprint ;;
+    --fingerprint) [ "$mode" = encrypt ] || [ "$mode" = fingerprint ] || usage_error "one mode at a time"
+                   mode=fingerprint ;;
+    --check-setup) [ "$mode" = encrypt ] || [ "$mode" = check-setup ] || usage_error "one mode at a time"
+                   mode=check-setup ;;
     --to=*) usage_error "write --to NAME, with a space" ;;
     --to)
       # The next word is the NAME; a long option there is a NAME left out.
@@ -101,7 +106,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ "$mode" = encrypt ] || [ "$file_given" = 0 ] || usage_error "--fingerprint takes no FILE"
+[ "$mode" = encrypt ] || [ "$file_given" = 0 ] || usage_error "--$mode takes no FILE"
 
 # The name becomes part of a file name: plain ASCII letters, digits, _ and -
 # only (listed, not ranges, which can match more in some locales), so it
@@ -131,12 +136,192 @@ if [ "$mode" = encrypt ]; then
     exit 1
   fi
 fi
-command -v age >/dev/null 2>&1 \
-  || { echo "handoff.sh: age not found. Install it (README.md, Installing age)" >&2; exit 1; }
-# Read once, for the messages when age fails. Every age run gets an
-# environment of only PATH (never AGE_PASSPHRASE, AGEDEBUG and the like).
-age_version=$(env -i PATH="${PATH-}" age --version 2>/dev/null | head -n 1) || age_version=
-[ -n "$age_version" ] || age_version="(version unknown)"
+if [ "$mode" != check-setup ]; then   # --check-setup reports a missing age itself
+  command -v age >/dev/null 2>&1 \
+    || { echo "handoff.sh: age not found. Install it (README.md, Installing age)" >&2; exit 1; }
+  # Read once, for the messages when age fails. Every age run gets an
+  # environment of only PATH (never AGE_PASSPHRASE, AGEDEBUG and the like).
+  age_version=$(env -i PATH="${PATH-}" age --version 2>/dev/null | head -n 1) || age_version=
+  [ -n "$age_version" ] || age_version="(version unknown)"
+fi
+
+# --- --check-setup: prove the tools work on this machine, by running them -----
+# One line per check on stdout (PASS, INFO or FAIL, a name, a detail), nothing
+# else there; exit 0 unless a line is FAIL. No version floor is compared for
+# age: it is run. The round trip uses a throwaway identity in a private
+# temporary directory, removed on every exit. No prompt, no stdin, no real key.
+cs_failed=0
+cs_tmp=
+cs_out() {  # STATUS NAME DETAIL
+  local d=${3//$'\n'/ }
+  printf '%s %s: %s\n' "$1" "$2" "$d"
+  [ "$1" != FAIL ] || cs_failed=1
+}
+# consume.py's check_age_header, as an awk routine: a binary age file for
+# exactly one X25519 recipient (other stanzas only "*-grease"). Prints the
+# reason and nothing else when the file is refused; prints nothing when it's fine.
+cs_header() {  # FILE
+  LC_ALL=C awk '
+    function bad(m) { print m; stop = 1; exit }
+    NR == 1 {
+      if ($0 == "-----BEGIN AGE ENCRYPTED FILE-----") bad("armored (ASCII) age text, not the binary format")
+      if ($0 != "age-encryption.org/v1") bad("not a binary age file")
+      next
+    }
+    $0 == "---" || substr($0, 1, 4) == "--- " { done = 1; exit }
+    substr($0, 1, 3) == "-> " {
+      in_stanza = 1
+      split(substr($0, 4), a, " ")
+      kind = a[1]
+      if (kind == "X25519") x++
+      else if (substr(kind, length(kind) - 6) != "-grease") bad("a recipient kind other than X25519")
+      next
+    }
+    !in_stanza { bad("the header is malformed") }
+    END {
+      if (stop) exit
+      if (!done) print "the header has no end line"
+      else if (x != 1) print "expected exactly one X25519 stanza, found " (x + 0)
+    }' "$1"
+}
+check_setup() {
+  local p v rc blob rcpt="" rt="" hdr="" b64="" payload re jq_re have_age=0 have_keygen=0 have_jq=0
+  local probe_rc=1 probe_info=0 probe_msg="" probe_rcpt=""
+  set +e
+  cs_out PASS bash "$BASH_VERSION"
+  cs_tmp=$(mktemp -d 2>/dev/null) && [ -d "$cs_tmp" ] \
+    || { cs_out FAIL tempdir "cannot make a private temporary directory (check TMPDIR)"; exit 1; }
+  chmod 700 "$cs_tmp"
+  trap 'rm -rf "$cs_tmp"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+
+  # age: found, and it runs.
+  if p=$(command -v age 2>/dev/null) && [ -n "$p" ]; then
+    if v=$(env -i PATH="${PATH-}" age --version </dev/null 2>/dev/null | head -n 1) && [ -n "$v" ]; then
+      cs_out PASS age "$v"; have_age=1
+    else
+      cs_out FAIL age "found at $p, but 'age --version' did not run; reinstall age (README.md, Installing age)"
+    fi
+  else
+    cs_out FAIL age "not found on PATH; install it (README.md, Installing age)"
+  fi
+
+  # age-keygen: the user side never needs it, so a missing one is INFO.
+  if p=$(command -v age-keygen 2>/dev/null) && [ -n "$p" ]; then
+    if env -i PATH="${PATH-}" age-keygen -o "$cs_tmp/id.txt" </dev/null >/dev/null 2>&1 && [ -s "$cs_tmp/id.txt" ]; then
+      v=$(env -i PATH="${PATH-}" age-keygen --version </dev/null 2>/dev/null | head -n 1)
+      cs_out PASS age-keygen "${v:-made a throwaway identity}"; have_keygen=1
+    else
+      cs_out FAIL age-keygen "found at $p, but it did not make an identity; reinstall age"
+    fi
+  else
+    cs_out INFO age-keygen "not found; this side never needs it. The round trip below is encrypt-only (decrypt skipped)"
+  fi
+
+  # jq 1.6 or newer, and --rawfile.
+  payload='{"svc":"check","password":"pässwörd-ü-日本"}'
+  if command -v jq >/dev/null 2>&1; then
+    v=$(jq --version </dev/null 2>/dev/null) || v=
+    jq_re='^jq-([0-9]+)\.([0-9]+)'
+    if [[ "$v" =~ $jq_re ]] \
+       && { [ "${BASH_REMATCH[1]}" -gt 1 ] || { [ "${BASH_REMATCH[1]}" -eq 1 ] && [ "${BASH_REMATCH[2]}" -ge 6 ]; }; }; then
+      cs_out PASS jq "$v"; have_jq=1
+    else
+      cs_out FAIL jq "jq 1.6 or newer is required; found ${v:-no version output}. Install a newer jq (README.md, Installing age)"
+    fi
+  else
+    cs_out FAIL jq "not found. Install jq 1.6 or newer (README.md, Installing age)"
+  fi
+  if [ "$have_jq" = 1 ]; then
+    printf '%s' "$payload" >"$cs_tmp/payload"
+    if jq -j -n --rawfile p "$cs_tmp/payload" '$p' </dev/null >"$cs_tmp/jq-out" 2>/dev/null && cmp -s "$cs_tmp/payload" "$cs_tmp/jq-out"; then
+      cs_out PASS "jq rawfile" "--rawfile reads a file's bytes unchanged"
+    else
+      cs_out FAIL "jq rawfile" "this jq's --rawfile did not return the file's bytes; install a current jq"
+    fi
+  fi
+
+  # The saved recipient file, probed with this script's own --fingerprint (so
+  # the one recipient check is the one the encrypt path runs).
+  if [ "$nopath" = 1 ]; then
+    probe_msg="no script path to find the recipient file beside; save handoff.sh to a file and run that file"
+    probe_info=1
+  elif [ ! -e "$keyfile" ] && [ ! -L "$keyfile" ]; then
+    probe_msg="no $keyfile yet; save the agent's recipient there (SETUP.md, setup step 3)"
+    probe_info=1
+  else
+    v=$("$BASH" "$src" --fingerprint --to "$to" </dev/null 2>"$cs_tmp/probe-err")
+    probe_rc=$?
+    probe_rcpt=$(printf '%s\n' "$v" | sed -n 's/^recipient: //p')
+    probe_msg=$(head -n 1 "$cs_tmp/probe-err" 2>/dev/null)
+    probe_msg=${probe_msg#handoff.sh: }
+  fi
+
+  # The round trip. With age-keygen: a throwaway recipient, encrypt as
+  # handoff.sh does, decrypt with age -d -i. Without it: encrypt to the saved
+  # recipient, and check the blob only.
+  if [ "$have_age" = 1 ]; then
+    re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
+    if [ "$have_keygen" = 1 ]; then
+      rcpt=$(env -i PATH="${PATH-}" age-keygen -y "$cs_tmp/id.txt" </dev/null 2>/dev/null)
+      [[ "$rcpt" =~ $re ]] || { rcpt=""; rt="FAIL|age-keygen -y did not print a recipient for the throwaway identity"; }
+    elif [ "$probe_rc" = 0 ] && [ -n "$probe_rcpt" ]; then
+      rcpt=$probe_rcpt
+    else
+      rt="INFO|skipped: with no age-keygen there is no throwaway recipient, and no usable recipient file to encrypt to"
+    fi
+    if [ -n "$rcpt" ]; then
+      # The same command handoff.sh runs.
+      blob=$(printf '%s' "$payload" | env -i PATH="${PATH-}" age -r "$rcpt" 2>/dev/null | base64 | tr -d '\n')
+      rc=$?
+      if [ "$rc" -ne 0 ] || [ -z "$blob" ]; then
+        rt="FAIL|age failed to encrypt to the recipient"
+      else
+        # base64: decodes (GNU and BSD spellings) and re-encodes to the same text.
+        if printf '%s' "$blob" | base64 -d >"$cs_tmp/blob.bin" 2>/dev/null || printf '%s' "$blob" | base64 -D >"$cs_tmp/blob.bin" 2>/dev/null; then
+          if [ "$(base64 <"$cs_tmp/blob.bin" | tr -d '\n')" = "$blob" ]; then
+            b64="PASS|the blob decodes and re-encodes to itself ($(wc -c <"$cs_tmp/blob.bin" | tr -d ' ') bytes)"
+          else
+            b64="FAIL|base64 does not round-trip the blob here"
+          fi
+        else
+          : >"$cs_tmp/blob.bin"
+          b64="FAIL|this base64 cannot decode the blob"
+        fi
+        v=$(cs_header "$cs_tmp/blob.bin")
+        if [ -z "$v" ]; then hdr="PASS|exactly one X25519 stanza"; else hdr="FAIL|$v"; fi
+        if [ "$have_keygen" = 1 ]; then
+          printf '%s' "$payload" >"$cs_tmp/expected"
+          if env -i PATH="${PATH-}" age -d -i "$cs_tmp/id.txt" <"$cs_tmp/blob.bin" >"$cs_tmp/decrypted" 2>/dev/null; then
+            if cmp -s "$cs_tmp/expected" "$cs_tmp/decrypted"; then
+              rt="PASS|encrypted and decrypted $(wc -c <"$cs_tmp/expected" | tr -d ' ') bytes of UTF-8, unchanged"
+            else
+              rt="FAIL|the decrypted bytes differ from what was encrypted"
+            fi
+          else
+            rt="FAIL|age could not decrypt what it had just encrypted"
+          fi
+        else
+          rt="INFO|encrypt-only: decrypt skipped (no age-keygen here, so no throwaway key); the blob's header and base64 are checked"
+        fi
+      fi
+    fi
+    [ -z "$rt" ] || cs_out "${rt%%|*}" "round trip" "${rt#*|}"
+    [ -z "$hdr" ] || cs_out "${hdr%%|*}" header "${hdr#*|}"
+    [ -z "$b64" ] || cs_out "${b64%%|*}" base64 "${b64#*|}"
+  fi
+
+  # The recipient file, if it's saved.
+  if [ "$probe_rc" = 0 ]; then
+    cs_out PASS recipient "$keyfile is a valid age X25519 recipient"
+  elif [ "$probe_info" = 1 ]; then
+    cs_out INFO recipient "$probe_msg"
+  else
+    cs_out FAIL recipient "${probe_msg:-the recipient check failed}"
+  fi
+  exit "$cs_failed"
+}
 
 # --- the agent's recipient, from handoff-NAME.age beside this script --------
 # The recipient is public: what matters is that it's the agent's (the user
@@ -146,7 +331,12 @@ age_version=$(env -i PATH="${PATH-}" age --version 2>/dev/null | head -n 1) || a
 src=${BASH_SOURCE[0]-}
 # Fed on stdin or through bash -c, the script has no path, so no directory to
 # find the file in (and the working directory isn't a stand-in for it).
-no_path() { echo "handoff.sh: save handoff.sh to a file and run that file: its recipient file is found beside it" >&2; exit 1; }
+nopath=0
+no_path() {
+  # --check-setup says so on its recipient line instead of stopping.
+  if [ "$mode" = check-setup ]; then nopath=1; return 0; fi
+  echo "handoff.sh: save handoff.sh to a file and run that file: its recipient file is found beside it" >&2; exit 1
+}
 [ -n "$src" ] || no_path
 case "$src" in
   */*) dir=${src%/*}; [ -n "$dir" ] || dir=/ ;;
@@ -160,6 +350,8 @@ cdir=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || cdir=
 while case "$cdir" in //*) true ;; *) false ;; esac; do cdir=${cdir#/}; done   # bash keeps a leading //
 case "$cdir" in /dev|/dev/fd|/proc/*/fd) no_path ;; esac
 keyfile=${dir%/}/handoff-$to.age
+
+[ "$mode" != check-setup ] || check_setup
 
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
 if [ ! -e "$keyfile" ]; then

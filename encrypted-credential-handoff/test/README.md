@@ -15,7 +15,7 @@ Known-answer vectors for the encrypted credential handoff reference protocol (RS
 - `blob-age-rage.txt` — the same payload made by rage; its header carries a `-grease` stanza, which the header check must accept.
 - `vectors/` — blobs the reader must refuse, base64 on one line unless noted: `scrypt.txt`, `two-x25519.txt`, `grease-only.txt`, `plugin-stanza.txt`, `pq-stanza.txt`, `ssh-stanza.txt`, `unknown-stanza.txt`, `armored-b64.txt`, and `armored-raw.txt` (the raw multi-line `age -a` text, not base64). The hand-built ones have no valid MAC; the header check refuses them before `age` runs.
 - `make-vectors.sh` — how each age vector was made, with the tool versions and the SHA-256 of each. The suite never runs it (age's output is random, so a re-run changes every blob).
-- `run-test.sh` — runs the full check against the reference implementation in this folder. `HANDOFF_TEST_AGE` and `HANDOFF_TEST_AGE_KEYGEN` name the `age` binaries to test against; `HANDOFF_TEST_ONLY="3b 5a"` runs only the named sections (`1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7`) and prints `ran: <ids>`.
+- `run-test.sh` — runs the full check against the reference implementation in this folder. `HANDOFF_TEST_AGE` and `HANDOFF_TEST_AGE_KEYGEN` name the `age` binaries to test against; `HANDOFF_TEST_ONLY="3b 5a"` runs only the named sections (`1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7 8`) and prints `ran: <ids>`.
 
 ## Using these vectors for a port or variant
 
