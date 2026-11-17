@@ -116,6 +116,36 @@ section() {
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# Portable forms: the suite also runs on macOS, with BSD tools.
+# stat_of FMT FILE prints %a (the mode, octal), %u (the owner's uid) or %i
+# (the inode): GNU's stat -c first, then BSD's stat -f, where the mode is %Lp
+# (as agent-setup.sh reads it).
+stat_of() {
+  local fmt=$1 bsd=$1
+  [ "$fmt" != %a ] || bsd=%Lp
+  stat -c "$fmt" -- "$2" 2>/dev/null || stat -f "$bsd" -- "$2"
+}
+# run_to_n SECS CMD... bounds a run that might hang: timeout (GNU coreutils),
+# else gtimeout (Homebrew's coreutils on macOS, which has no timeout), else
+# unbounded. A bounded run that times out exits 124. run_to is 60 seconds.
+run_to_n() {
+  local secs=$1; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"
+  else "$@"; fi
+}
+run_to() { run_to_n 60 "$@"; }
+# in_pty CMD... runs CMD under a pseudo-terminal from script(1), bounded,
+# stdin from /dev/null. BSD script (macOS): script -q FILE COMMAND...;
+# util-linux script: script -qec STRING FILE.
+in_pty() {
+  if [ "$(uname -s)" = Darwin ]; then
+    run_to_n 20 script -q /dev/null "$@" </dev/null
+  else
+    run_to_n 20 script -qec "$(printf '%q ' "$@")" /dev/null </dev/null
+  fi
+}
+
 # consume runs the helper. The key is whatever $HANDOFF_PRIVKEY is: the
 # suite exports the age identity (TMPKEY), and a test that names another key
 # sets it on the same line (HANDOFF_PRIVKEY=X consume ...), which reaches the
@@ -429,7 +459,7 @@ expect_refusal "handoff.sh payload one byte over the cap" 1 "payload is $(( max_
   bash "$S/hd/handoff.sh" <<<"$over"
 # One line of base64, no wrapping: checked here on GNU coreutils; BSD/macOS
 # base64 and Git Bash are CI's to check.
-[ "$(wc -l < "$S/blob-max" | tr -d ' ')" = 1 ] || fail "handoff.sh's output is not one line"
+[ "$(wc -l < "$S/blob-max")" -eq 1 ] || fail "handoff.sh's output is not one line"
 # A PEM-like private_key built with jq --rawfile and piped in (the documented
 # way to build one): its newlines survive the round trip.
 printf -- '-----BEGIN EXAMPLE KEY-----\nZmFrZSBrZXkgZm9yIHRlc3Rpbmc=\n-----END EXAMPLE KEY-----\n' >"$S/pem.txt"
@@ -500,8 +530,8 @@ want="recipient: $(cat handoff-test.age)"
 HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh >"$S/setup-out" 2>"$S/setup-err" \
   || { cat "$S/setup-err" >&2; fail "agent-setup.sh failed"; }
 ID="$S/agent/handoff-identity.txt"
-[ "$(stat -c %a "$ID")" = 600 ] || fail "new identity is not mode 600"
-[ "$(stat -c %a "$S/agent")" = 700 ] || fail "new key directory is not mode 700"
+[ "$(stat_of %a "$ID")" = 600 ] || fail "new identity is not mode 600"
+[ "$(stat_of %a "$S/agent")" = 700 ] || fail "new key directory is not mode 700"
 ! compgen -G "$S/agent/.handoff-*" >/dev/null || fail "first setup left a temporary file or directory"
 ! compgen -G "$S/agent/.handoff-*" >/dev/null || fail "first setup left a temporary file or directory"
 [ "$(grep -c '^AGE-SECRET-KEY-1' "$ID")" = 1 ] || fail "the new identity file doesn't hold exactly one secret key"
@@ -546,7 +576,7 @@ mkdir -p "$S/cdpath/rel2"
 # takes options only before the mode, as BSD's does.
 env POSIXLY_CORRECT=1 HANDOFF_KEY_DIR="$S/posix-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" \
   || fail "first setup failed with POSIX option parsing (BSD chmod): $(cat "$S/err")"
-[ "$(stat -c %a "$S/posix-setup")" = 700 ] && [ "$(stat -c %a "$S/posix-setup/handoff-identity.txt")" = 600 ] \
+[ "$(stat_of %a "$S/posix-setup")" = 700 ] && [ "$(stat_of %a "$S/posix-setup/handoff-identity.txt")" = 600 ] \
   || fail "first setup under POSIX option parsing left the wrong modes"
 # Refusals of --fingerprint / --public-key: what is not an owner-only age
 # identity, in the words consume.py uses.
@@ -711,13 +741,13 @@ fi
 # A key file over 16384 bytes is refused before it is read in full or parsed.
 head -c 20000 /dev/zero | tr '\0' 'A' > "$S/big-key.txt"; chmod 600 "$S/big-key.txt"
 expect_refusal "an oversized key file (consume.py)" 1 "over 16384" \
-  timeout 20 env HANDOFF_PRIVKEY="$S/big-key.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+  run_to_n 20 env HANDOFF_PRIVKEY="$S/big-key.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 expect_refusal "an oversized key file (agent-setup.sh --fingerprint)" 1 "over 16384 bytes" \
-  timeout 20 bash ../agent-setup.sh --fingerprint "$S/big-key.txt"
+  run_to_n 20 bash ../agent-setup.sh --fingerprint "$S/big-key.txt"
 # Under a terminal (a pseudo-terminal from script), an encrypted key still
 # isn't prompted for: no "Enter pass phrase", and no hang.
 if command -v script >/dev/null; then
-  out=$(HANDOFF_PRIVKEY="$S/enc-key.txt" timeout 20 script -qec "python3 ../consume.py --label example --check --blob-file blob-age.txt" /dev/null 2>&1) || true
+  out=$(in_pty env HANDOFF_PRIVKEY="$S/enc-key.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt 2>&1) || true
   case "$out" in
     *"Enter pass phrase"*) fail "the helper prompted for a key passphrase on a terminal" ;;
     *"an RSA key from 0.1.0"*) echo "ok (refused: an encrypted 0.1.0 key under a terminal, no prompt)" ;;
@@ -738,8 +768,8 @@ other_owner=""
 if [ "$(id -u)" != 0 ]; then
   for f in "${HANDOFF_TEST_OTHER_OWNER_KEY-}" /etc/shadow /etc/gshadow; do
     if [ -z "$f" ] || [ ! -f "$f" ]; then continue; fi
-    [ "$(stat -c %u "$f")" != "$(id -u)" ] || continue
-    case "$(stat -c %a "$f")" in 0|[0-7]00) other_owner=$f; break ;; esac
+    [ "$(stat_of %u "$f")" != "$(id -u)" ] || continue
+    case "$(stat_of %a "$f")" in 0|[0-7]00) other_owner=$f; break ;; esac
   done
 fi
 if [ -n "$other_owner" ]; then
@@ -917,7 +947,7 @@ mkfifo "$S/probe.fifo"
 ( exec 3>"$S/probe.fifo"; touch "$S/fifo-released" ) &
 writer=$!
 expect_refusal "blob file is a FIFO with a writer waiting" 1 "is not a regular file" \
-  timeout 20 python3 ../consume.py --label example --check --blob-file "$S/probe.fifo"
+  run_to_n 20 python3 ../consume.py --label example --check --blob-file "$S/probe.fifo"
 sleep 0.3
 released=no; [ ! -e "$S/fifo-released" ] || released=yes
 kill "$writer" 2>/dev/null || true; wait "$writer" 2>/dev/null || true
@@ -927,7 +957,7 @@ kill "$writer" 2>/dev/null || true; wait "$writer" 2>/dev/null || true
 # refused, without hanging (O_NONBLOCK).
 mkfifo "$S/swap.fifo"
 expect_refusal "blob file swapped to a FIFO after the stat check" 1 "is not a regular file" \
-  timeout 20 python3 -I -c '
+  run_to_n 20 python3 -I -c '
 import os, sys
 regular, fifo = sys.argv[1], sys.argv[2]
 real_stat = os.stat
@@ -958,7 +988,7 @@ exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
 # controlling terminal (which /dev/tty would then open).
 if setsid -w true 2>/dev/null && [ -e /dev/ptmx ]; then
   expect_refusal "blob file swapped to a terminal after the stat check" 1 "is not a regular file" \
-    timeout 20 setsid -w python3 -I -c '
+    run_to_n 20 setsid -w python3 -I -c '
 import atexit, os, pty, sys
 regular = sys.argv[1]
 master, slave = pty.openpty()
@@ -1001,7 +1031,7 @@ fi
 # A FIFO with no writer is refused, not waited on (timeout catches a hang).
 mkfifo "$S/blob.fifo"
 expect_refusal "blob file is a FIFO" 1 "is not a regular file" \
-  timeout 20 python3 ../consume.py --label example --check --blob-file "$S/blob.fifo"
+  run_to_n 20 python3 ../consume.py --label example --check --blob-file "$S/blob.fifo"
 expect_refusal "agent-setup.sh re-run over an existing key" 1 "refusing to overwrite existing key" \
   env HANDOFF_KEY_DIR="$S/agent" bash ../agent-setup.sh
 # Its hint says a cut-short setup's key is shown with --public-key, and
@@ -1317,8 +1347,17 @@ done
 rm -rf "$S/hn/"handoff?muse.age* "$S/hn/"handoff?Muse.age* "$S/hn/"HANDOFF?MUSE.age*
 # Only NAME's case differs: the hint suggests the other --to, not a rename.
 cp handoff-test.age "$S/hn/handoff-muse.age"
-expect_refusal "handoff.sh --to Muse with handoff-muse.age beside it" 1 "but handoff-muse.age does. Names are case-sensitive: did you mean --to muse?" \
-  bash "$S/hn/handoff.sh" --to Muse --fingerprint
+if [ -e "$S/hn/HANDOFF-MUSE.AGE" ]; then
+  # A case-insensitive file system (macOS's APFS by default): --to Muse
+  # opens handoff-muse.age, as run-test.ps1 expects on Windows.
+  out=$(bash "$S/hn/handoff.sh" --to Muse --fingerprint 2>"$S/err") \
+    || { cat "$S/err" >&2; fail "--to Muse on a case-insensitive file system was refused"; }
+  [ "$out" = "recipient: $(cat handoff-test.age)" ] || fail "--to Muse on a case-insensitive file system: $out"
+  echo "ok (--to Muse opens handoff-muse.age here: a case-insensitive file system)"
+else
+  expect_refusal "handoff.sh --to Muse with handoff-muse.age beside it" 1 "but handoff-muse.age does. Names are case-sensitive: did you mean --to muse?" \
+    bash "$S/hn/handoff.sh" --to Muse --fingerprint
+fi
 rm -f "$S/hn/handoff-muse.age"
 # With the allow-list, a near-miss name can only be a case or separator
 # variant of handoff-NAME.age: a newline in place of the - isn't offered.
@@ -1457,11 +1496,7 @@ refused_before_prompt() { # DESC MESSAGE ENV... (the command runs handoff.sh)
   expect_refusal "$desc" 1 "$msg" env "$@" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
   ! grep -q 'Paste or type' "$S/err" || fail "$desc: a prompt came before the refusal"
   if command -v script >/dev/null; then
-    if [ "$(uname -s)" = Darwin ]; then   # BSD script: script -q FILE COMMAND...
-      out=$(timeout 20 script -q /dev/null env "$@" "$BASH_BIN" "$K/handoff.sh" </dev/null 2>&1) || true
-    else   # util-linux script: script -qec STRING FILE
-      out=$(timeout 20 script -qec "$(printf '%q ' env "$@" "$BASH_BIN" "$K/handoff.sh")" /dev/null </dev/null 2>&1) || true
-    fi
+    out=$(in_pty env "$@" "$BASH_BIN" "$K/handoff.sh" 2>&1) || true
     printf '%s' "$out" | grep -qF -- "$msg" || fail "$desc (terminal): no refusal: $out"
     ! printf '%s' "$out" | grep -q 'Paste or type' || fail "$desc (terminal): a prompt came before the refusal"
   fi
@@ -1514,7 +1549,7 @@ chmod 755 "$S/badage/age"
 expect_refusal "handoff.sh with an age that rejects the recipient" 1 "is not a valid age recipient: age v9.9.9-test did not accept it" \
   env PATH="$S/badage:$PATH" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
 # shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
-printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\n[ "$(wc -c)" = 0 ]\n' >"$S/badage/age"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\n[ "$(wc -c)" -eq 0 ]\n' >"$S/badage/age"
 expect_refusal "handoff.sh with an age that fails to encrypt" 1 "age failed to encrypt (age v9.9.9-test)" \
   env PATH="$S/badage:$PATH" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
 echo "ok"
@@ -1537,7 +1572,7 @@ old_rcpt=$("$AGE_KEYGEN" -y "$TMPKEY")
 rk bash ../agent-setup.sh --rotate >"$R/rot-out" 2>"$R/rot-err" || { cat "$R/rot-err" >&2; fail "--rotate failed"; }
 new_rcpt=$("$AGE_KEYGEN" -y "$KEY")
 [ -f "$KEY" ] && [ ! -L "$KEY" ] && [ -f "$KEY.previous" ] && [ ! -L "$KEY.previous" ] || fail "the rotated keys are not regular files"
-[ "$(stat -c %a "$KEY")" = 600 ] && [ "$(stat -c %a "$KEY.previous")" = 600 ] || fail "--rotate left a key that is not mode 600"
+[ "$(stat_of %a "$KEY")" = 600 ] && [ "$(stat_of %a "$KEY.previous")" = 600 ] || fail "--rotate left a key that is not mode 600"
 [ "$new_rcpt" != "$old_rcpt" ] || fail "--rotate kept the old key as the current one"
 ! compgen -G "$R/.handoff-*" >/dev/null || fail "--rotate left a temporary file or directory"
 ! compgen -G "$R/.handoff-*" >/dev/null || fail "--rotate left a temporary file or directory"
@@ -1584,7 +1619,7 @@ rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" >"$R
   || fail "--rewrap failed: $(cat "$R/err")"
 grep -qxF "consume.py: rewrapped '$ST/new.txt' to the current key $R/k.txt; the blob was for the previous key ($R/k.txt.previous)" "$R/err" || fail "--rewrap didn't say the blob was for the previous key, naming both: $(cat "$R/err")"
 [ ! -s "$R/out" ] || fail "--rewrap printed to stdout"
-if [ "$(wc -l < "$ST/new.txt")" != 1 ] || ! grep -qxE '[A-Za-z0-9+/]+={0,2}' "$ST/new.txt" \
+if [ "$(wc -l < "$ST/new.txt")" -ne 1 ] || ! grep -qxE '[A-Za-z0-9+/]+={0,2}' "$ST/new.txt" \
     || [ "$(base64 -d "$ST/new.txt" | head -c 21)" != "age-encryption.org/v1" ]; then
   fail "--rewrap wrote something other than one blob"
 fi
@@ -1614,7 +1649,7 @@ cmp -s "$ST/new.txt" "$ST/new2.txt" || fail "--rewrap rewrote a blob already for
 # The blob file keeps its mode; a group- or world-writable one is refused.
 cp blob-age.txt "$ST/mode.txt"; chmod 640 "$ST/mode.txt"
 rk python3 ../consume.py --label example --rewrap --blob-file "$ST/mode.txt" 2>/dev/null || fail "--rewrap of a 0640 file failed"
-[ "$(stat -c %a "$ST/mode.txt")" = 640 ] || fail "--rewrap changed its blob file's mode"
+[ "$(stat_of %a "$ST/mode.txt")" = 640 ] || fail "--rewrap changed its blob file's mode"
 cp blob-age.txt "$ST/gw.txt"; chmod 660 "$ST/gw.txt"
 expect_refusal "--rewrap of a group-writable blob file" 1 "is writable by others (mode 660); stop and report it to the user, who runs: chmod go-w '$ST/gw.txt'" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gw.txt"
@@ -1982,7 +2017,7 @@ rm -r "$R/beside.txt" "$R/sub" "$ST/s" "$ST/to-beside.txt"
 # loosened the mode, or dropped the comment lines, would pass a recipient check).
 cmp -s "$KEY" "$S/keybefore/current" || fail "a refused --rewrap changed the current identity file"
 cmp -s "$KEY.previous" "$S/keybefore/previous" || fail "a refused --rewrap changed the previous identity file"
-[ "$(stat -c %a "$KEY")" = 600 ] && [ "$(stat -c %a "$KEY.previous")" = 600 ] || fail "a refused --rewrap changed an identity file's mode"
+[ "$(stat_of %a "$KEY")" = 600 ] && [ "$(stat_of %a "$KEY.previous")" = 600 ] || fail "a refused --rewrap changed an identity file's mode"
 [ "$("$AGE_KEYGEN" -y "$KEY")" = "$new_rcpt" ] || fail "a refused --rewrap damaged the key"
 # --rewrap runs only during a rotation, at the key the wrappers use: with no
 # previous key, or pointed at the previous key itself, it refuses.
@@ -2357,7 +2392,7 @@ grep -qF "removed a temporary key a killed (or concurrent) setup left behind" "$
 # --rotate under POSIX option parsing (as BSD chmod parses): chmod -- MODE.
 rk env POSIXLY_CORRECT=1 bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" \
   || fail "--rotate failed with POSIX option parsing (BSD chmod): $(cat "$R/err")"
-[ "$(stat -c %a "$KEY")" = 600 ] && [ -f "$KEY.previous" ] || fail "--rotate under POSIX option parsing left the wrong state"
+[ "$(stat_of %a "$KEY")" = 600 ] && [ -f "$KEY.previous" ] || fail "--rotate under POSIX option parsing left the wrong state"
 # --retire also removes a temporary file that is another link to the old key
 # (a setup killed between its ln and its cleanup): its data doesn't survive.
 ln "$KEY.previous" "$R/.handoff-new.Linked"
@@ -2417,7 +2452,7 @@ rc=0; env HANDOFF_PRIVKEY="$qk" bash ../agent-setup.sh --retire >/dev/null 2>"$S
 hint=$(sed -n 's/.*finds the other name with: \(find .* -samefile .*\) (or, where.*/\1/p' "$S/qerr")
 got=$(cd "$S" && sh -c "find() { printf '%s\n' \"\$4\"; }; $hint")
 [ "$got" = "$(cd "$S" && pwd -P)/q'; touch PWNED; echo '/k.txt.previous" ] && [ ! -e "$S/PWNED" ] || fail "the find hint's path isn't quoted: $hint"
-grep -qF -- "-xdev -inum $(stat -c %i -- "$qk.previous")" "$S/qerr" || fail "the find hint has no -inum form with the key's inode"
+grep -qF -- "-xdev -inum $(stat_of %i "$qk.previous")" "$S/qerr" || fail "the find hint has no -inum form with the key's inode"
 rm -rf "$S/q'; touch PWNED; echo '" "$S/qbackup.txt"
 # A key path with a newline in it: the -inum form takes one line of digits,
 # and nothing after the newline becomes a line of its own.
@@ -2554,12 +2589,6 @@ mkpath() {
 }
 # sha256 of a file: GNU's tool, else macOS's.
 sha() { sha256sum "$@" 2>/dev/null || shasum -a 256 "$@"; }
-# A bound on a run that might hang: GNU timeout where there is one.
-run_to() {
-  if command -v timeout >/dev/null 2>&1; then timeout 60 "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then gtimeout 60 "$@"
-  else "$@"; fi
-}
 BASE_TOOLS="sleep sh tail awk base64 tr cmp sed head cat rm mkdir mktemp chmod env dirname grep uname wc ls id stat sort cut od"
 # shellcheck disable=SC2086  # a deliberate word list
 mkpath "$C8/p-all" $BASE_TOOLS bash jq
@@ -2574,7 +2603,7 @@ for n in bash age age-keygen jq "jq rawfile" "round trip" header base64 recipien
   has "handoff.sh --check-setup" "PASS $n: "
 done
 hasnt "handoff.sh --check-setup" "(FAIL|INFO) "
-[ "$(wc -l <"$C8/out")" = 9 ] || { cat "$C8/out" >&2; fail "handoff.sh --check-setup: not nine lines"; }
+[ "$(wc -l <"$C8/out")" -eq 9 ] || { cat "$C8/out" >&2; fail "handoff.sh --check-setup: not nine lines"; }
 [ ! -s "$C8/err" ] || { cat "$C8/err" >&2; fail "handoff.sh --check-setup wrote to stderr"; }
 echo "ok (handoff.sh --check-setup)"
 
