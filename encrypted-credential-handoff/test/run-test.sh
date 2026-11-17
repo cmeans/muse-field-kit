@@ -650,6 +650,10 @@ expect_refusal "a symlinked KEY" 1 "is a symbolic link" \
 cp test-dummy-identity.txt "$S/loose.txt"; chmod 644 "$S/loose.txt"
 expect_refusal "a group/other-readable identity" 1 "is mode 644; it must be owner-only (0600)" \
   bash ../agent-setup.sh --fingerprint "$S/loose.txt"
+# Group-readable only (0640): every group and other bit counts, not only other's.
+chmod 640 "$S/loose.txt"
+expect_refusal "a group-readable identity (0640, agent-setup.sh)" 1 "is mode 640; it must be owner-only (0600)" \
+  bash ../agent-setup.sh --fingerprint "$S/loose.txt"
 # The key file is read once, bounded: MAX_KEY_BYTES (padded with comment
 # lines) is read, one byte more is refused, and a FIFO at the key path is
 # refused without waiting for a writer.
@@ -1280,6 +1284,9 @@ expect_refusal "the age version is reported" 1 "age v9.9.9-test" \
 # Identity-file checks. Each file is owner-only unless the test says otherwise.
 cp test-dummy-identity.txt "$S/loose.txt"; chmod 644 "$S/loose.txt"
 expect_refusal "group/other-readable identity" 1 "must be owner-only" \
+  env HANDOFF_PRIVKEY="$S/loose.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+chmod 640 "$S/loose.txt"
+expect_refusal "a group-readable identity (0640, consume.py)" 1 "is mode 640; it must be owner-only (0600)" \
   env HANDOFF_PRIVKEY="$S/loose.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 ln -sf "$TMPKEY" "$S/id-link.txt"
 expect_refusal "a symlinked identity" 1 "is a symbolic link" \
