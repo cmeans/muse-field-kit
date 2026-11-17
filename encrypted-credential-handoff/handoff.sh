@@ -485,9 +485,11 @@ bad_json() { echo "handoff.sh: input must be a single JSON object with a string 
 printf '%s' "$SECRET_JSON" | jq -Rjs . 2>/dev/null | cmp -s - <(printf '%s' "$SECRET_JSON") || bad_json
 # Exactly one JSON value, an object, carrying a non-empty string "svc"
 # and only string values: `jq -e .` alone also accepts arrays, bare
-# strings, and several concatenated values, and a payload that fails the
-# consume side's binding or shape checks should fail here, early, where
-# the human can see why.
+# strings, and several concatenated values. With the checks below, this
+# refuses every payload consume.py would refuse for its shape or fields
+# (not UTF-8, a lone surrogate, no "svc", a value that isn't a string, a
+# NUL, an empty credential field, no known credential field), here, early,
+# where the human can see why; only the label match is left to consume.py.
 printf '%s' "$SECRET_JSON" | jq -e -s \
   'length==1 and (.[0]|type)=="object"
    and (.[0].svc|type)=="string" and (.[0].svc|length)>0
@@ -508,6 +510,27 @@ case "$sj" in
   *"$bs"u[dD][89abcdefABCDEF]$hx$hx*) sj=; bad_json ;;
 esac
 sj=
+# The fields consume.py refuses (its check_payload), on the values jq has
+# parsed (a repeated key counts the last one, as in consume.py): a NUL in any
+# value (\u0000; consume.py refuses one in a credential field, and a NUL
+# can't go into an environment variable), an empty credential field, and no
+# credential field at all. KNOWN_FIELDS is consume.py's DEFAULT_ENV_MAP's
+# keys, and handoff.ps1's $KnownFields; run-test.sh checks all three agree.
+# jq prints only one of four fixed words, never anything from the payload.
+KNOWN_FIELDS='username password api_key_id api_key_secret token_id token_secret private_key app_id installation_id'
+fields=$(printf '%s' "$SECRET_JSON" | jq -r -s --arg known "$KNOWN_FIELDS" \
+  '.[0] as $p | ($known | split(" ")) as $k
+   | if any($p[]; any(explode[]; . == 0)) then "nul"
+     elif any($k[]; . as $f | $p[$f] == "") then "empty"
+     elif any($k[]; . as $f | $p | has($f)) then "ok"
+     else "none" end' 2>/dev/null) || fields=
+case "$fields" in
+  ok) ;;
+  nul) printf '%s\n' 'handoff.sh: a value contains a NUL character (\u0000), aborting' >&2; exit 1 ;;
+  empty) echo "handoff.sh: a credential field is empty, aborting" >&2; exit 1 ;;
+  none) echo "handoff.sh: no known credential field (one of: ${KNOWN_FIELDS// /, }), aborting" >&2; exit 1 ;;
+  *) bad_json ;;
+esac
 
 # The cap (MAX_PAYLOAD, above) keeps the blob within consume.py's limit.
 # $(( )) drops the padding BSD wc (macOS) puts before the count.

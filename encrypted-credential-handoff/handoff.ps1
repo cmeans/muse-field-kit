@@ -96,6 +96,8 @@ begin {
   # the largest payload, in bytes, handed to age (handoff.sh has the arithmetic:
   # MAX_BLOB_FILE / 4 * 3 - 168 - 32 - 256 = 48696);
   $MAX_PAYLOAD = 48696
+  # the credential fields: consume.py's DEFAULT_ENV_MAP's keys, in its order;
+  $KNOWN_FIELDS = 'username password api_key_id api_key_secret token_id token_secret private_key app_id installation_id'
   # an X25519 recipient exactly: age1 and 58 lowercase bech32 characters. \z,
   # not $, which .NET also matches before a final newline.
   $RECIPIENT_RE = '^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}\z'
@@ -643,9 +645,12 @@ end {
 
   # --- validate ---------------------------------------------------------
   # Exactly one JSON value, an object, carrying a non-empty string "svc" and
-  # only string values (handoff.sh's jq filter): a payload that fails the
-  # consume side's binding or shape checks should fail here, early, where the
-  # human can see why.
+  # only string values (handoff.sh's jq filter), then the fields consume.py
+  # refuses (its check_payload; handoff.sh's second jq filter): a NUL in any
+  # value, an empty credential field, no known credential field. With the
+  # strict UTF-8 below, this refuses every payload consume.py would refuse for
+  # its shape or fields, here, early, where the human can see why; only the
+  # label match is left to consume.py.
   #
   # One hand-written check, the same on 5.1 and 7, and no cmdlet ever gets the
   # plaintext: 5.1's Module Logging records cmdlet parameters in the event log,
@@ -656,6 +661,8 @@ end {
   # characters and only the standard escapes; surrogates only in pairs. As in
   # jq, a repeated "svc" counts the last one, and keys that differ only in case
   # are different keys. It only checks: age gets the input's own bytes.
+  # Returns $null for a payload that passes, else the refusal (fixed text,
+  # nothing from the payload).
   function Test-Payload([string]$s) {
     $ws = New-Object System.Text.RegularExpressions.Regex '\G[ \t\r\n]*'
     # A string token. Atomic, so a long string that fails can't backtrack.
@@ -685,35 +692,44 @@ end {
     }
     $n = $s.Length
     $i = $ws.Match($s, 0).Length
-    if ($i -ge $n -or $s[$i] -cne '{') { return $false }
+    if ($i -ge $n -or $s[$i] -cne '{') { return $jsonMsg }
     $i = $i + 1
     $i = $i + $ws.Match($s, $i).Length
     $svc = $null
+    $vals = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
     while ($true) {
       $k = $str.Match($s, $i)
-      if (-not $k.Success) { return $false }   # also {} and a trailing comma
+      if (-not $k.Success) { return $jsonMsg }   # also {} and a trailing comma
       $i = $i + $k.Length
       $i = $i + $ws.Match($s, $i).Length
-      if ($i -ge $n -or $s[$i] -cne ':') { return $false }
+      if ($i -ge $n -or $s[$i] -cne ':') { return $jsonMsg }
       $i = $i + 1
       $i = $i + $ws.Match($s, $i).Length
       $v = $str.Match($s, $i)
-      if (-not $v.Success) { return $false }   # any value that isn't a string
+      if (-not $v.Success) { return $jsonMsg }   # any value that isn't a string
       $i = $i + $v.Length
       $key = Get-TokenText $k.Value
       $val = Get-TokenText $v.Value
-      if ($null -eq $key -or $null -eq $val) { return $false }
+      if ($null -eq $key -or $null -eq $val) { return $jsonMsg }
       if ($key -ceq 'svc') { $svc = $val }
+      $vals[$key] = $val
       $i = $i + $ws.Match($s, $i).Length
-      if ($i -ge $n) { return $false }
+      if ($i -ge $n) { return $jsonMsg }
       if ($s[$i] -ceq ',') { $i = $i + 1; $i = $i + $ws.Match($s, $i).Length; continue }
       if ($s[$i] -ceq '}') { $i = $i + 1; break }
-      return $false
+      return $jsonMsg
     }
     $i = $i + $ws.Match($s, $i).Length
-    return ($i -eq $n -and $null -ne $svc -and $svc.Length -gt 0)   # nothing after the object
+    if ($i -ne $n -or $null -eq $svc -or $svc.Length -eq 0) { return $jsonMsg }   # nothing after the object
+    # The values as consume.py sees them: a repeated key counts the last one.
+    $known = $KNOWN_FIELDS.Split(' ')
+    foreach ($v in $vals.Values) { if ($v.IndexOf([char]0) -ge 0) { return 'a value contains a NUL character (\u0000), aborting' } }
+    foreach ($f in $known) { if ($vals.ContainsKey($f) -and $vals[$f].Length -eq 0) { return 'a credential field is empty, aborting' } }
+    foreach ($f in $known) { if ($vals.ContainsKey($f)) { return $null } }
+    return "no known credential field (one of: $($KNOWN_FIELDS.Replace(' ', ', '))), aborting"
   }
-  if (-not (Test-Payload $secret)) { Stop-Run $jsonMsg }
+  $refusal = Test-Payload $secret
+  if ($null -ne $refusal) { Stop-Run $refusal }
 
   $bytes = $null
   try { $bytes = $strict.GetBytes($secret) } catch { Stop-Run $jsonMsg }   # a lone surrogate

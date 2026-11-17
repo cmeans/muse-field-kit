@@ -435,6 +435,13 @@ max_blob=$(sed -n 's/^MAX_BLOB_FILE = \([0-9]*\).*/\1/p' ../consume.py)
 # shellcheck disable=SC2017  # integer arithmetic exactly as consume.py computes it
 [ "$max_payload" = "$(( max_blob / 4 * 3 - 168 - 32 - 256 ))" ] \
   || fail "MAX_PAYLOAD ($max_payload) is not MAX_BLOB_FILE ($max_blob) / 4 * 3 - 168 - 32 - 256"
+# handoff.sh's KNOWN_FIELDS, the fields it requires one of, is consume.py's
+# DEFAULT_ENV_MAP's keys in order (run-test.ps1 checks handoff.ps1's against it).
+known_sh=$(sed -n "s/^KNOWN_FIELDS='\(.*\)'\$/\1/p" ../handoff.sh)
+known_py=$(python3 -B -c 'import sys; sys.path.insert(0, ".."); import consume; print(" ".join(consume.DEFAULT_ENV_MAP))')
+[ -n "$known_sh" ] || fail "test setup: KNOWN_FIELDS not found in handoff.sh"
+[ "$known_sh" = "$known_py" ] || fail "handoff.sh's KNOWN_FIELDS ($known_sh) is not consume.py's DEFAULT_ENV_MAP ($known_py)"
+echo "ok (handoff.sh's KNOWN_FIELDS is consume.py's DEFAULT_ENV_MAP)"
 # JSON of exactly $1 bytes, a svc and one private_key value.
 pad() {
   python3 -c 'import json, sys; n = int(sys.argv[1]); head = json.dumps({"svc": "example", "private_key": ""}, separators=(",", ":")); sys.stdout.write(head[:-2] + "y" * (n - len(head)) + head[-2:])' "$1"

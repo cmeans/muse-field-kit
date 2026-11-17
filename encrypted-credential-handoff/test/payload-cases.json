@@ -66,6 +66,30 @@
   "stderr_contains": "recipient: age1"
  },
  {
+  "name": "emptyunknown",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"note\":\"\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "knownpair",
+  "payload": "{\"svc\":\"example\",\"token_id\":\"t-1\",\"token_secret\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "nullastwins",
+  "payload": "{\"svc\":\"example\",\"password\":\"a\\u0000b\",\"password\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "emptylastwins",
+  "payload": "{\"svc\":\"example\",\"password\":\"\",\"password\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
   "name": "notjson",
   "payload": "mk-Zq9 not json",
   "exit": 1,
@@ -280,6 +304,60 @@
   "payload": "{\"svc\":\"example\",\"\\udfff\":\"mk-Zq9\"}",
   "exit": 1,
   "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "nulvalue",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk\\u0000Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "a value contains a NUL character (\\u0000), aborting"
+ },
+ {
+  "name": "nulunknown",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"note\":\"a\\u0000b\"}",
+  "exit": 1,
+  "stderr_contains": "a value contains a NUL character (\\u0000), aborting"
+ },
+ {
+  "name": "nulsvc",
+  "payload": "{\"svc\":\"example\\u0000\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "a value contains a NUL character (\\u0000), aborting"
+ },
+ {
+  "name": "emptyknown",
+  "payload": "{\"svc\":\"example\",\"username\":\"\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "a credential field is empty, aborting"
+ },
+ {
+  "name": "emptyknownonly",
+  "payload": "{\"svc\":\"example\",\"installation_id\":\"\"}",
+  "exit": 1,
+  "stderr_contains": "a credential field is empty, aborting"
+ },
+ {
+  "name": "emptylast",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"password\":\"\"}",
+  "exit": 1,
+  "stderr_contains": "a credential field is empty, aborting"
+ },
+ {
+  "name": "noknown",
+  "payload": "{\"svc\":\"example\",\"note\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "no known credential field (one of: username, password, api_key_id, api_key_secret, token_id, token_secret, private_key, app_id, installation_id), aborting"
+ },
+ {
+  "name": "svconly",
+  "payload": "{\"svc\":\"example\"}",
+  "exit": 1,
+  "stderr_contains": "no known credential field (one of: username, password, api_key_id, api_key_secret, token_id, token_secret, private_key, app_id, installation_id), aborting"
+ },
+ {
+  "name": "knowncase",
+  "payload": "{\"svc\":\"example\",\"Password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "no known credential field (one of: username, password, api_key_id, api_key_secret, token_id, token_secret, private_key, app_id, installation_id), aborting"
  },
  {
   "name": "empty",
