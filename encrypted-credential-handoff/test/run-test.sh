@@ -689,7 +689,7 @@ expect_refusal "arbitrary text as KEY" 1 "is not an age identity file" \
 sed '$s/.$/Q/' "$TMPKEY" >"$S/id-badsum.txt"
 cmp -s "$TMPKEY" "$S/id-badsum.txt" && sed '$s/.$/P/' "$TMPKEY" >"$S/id-badsum.txt"
 chmod 600 "$S/id-badsum.txt"
-expect_refusal "an identity with a damaged checksum" 1 "cannot load the age identity at '$S/id-badsum.txt'" \
+expect_refusal "an identity with a damaged checksum" 1 "cannot load the age identity at $S/id-badsum.txt" \
   bash ../agent-setup.sh --fingerprint "$S/id-badsum.txt"
 printf '\000\001\002' >"$S/id-nul.txt"; chmod 600 "$S/id-nul.txt"
 expect_refusal "a binary file as KEY" 1 "is not an age identity file" \
@@ -1834,15 +1834,15 @@ expect_refusal "a blob for neither key" 1 "decryption failed with the current ke
 ! grep -q "no identity matched" "$S/err" || fail "the two-key refusal shows age's reason"
 # The previous key is held to the current key's rules.
 chmod 644 "$KEY.previous"
-expect_refusal "a group-readable previous key" 1 "k.txt.previous is mode 644" \
+expect_refusal "a group-readable previous key" 1 "k.txt.previous' is mode 644" \
   rk python3 ../consume.py --label example --check --blob-file blob-age.txt
 chmod 600 "$KEY.previous"
 mv "$KEY.previous" "$R/held.txt"; ln -s "$S/other-id.txt" "$KEY.previous"
-expect_refusal "a symlinked previous key" 1 "k.txt.previous is a symbolic link" \
+expect_refusal "a symlinked previous key" 1 "k.txt.previous' is a symbolic link" \
   rk python3 ../consume.py --label example --check --blob-file blob-age.txt
 rm "$KEY.previous"
 cp "$RSAKEY" "$KEY.previous"
-expect_refusal "an RSA key as the previous key" 1 "k.txt.previous is an RSA key from 0.1.0" \
+expect_refusal "an RSA key as the previous key" 1 "k.txt.previous' is an RSA key from 0.1.0" \
   rk python3 ../consume.py --label example --check --blob-file blob-age.txt
 rm "$KEY.previous"; mv "$R/held.txt" "$KEY.previous"
 # A blob the current key opens never reaches the previous key: a broken
@@ -2397,7 +2397,7 @@ expect_refusal "first setup whose age-keygen writes a short file" 1 "nothing was
 # An age-keygen -y that fails is "cannot load", whatever the file holds.
 # shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/noy" 'for a; do [ "$a" = -y ] && exit 1; done'
-expect_refusal "--fingerprint whose age-keygen -y fails" 1 "cannot load the age identity at '$KEY'" \
+expect_refusal "--fingerprint whose age-keygen -y fails" 1 "cannot load the age identity at $KEY" \
   rk env PATH="$S/noy:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
 ! grep -q "is not an age identity" "$S/err" || fail "a failing age-keygen -y was reported as another kind of file"
 # A copied (not hard-linked) .previous holding the current key resumes and
