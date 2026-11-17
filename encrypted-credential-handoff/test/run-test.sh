@@ -93,6 +93,21 @@ echo "jq: $(jq --version 2>&1)"
 # HANDOFF_TEST_ONLY="3b 5a" runs only those sections (ids as in the
 # "== ID." headings: 1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7 8) and prints
 # "ran: <ids>" at the end; unset runs everything.
+KNOWN_IDS="1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7 8"
+# A misspelled or unknown id would otherwise select nothing and still print
+# ALL INTEROP CHECKS PASSED: refuse it, and an empty selection.
+if [ -n "${HANDOFF_TEST_ONLY+set}" ]; then
+  n_ids=0
+  # shellcheck disable=SC2086  # word splitting of the id list is the point
+  for id in $HANDOFF_TEST_ONLY; do
+    n_ids=$((n_ids + 1))
+    case " $KNOWN_IDS " in
+      *" $id "*) ;;
+      *) echo "FAIL: HANDOFF_TEST_ONLY names an unknown section '$id' (known: $KNOWN_IDS)" >&2; exit 1 ;;
+    esac
+  done
+  [ "$n_ids" -gt 0 ] || { echo "FAIL: HANDOFF_TEST_ONLY is set but names no section (known: $KNOWN_IDS)" >&2; exit 1; }
+fi
 RAN=
 section() {
   [ -z "${HANDOFF_TEST_ONLY-}" ] || [[ " $HANDOFF_TEST_ONLY " == *" $1 "* ]] || return 1
@@ -373,6 +388,8 @@ if [ -r /proc/self/status ]; then
   mask=$((16#$ign))
   [ $(( (mask >> 12) & 1 )) = 0 ] && [ $(( (mask >> 24) & 1 )) = 0 ] \
     || fail "the command inherited SIGPIPE or SIGXFSZ ignored (SigIgn $ign)"
+elif [ "$(uname -s)" = Darwin ]; then
+  echo "n/a on this OS: signal dispositions via /proc (macOS has no /proc)"
 else
   echo "skip: no /proc, signal dispositions not checked"
 fi
@@ -976,6 +993,8 @@ sys.argv = ["consume.py", "--label", "example", "--check", "--blob-file", tty]
 src = open("../consume.py").read()
 exec(compile(src, "consume.py", "exec"), {"__name__": "__main__"})
 ' blob-age.txt
+elif [ "$(uname -s)" = Darwin ]; then
+  echo "n/a on this OS: the O_NOCTTY check (macOS has no setsid(1))"
 else
   echo "skip: setsid -w (util-linux) or /dev/ptmx missing, the O_NOCTTY check didn't run"
 fi
@@ -1270,6 +1289,8 @@ if [ -d /dev/shm ] && [ -w /dev/shm ]; then
   cp ../handoff.sh "$SH/handoff.sh"; cp handoff-test.age "$SH/handoff-muse.age"
   [ "$(bash "$SH/handoff.sh" --fingerprint 2>/dev/null)" = "$want" ] || { rm -rf "$SH"; fail "handoff.sh refused to run from /dev/shm"; }
   rm -rf "$SH"
+elif [ "$(uname -s)" = Darwin ]; then
+  echo "n/a on this OS: handoff.sh's run from /dev/shm (macOS has no /dev/shm)"
 else
   echo "skip: no writable /dev/shm, handoff.sh's run from it not tested"
 fi
@@ -2865,5 +2886,6 @@ echo "ok (agent-setup.sh: no temporary directory left after INT or TERM)"
 echo "ok"
 fi
 
+[ -n "$RAN" ] || fail "no section ran"
 [ -z "${HANDOFF_TEST_ONLY-}" ] || echo "ran: $RAN"
 echo "ALL INTEROP CHECKS PASSED"
