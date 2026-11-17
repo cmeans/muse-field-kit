@@ -642,8 +642,13 @@ mkdir -p "$S/cdpath/rel2"
   || fail "agent-setup.sh with HANDOFF_KEY_DIR=- failed"
 [ -f "$S/cwd/-/handoff-identity.txt" ] || fail "HANDOFF_KEY_DIR=- didn't make the key in ./-"
 # chmod with -- before the mode, as BSD chmod needs: GNU chmod in POSIX mode
-# takes options only before the mode, as BSD's does.
-env POSIXLY_CORRECT=1 HANDOFF_KEY_DIR="$S/posix-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" \
+# takes options only before the mode, as BSD's does. agent-setup.sh leaves
+# bash's POSIX mode first, which also unsets POSIXLY_CORRECT, so the variable
+# goes to chmod itself, through a shim on PATH (a no-op for BSD chmod).
+mkdir -p "$S/posixchmod"
+printf '#!/bin/sh\nPOSIXLY_CORRECT=1 exec %s "$@"\n' "$(command -v chmod)" >"$S/posixchmod/chmod"
+"$(command -v chmod)" 755 "$S/posixchmod/chmod"
+env PATH="$S/posixchmod:$PATH" POSIXLY_CORRECT=1 HANDOFF_KEY_DIR="$S/posix-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" \
   || fail "first setup failed with POSIX option parsing (BSD chmod): $(cat "$S/err")"
 [ "$(stat_of %a "$S/posix-setup")" = 700 ] && [ "$(stat_of %a "$S/posix-setup/handoff-identity.txt")" = 600 ] \
   || fail "first setup under POSIX option parsing left the wrong modes"
@@ -1519,7 +1524,7 @@ if [ -n "$other_sh" ]; then
   expect_refusal "handoff.sh under $other_sh" 1 "run it with bash" "$other_sh" "$K/handoff.sh" --to other --fingerprint
   expect_refusal "agent-setup.sh under $other_sh" 1 "agent-setup.sh: run it with bash" "$other_sh" ../agent-setup.sh --fingerprint "$TMPKEY"
 else
-  echo "skip: no zsh, dash, ksh or mksh, handoff.sh's bash check not tested"
+  echo "skip: no zsh, dash, ksh or mksh, the bash checks of handoff.sh and agent-setup.sh not tested"
 fi
 expect_refusal "handoff.sh on stdin, with no path" 1 "save handoff.sh to a file and run that file" \
   bash -s -- --fingerprint < "$K/handoff.sh"
@@ -2603,8 +2608,9 @@ HANDOFF_KEY_DIR="$S/stale-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" ||
 grep -qF "removed a temporary key a killed (or concurrent) setup left behind" "$S/err" && [ ! -e "$S/stale-setup/.handoff-setup.Leftov" ] \
   || fail "the leftover temporary key wasn't removed"
 [ -L "$S/stale-setup/.handoff-setup.Link" ] || fail "the stale cleanup removed a symlink, which no setup makes"
-# --rotate under POSIX option parsing (as BSD chmod parses): chmod -- MODE.
-rk env POSIXLY_CORRECT=1 bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" \
+# --rotate under POSIX option parsing (as BSD chmod parses): chmod -- MODE,
+# through the chmod shim above (agent-setup.sh unsets POSIXLY_CORRECT).
+rk env PATH="$S/posixchmod:$PATH" POSIXLY_CORRECT=1 bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" \
   || fail "--rotate failed with POSIX option parsing (BSD chmod): $(cat "$R/err")"
 [ "$(stat_of %a "$KEY")" = 600 ] && [ -f "$KEY.previous" ] || fail "--rotate under POSIX option parsing left the wrong state"
 # --retire also removes a temporary file that is another link to the old key

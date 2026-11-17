@@ -56,8 +56,9 @@ set +x
 set +a
 # Leave POSIX mode if bash was started in it (POSIXLY_CORRECT, SHELLOPTS=posix
 # or sh), as handoff.sh does: bash before 5.1 refuses process substitution
-# there, which recipient_of uses. Before any function is parsed. The variable
-# stays exported, so the commands run here still parse options as POSIX says.
+# there, which recipient_of uses. Before any function is parsed. (This also
+# unsets POSIXLY_CORRECT, so the commands run here parse options their usual
+# way; chmod is called as BSD's needs either way.)
 set +o posix
 set -euo pipefail
 umask 077

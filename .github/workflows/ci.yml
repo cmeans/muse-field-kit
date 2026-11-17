@@ -72,9 +72,11 @@ jobs:
       - name: The scripts parse under bash 3.2 (macOS /bin/bash)
         # shellcheck doesn't know bash 3.2's parser bugs (a `)` in a case
         # pattern inside $(...) ends the substitution there). Each script also
-        # runs to its usage text in POSIX mode (POSIXLY_CORRECT, as run-test.sh
-        # sets for BSD-style option parsing), where bash before 5.1 refuses
-        # process substitution unless the script leaves that mode first.
+        # runs to its usage text in POSIX mode (POSIXLY_CORRECT), where bash
+        # before 5.1 refuses process substitution unless the script leaves that
+        # mode first. That covers agent-setup.sh's, which comes before its
+        # usage exit; handoff.sh's comes after its own, so the macOS job's
+        # POSIX-mode round trips (run-test.sh) are what cover that one.
         run: |
           docker run --rm -v "$PWD/encrypted-credential-handoff:/w:ro" -w /w \
             bash:3.2@sha256:2556c2da19c32c1614d318645c73a7bf64d38be21cf69e98e3ca51f053983719 \
