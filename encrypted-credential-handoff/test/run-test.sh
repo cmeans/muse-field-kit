@@ -1633,7 +1633,7 @@ rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" >"$R
 grep -qxF "consume.py: rewrapped '$ST/new.txt' to the current key $R/k.txt; the blob was for the previous key ($R/k.txt.previous)" "$R/err" || fail "--rewrap didn't say the blob was for the previous key, naming both: $(cat "$R/err")"
 [ ! -s "$R/out" ] || fail "--rewrap printed to stdout"
 if [ "$(wc -l < "$ST/new.txt")" -ne 1 ] || ! grep -qxE '[A-Za-z0-9+/]+={0,2}' "$ST/new.txt" \
-    || [ "$(base64 -d "$ST/new.txt" | head -c 21)" != "age-encryption.org/v1" ]; then
+    || [ "$(base64 -d < "$ST/new.txt" | head -c 21)" != "age-encryption.org/v1" ]; then
   fail "--rewrap wrote something other than one blob"
 fi
 cmp -s blob-age.txt "$ST/new.txt" && fail "--rewrap left its blob file unchanged"

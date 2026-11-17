@@ -1009,15 +1009,20 @@ if (-not $OnWindows) {
   NotHere $stubNames[4]
 }
 
-# An execution-policy block, told by its error id and category and not by English
-# text: FullyQualifiedErrorId UnauthorizedAccess together with category
-# SecurityError / PSSecurityException (a generic access-denied error has the id
-# but not the exception). Only when stderr arrives CLIXML-wrapped, which hides
-# those fields, are the policy phrases of 5.1 and 7 accepted instead.
+# An execution-policy block. Windows PowerShell 5.1 prints the error record's
+# FullyQualifiedErrorId (UnauthorizedAccess) and category (PSSecurityException);
+# PowerShell 7's concise view prints only the category, "SecurityError:", in
+# color, then the message. So, with the ANSI escapes removed: that id together
+# with the exception, or the SecurityError category together with a policy
+# phrase. A generic access-denied error has neither pairing. When stderr
+# arrives CLIXML-wrapped, which hides the fields, the policy phrase alone.
 function Test-PolicyBlock($r) {
-  $e = [string]$r.Err
+  $esc = [string][char]27
+  $e = ([string]$r.Err) -replace ($esc + '\[[0-9;]*m'), ''
+  $phrase = 'is not digitally signed|running scripts is disabled on this system'
   if (($e -match 'UnauthorizedAccess') -and ($e -match 'PSSecurityException|SecurityError')) { return $true }
-  if ($e.StartsWith('#< CLIXML') -and ($e -match 'is not digitally signed|running scripts is disabled on this system')) { return $true }
+  if (($e -match 'SecurityError:') -and ($e -match $phrase)) { return $true }
+  if ($e.StartsWith('#< CLIXML') -and ($e -match $phrase)) { return $true }
   return $false
 }
 

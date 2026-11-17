@@ -408,20 +408,32 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
       # in compiled code (a script block has no runspace to run in at that
       # point) removes the folder then. Not on Windows, which has no TERM: there
       # Ctrl-C runs finally, and Add-Type on Windows PowerShell 5.1 would leave
-      # its compiled assembly in the user's TEMP.
+      # its compiled assembly in the user's TEMP. Where the runtime has
+      # PosixSignalRegistration (PowerShell 7.2 and later), a SIGTERM handler
+      # removes it too, before the runtime's own handling: whether a TERM
+      # reaches the process-exit event first differs between PowerShell
+      # releases, and this does not depend on it.
       if (-not $OnWindows) { try {
         if (-not ('HandoffCheckCleanup' -as [type])) {
-          Add-Type -TypeDefinition @'
+          $sigField = ''; $sigArm = ''
+          if ('System.Runtime.InteropServices.PosixSignalRegistration' -as [type]) {
+            $sigField = 'static object reg;'
+            $sigArm = 'reg = System.Runtime.InteropServices.PosixSignalRegistration.Create(System.Runtime.InteropServices.PosixSignal.SIGTERM, ctx => { Clean(); });'
+          }
+          Add-Type -TypeDefinition @"
 public static class HandoffCheckCleanup {
   static string dir;
+  $sigField
+  static void Clean() {
+    try { if (dir != null) System.IO.Directory.Delete(dir, true); } catch { }
+  }
   public static void Arm(string d) {
     dir = d;
-    System.AppDomain.CurrentDomain.ProcessExit += delegate {
-      try { if (dir != null) System.IO.Directory.Delete(dir, true); } catch { }
-    };
+    System.AppDomain.CurrentDomain.ProcessExit += delegate { Clean(); };
+    $sigArm
   }
 }
-'@
+"@
         }
         [HandoffCheckCleanup]::Arm($tmp)
       } catch { } }
