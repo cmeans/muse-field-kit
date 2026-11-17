@@ -258,6 +258,31 @@ if ($shRe.Groups[1].Value -ne $psRe.Groups[1].Value) { Fail 'the recipient rule 
 if ($ps -cmatch 'age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}') { Fail 'handoff.ps1 embeds a recipient' }
 Say 'ok'
 
+Say '== p3. the console read: which keys end the input (Test-EndKey) =='
+# The read loop needs a real console, so its decision is tested on its own:
+# handoff.ps1's Test-EndKey, taken from its parse tree, fed made-up keys.
+# Only the character a key produced ends the input, whatever the modifiers:
+# AltGr is reported as Ctrl+Alt, and AltGr+Z types a letter.
+$tok = $null; $errs = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($HandoffPs1, [ref]$tok, [ref]$errs)
+$fns = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Test-EndKey' }, $true))
+Assert-True ($fns.Count -eq 1) "test setup: handoff.ps1 has $($fns.Count) Test-EndKey functions, expected 1"
+. ([scriptblock]::Create($fns[0].Extent.Text))
+# ConsoleKeyInfo(KeyChar, Key, shift, alt, control)
+foreach ($c in @(@('Ctrl+Z', [char]26, [ConsoleKey]::Z, $false, $false, $true, $true),
+                 @('Ctrl+D', [char]4, [ConsoleKey]::D, $false, $false, $true, $true),
+                 @('AltGr+Z (Ctrl+Alt, z with dot above)', [char]0x017C, [ConsoleKey]::Z, $false, $true, $true, $false),
+                 @('AltGr+D (Ctrl+Alt, d with stroke)', [char]0x0111, [ConsoleKey]::D, $false, $true, $true, $false),
+                 @('Ctrl+Alt+Z producing KeyChar 26', [char]26, [ConsoleKey]::Z, $false, $true, $true, $true),
+                 @('Ctrl+Z reported with no KeyChar', [char]0, [ConsoleKey]::Z, $false, $false, $true, $false),
+                 @('plain z', [char]'z', [ConsoleKey]::Z, $false, $false, $false, $false),
+                 @('plain D', [char]'D', [ConsoleKey]::D, $true, $false, $false, $false))) {
+  $key = New-Object System.ConsoleKeyInfo $c[1], $c[2], $c[3], $c[4], $c[5]
+  $got = [bool](Test-EndKey $key)
+  Assert-True ($got -eq $c[6]) "Test-EndKey, $($c[0]): $got, expected $($c[6])"
+}
+Say 'ok'
+
 # --- 3a: a blob from expected.json ------------------------------------------------
 Say '== 3a. handoff.ps1 writes a blob (pipeline input) =='
 $hd = Install-Handoff (Join-Path $S 'hd') $RcptFile

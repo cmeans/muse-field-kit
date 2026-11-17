@@ -567,6 +567,19 @@ end {
     } catch { return $null }
   }
 
+  # Whether a key read at the console ends the input: only the character it
+  # produced, Ctrl+Z (26) or Ctrl+D (4), whatever the modifiers say. Windows
+  # reports AltGr as LeftCtrl+RightAlt, and a ConsoleKeyInfo can't tell that
+  # from a real Ctrl+Alt, so a rule on Modifiers and Key would either end the
+  # input on AltGr+Z or AltGr+D, which types a character in some layouts
+  # (Polish z with dot above, Croatian d with stroke), or ignore a real
+  # Ctrl+Alt+Z. The produced character is the signal Windows itself uses:
+  # AltGr+Z arrives as that letter, and is typed. (run-test.ps1 tests this
+  # function on its own.)
+  function Test-EndKey([ConsoleKeyInfo]$k) {
+    return ($k.KeyChar -eq [char]26 -or $k.KeyChar -eq [char]4)
+  }
+
   # --- read the secret --------------------------------------------------
   # -File, the pipeline, stdin's bytes (cmd's <), or the console. At the
   # console the JSON is read key by key with [Console]::ReadKey($true): echo
@@ -600,13 +613,7 @@ end {
       while ($true) {
         $k = [Console]::ReadKey($true)
         $c = $k.KeyChar
-        if ($c -eq [char]26 -or $c -eq [char]4) { break }
-        # Ctrl+Z or Ctrl+D by key, for a console that gives no KeyChar for it
-        # (some keyboard layouts). Not with Alt: Windows reports AltGr as
-        # Ctrl+Alt, and AltGr+Z or AltGr+D types a character in some layouts
-        # (Polish z with dot above, Croatian d with stroke), which must not end
-        # the input. A real Ctrl+Z or Ctrl+D also comes as KeyChar 26 or 4 above.
-        if (($k.Modifiers -band [ConsoleModifiers]::Control) -and -not ($k.Modifiers -band [ConsoleModifiers]::Alt) -and ($k.Key -eq [ConsoleKey]::Z -or $k.Key -eq [ConsoleKey]::D)) { break }
+        if (Test-EndKey $k) { break }
         if ($k.Key -eq [ConsoleKey]::Enter) { [void]$sb.Append("`n"); continue }
         if ($k.Key -eq [ConsoleKey]::Backspace) { if ($sb.Length -gt 0) { [void]$sb.Remove($sb.Length - 1, 1) }; continue }
         if ($c -ne [char]0) { [void]$sb.Append($c) }
