@@ -12,7 +12,7 @@
 #      the helper execs the command, so a TERM sent to the helper reaches
 #      the command and leaves no credentialed process behind;
 #   3. encrypt direction: a fresh blob produced by ../handoff.sh (with the
-#      dummy public key saved beside a scratch copy) decrypts through
+#      dummy recipient saved beside a scratch copy) decrypts through
 #      ../consume.py to the same values;
 #   4. recipients agree: agent-setup.sh --fingerprint (on the identity that
 #      $HANDOFF_PRIVKEY names) prints its recipient, the dummy recipient for
@@ -521,6 +521,45 @@ other=$("$AGE_KEYGEN" 2>/dev/null | "$AGE_KEYGEN" -y)
 chmod 600 "$S/id-lying.txt"
 got=$(bash ../agent-setup.sh --fingerprint "$S/id-lying.txt" 2>/dev/null)
 [ "$got" = "$want" ] || fail "--fingerprint believed a comment in the file ($got)"
+# The caller's xtrace (bash -x, SHELLOPTS=xtrace) never prints an identity's
+# secret key, on any path that reads one: --fingerprint, --public-key,
+# --check-setup, a first setup, --rotate and --retire.
+secret_in() {  # FILE...: a secret-key line of any identity
+  grep -qE 'AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}' "$@"
+}
+for m in --fingerprint --public-key; do
+  bash -x ../agent-setup.sh "$m" "$TMPKEY" >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "agent-setup.sh $m failed under bash -x"; }
+  ! secret_in "$S/out" "$S/err" || fail "bash -x agent-setup.sh $m printed the secret key"
+  env SHELLOPTS=xtrace bash ../agent-setup.sh "$m" "$TMPKEY" >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "agent-setup.sh $m failed under SHELLOPTS=xtrace"; }
+  ! secret_in "$S/out" "$S/err" || fail "SHELLOPTS=xtrace agent-setup.sh $m printed the secret key"
+done
+env SHELLOPTS=xtrace HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" \
+  || { cat "$S/out" "$S/err" >&2; fail "agent-setup.sh --check-setup failed under SHELLOPTS=xtrace"; }
+! secret_in "$S/out" "$S/err" || fail "SHELLOPTS=xtrace agent-setup.sh --check-setup printed a secret key"
+XT="$S/xtrace-key"
+env -u HANDOFF_PRIVKEY HANDOFF_KEY_DIR="$XT" bash -x ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "first setup failed under bash -x"; }
+! secret_in "$S/out" "$S/err" || fail "bash -x agent-setup.sh (first setup) printed the secret key"
+env -u HANDOFF_KEY_DIR HANDOFF_PRIVKEY="$XT/handoff-identity.txt" SHELLOPTS=xtrace bash ../agent-setup.sh --rotate >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "--rotate failed under SHELLOPTS=xtrace"; }
+! secret_in "$S/out" "$S/err" || fail "SHELLOPTS=xtrace agent-setup.sh --rotate printed a secret key"
+env -u HANDOFF_KEY_DIR HANDOFF_PRIVKEY="$XT/handoff-identity.txt" bash -x ../agent-setup.sh --retire --yes >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "--retire failed under bash -x"; }
+! secret_in "$S/out" "$S/err" || fail "bash -x agent-setup.sh --retire printed a secret key"
+# The caller's allexport (SHELLOPTS=allexport) never exports the identity's
+# text: no command agent-setup.sh runs (shims of the ones that run after it
+# is read, logging their environment) sees it.
+mkdir -p "$S/ashim"
+for c in wc tr cat stat age-keygen; do
+  command -v "$c" >/dev/null 2>&1 || continue
+  printf '#!/bin/sh\nenv >>"%s/ashim.log"\nexec %s "$@"\n' "$S" "$(command -v "$c")" >"$S/ashim/$c"
+  chmod 755 "$S/ashim/$c"
+done
+rm -f "$S/ashim.log"
+env PATH="$S/ashim:$PATH" SHELLOPTS=allexport bash ../agent-setup.sh --fingerprint "$TMPKEY" >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "agent-setup.sh --fingerprint failed under SHELLOPTS=allexport"; }
+[ -s "$S/ashim.log" ] || fail "the allexport shims didn't run"
+! secret_in "$S/ashim.log" || fail "SHELLOPTS=allexport exported the identity's secret key to a command"
+! grep -q '^data=' "$S/ashim.log" || fail "SHELLOPTS=allexport exported agent-setup.sh's copy of the identity"
 echo "ok"
 fi
 
@@ -1553,6 +1592,20 @@ env SHELLOPTS=xtrace "$BASH_BIN" "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err"
 ! grep -q mk-Zq9 "$S/err" || fail "SHELLOPTS=xtrace printed the secret"
 "$BASH_BIN" -x "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "handoff.sh failed under bash -x"; }
 ! grep -q mk-Zq9 "$S/err" || fail "bash -x printed the secret"
+# The caller's allexport (SHELLOPTS=allexport) never exports SECRET_JSON: the
+# commands handoff.sh runs on the payload (shims logging their environment)
+# see neither it nor the secret.
+mkdir -p "$S/hshim"
+for c in jq wc tr base64 cmp; do
+  command -v "$c" >/dev/null 2>&1 || continue
+  printf '#!/bin/sh\nenv >>"%s/hshim.log"\nexec %s "$@"\n' "$S" "$(command -v "$c")" >"$S/hshim/$c"
+  chmod 755 "$S/hshim/$c"
+done
+rm -f "$S/hshim.log"
+env PATH="$S/hshim:$PATH" SHELLOPTS=allexport "$BASH_BIN" "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "handoff.sh failed under SHELLOPTS=allexport"; }
+[ -s "$S/hshim.log" ] || fail "the allexport shims didn't run"
+! grep -q -e '^SECRET_JSON=' -e mk-Zq9 "$S/hshim.log" || fail "SHELLOPTS=allexport exported the secret to a command"
 # A failing age is reported with its version: at the up-front recipient check,
 # and at the encrypt step (a stub that takes an empty stdin and fails on data).
 mkdir -p "$S/badage"
@@ -1562,9 +1615,11 @@ chmod 755 "$S/badage/age"
 expect_refusal "handoff.sh with an age that rejects the recipient" 1 "is not a valid age recipient: age v9.9.9-test did not accept it" \
   env PATH="$S/badage:$PATH" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
 # shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
-printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\n[ "$(wc -c)" -eq 0 ]\n' >"$S/badage/age"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\n[ "$(wc -c)" -eq 0 ] || { echo "age-stderr-at-encrypt" >&2; exit 1; }\n' >"$S/badage/age"
 expect_refusal "handoff.sh with an age that fails to encrypt" 1 "age failed to encrypt (age v9.9.9-test)" \
   env PATH="$S/badage:$PATH" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
+# age's own stderr there is not shown, as at every other age call.
+! grep -q age-stderr-at-encrypt "$S/err" || fail "handoff.sh showed age's stderr from a failed encrypt"
 echo "ok"
 fi
 

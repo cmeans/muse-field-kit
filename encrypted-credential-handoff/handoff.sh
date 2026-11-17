@@ -34,9 +34,10 @@
 # SHELLOPTS=posix), so the script runs the same either way.
 set +o posix
 set +x   # SHELLOPTS=xtrace or bash -x would print the secret
+set +a   # SHELLOPTS=allexport would export the secret to every command run
 set -euo pipefail
 # A SECRET_JSON exported by the caller would sit in every child's environment:
-unset SECRET_JSON blob HANDOFF_SHAPE_ONLY   # (nothing in the environment may change a check)
+unset SECRET_JSON blob
 
 # Kept equal to consume.py's MAX_KEY_FILE and agent-setup.sh's MAX_KEY_BYTES
 # (a recipient file is 63 bytes; the same bound keeps the three alike):
@@ -363,70 +364,69 @@ while case "$cdir" in //*) true ;; *) false ;; esac; do cdir=${cdir#/}; done   #
 case "$cdir" in /dev|/dev/fd|/proc/*/fd) no_path ;; esac
 keyfile=${dir%/}/handoff-$to.age
 
-
 no_key() { echo "handoff.sh: $1" >&2; exit 1; }
 # The recipient file: found, read, and its shape checked. Sets RECIPIENT;
 # a refusal is no_key (exit 1). --check-setup runs it in a subshell when
 # there is no age to ask about the checksum.
 load_recipient() {
-if [ ! -e "$keyfile" ]; then
-  [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink that doesn't resolve to a file"
-  # A near miss beside it is named, from a short allow-list only: a _ or . in
-  # place of the -, another case (handoff_muse.age, handoff-Muse.age), or an
-  # editor's extra extension (handoff-muse.age.txt, handoff-muse.age.age). Anything
-  # else, such as a kept old file (handoff-muse.age.old, .2025-06-01), isn't
-  # offered, and the hint asks for a check, never a rename on its own.
-  near=
-  restore=$(shopt -p nullglob nocaseglob || true)
-  shopt -s nullglob nocaseglob
-  for f in "${dir%/}"/handoff[-_.]"$to".age "${dir%/}"/handoff[-_.]"$to".age.txt "${dir%/}"/handoff[-_.]"$to".age.age; do
-    if [ "$f" != "$keyfile" ] && [ -f "$f" ] && [ ! -L "$f" ]; then near=${f##*/}; break; fi
-  done
-  eval "$restore"
-  # Only NAME's case differs (--to Muse, with handoff-muse.age there): the
-  # remedy is the other --to, not a rename the default run would then miss.
-  nm=${near#handoff-}; nm=${nm%.age}
-  lc() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
-  if [ -n "$near" ] && [ "$near" = "handoff-$nm.age" ] && [ "$nm" != "$to" ] && [ "$(lc "$nm")" = "$(lc "$to")" ]; then
-    no_key "no recipient file for '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. Names are case-sensitive: did you mean --to $(printf '%q' "$nm")?"
+  if [ ! -e "$keyfile" ]; then
+    [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink that doesn't resolve to a file"
+    # A near miss beside it is named, from a short allow-list only: a _ or . in
+    # place of the -, another case (handoff_muse.age, handoff-Muse.age), or an
+    # editor's extra extension (handoff-muse.age.txt, handoff-muse.age.age). Anything
+    # else, such as a kept old file (handoff-muse.age.old, .2025-06-01), isn't
+    # offered, and the hint asks for a check, never a rename on its own.
+    near=
+    restore=$(shopt -p nullglob nocaseglob || true)
+    shopt -s nullglob nocaseglob
+    for f in "${dir%/}"/handoff[-_.]"$to".age "${dir%/}"/handoff[-_.]"$to".age.txt "${dir%/}"/handoff[-_.]"$to".age.age; do
+      if [ "$f" != "$keyfile" ] && [ -f "$f" ] && [ ! -L "$f" ]; then near=${f##*/}; break; fi
+    done
+    eval "$restore"
+    # Only NAME's case differs (--to Muse, with handoff-muse.age there): the
+    # remedy is the other --to, not a rename the default run would then miss.
+    nm=${near#handoff-}; nm=${nm%.age}
+    lc() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
+    if [ -n "$near" ] && [ "$near" = "handoff-$nm.age" ] && [ "$nm" != "$to" ] && [ "$(lc "$nm")" = "$(lc "$to")" ]; then
+      no_key "no recipient file for '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. Names are case-sensitive: did you mean --to $(printf '%q' "$nm")?"
+    fi
+    [ -z "$near" ] || no_key "no recipient file for '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current recipient, rename it to handoff-$to.age, then compare --fingerprint with the recipient the agent reports"
+    # A 0.1.0 install: the RSA public key is beside it, the age recipient isn't.
+    if [ -f "${dir%/}/handoff-$to.pem" ]; then
+      no_key "found handoff-$to.pem but no $keyfile. Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$to.age beside handoff.sh"
+    fi
+    no_key "no recipient file for '$to': $keyfile doesn't exist. Save the agent's recipient there (SETUP.md, setup step 3), or name another agent with --to NAME"
   fi
-  [ -z "$near" ] || no_key "no recipient file for '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current recipient, rename it to handoff-$to.age, then compare --fingerprint with the recipient the agent reports"
-  # A 0.1.0 install: the RSA public key is beside it, the age recipient isn't.
-  if [ -f "${dir%/}/handoff-$to.pem" ]; then
-    no_key "found handoff-$to.pem but no $keyfile. Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$to.age beside handoff.sh"
+  [ -f "$keyfile" ] || no_key "$keyfile is not a regular file"
+  # One bounded read, and the size checked on what was read: a file swapped
+  # after the check above can't bring back an unbounded read.
+  # (The x keeps $(...) from dropping trailing newlines before they're counted,
+  # and NULs, which $(...) would drop too, are counted as another byte.)
+  raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" | LC_ALL=C tr '\000' '\001' && printf x; } 2>/dev/null ) || no_key "cannot read $keyfile"
+  size=$(( $(printf '%s' "$raw" | LC_ALL=C wc -c) - 1 ))
+  [ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$keyfile is over $MAX_KEY_BYTES bytes; not a recipient file"
+  RECIPIENT=${raw%x}
+  case "$RECIPIENT" in   # matched in place: a pipe to head -c 2 could break the writer's pipe
+    $'\xff\xfe'*|$'\xfe\xff'*) no_key "$keyfile is saved as UTF-16: save it as UTF-8 or plain text" ;;
+  esac
+  RECIPIENT=${RECIPIENT#$'\xef\xbb\xbf'}   # a UTF-8 byte-order mark, as some Windows editors save
+  # A copy saved on Windows or by an editor, or copied from an indented block,
+  # can carry CRLF line endings, leading or trailing blanks or blank lines: drop
+  # them before the checks.
+  RECIPIENT=$(printf '%s\n' "$RECIPIENT" | tr -d '\r' | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' | grep -v '^$' || true)
+  # An identity (private key) here means it left the agent's machine.
+  if printf '%s\n' "$RECIPIENT" | grep -q -e '^AGE-SECRET-KEY-' -e '^AGE-PLUGIN-'; then
+    no_key "$keyfile holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
   fi
-  no_key "no recipient file for '$to': $keyfile doesn't exist. Save the agent's recipient there (SETUP.md, setup step 3), or name another agent with --to NAME"
-fi
-[ -f "$keyfile" ] || no_key "$keyfile is not a regular file"
-# One bounded read, and the size checked on what was read: a file swapped
-# after the check above can't bring back an unbounded read.
-# (The x keeps $(...) from dropping trailing newlines before they're counted,
-# and NULs, which $(...) would drop too, are counted as another byte.)
-raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" | LC_ALL=C tr '\000' '\001' && printf x; } 2>/dev/null ) || no_key "cannot read $keyfile"
-size=$(( $(printf '%s' "$raw" | LC_ALL=C wc -c) - 1 ))
-[ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$keyfile is over $MAX_KEY_BYTES bytes; not a recipient file"
-RECIPIENT=${raw%x}
-case "$RECIPIENT" in   # matched in place: a pipe to head -c 2 could break the writer's pipe
-  $'\xff\xfe'*|$'\xfe\xff'*) no_key "$keyfile is saved as UTF-16: save it as UTF-8 or plain text" ;;
-esac
-RECIPIENT=${RECIPIENT#$'\xef\xbb\xbf'}   # a UTF-8 byte-order mark, as some Windows editors save
-# A copy saved on Windows or by an editor, or copied from an indented block,
-# can carry CRLF line endings, leading or trailing blanks or blank lines: drop
-# them before the checks.
-RECIPIENT=$(printf '%s\n' "$RECIPIENT" | tr -d '\r' | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' | grep -v '^$' || true)
-# An identity (private key) here means it left the agent's machine.
-if printf '%s\n' "$RECIPIENT" | grep -q -e '^AGE-SECRET-KEY-' -e '^AGE-PLUGIN-'; then
-  no_key "$keyfile holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
-fi
-case "$RECIPIENT" in
-  ''|*$'\n'*) no_key "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it" ;;
-esac
-# An X25519 recipient exactly: HRP age, separator 1, then 58 lowercase
-# characters of the bech32 alphabet, 62 in all. That refuses age1pq1... and
-# age1tag1... and every plugin recipient, which also begin age1.
-recipient_re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
-[[ "$RECIPIENT" =~ $recipient_re ]] \
-  || no_key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
+  case "$RECIPIENT" in
+    ''|*$'\n'*) no_key "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it" ;;
+  esac
+  # An X25519 recipient exactly: HRP age, separator 1, then 58 lowercase
+  # characters of the bech32 alphabet, 62 in all. That refuses age1pq1... and
+  # age1tag1... and every plugin recipient, which also begin age1.
+  recipient_re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
+  [[ "$RECIPIENT" =~ $recipient_re ]] \
+    || no_key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
 }
 [ "$mode" != check-setup ] || check_setup
 load_recipient
@@ -524,7 +524,7 @@ fi
 # stdin through a pipe, never on a command line. age writes the binary
 # format; base64 makes it one line (tr drops the line breaks that some
 # base64 programs add).
-blob=$(printf '%s' "$SECRET_JSON" | env -i PATH="${PATH-}" age -r "$RECIPIENT" | base64 | tr -d '\n') \
+blob=$(printf '%s' "$SECRET_JSON" | env -i PATH="${PATH-}" age -r "$RECIPIENT" 2>/dev/null | base64 | tr -d '\n') \
   || { echo "handoff.sh: age failed to encrypt (age $age_version), aborting" >&2; exit 1; }
 echo "recipient: $RECIPIENT (from $keyfile)  <- compare with the recipient" >&2
 echo "   your agent reports for its key before trusting this output" >&2

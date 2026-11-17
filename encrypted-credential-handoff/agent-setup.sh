@@ -43,6 +43,13 @@
 # Needs age-keygen (the age package) on the PATH. It runs with an environment
 # of PATH only, as consume.py's age does, and is given an identity on its
 # stdin, never as a path.
+# The identity file's text sits in a shell variable while it's checked, so
+# the caller's shell options must not reach it: xtrace (bash -x,
+# SHELLOPTS=xtrace) would print it on stderr, and allexport
+# (SHELLOPTS=allexport) would export it to every command run after it is
+# read. First, before anything is read.
+set +x
+set +a
 set -euo pipefail
 umask 077
 
