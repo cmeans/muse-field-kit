@@ -246,7 +246,7 @@ Your side needs `age` (and, for `handoff.sh`, `jq` 1.6 or newer); the agent's si
 
 ### Running handoff.ps1 on Windows
 
-Client Windows starts with the execution policy `Restricted`, which runs no script at all. The supported way to run `handoff.ps1`, which works under any policy and with a payload piped in, is to allow scripts in this PowerShell window only, then run it as usual:
+Client Windows starts with the execution policy `Restricted`, which runs no script at all. The supported way to run `handoff.ps1`, which works under any policy set on the machine itself (a policy set by Group Policy wins: ask its administrator) and with a payload piped in, is to allow scripts in this PowerShell window only, then run it as usual:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -261,7 +261,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ### Checking a downloaded age binary
 
-Your package manager (apt, dnf, Homebrew, winget) checks what it downloads. For a release binary taken by hand: from version 1.3, each of age's release files has a [Sigsum](https://www.sigsum.org) proof beside it (a `.proof` file), and age's [`SIGSUM.md`](https://github.com/FiloSottile/age/blob/v1.3.2/SIGSUM.md) gives the public key, the policy and the `sigsum-verify` command to check one. Older releases have no proof and no checksum file: use a package for those.
+Your package manager (apt, dnf, Homebrew, winget) checks what it downloads. For a release binary taken by hand: from version 1.2.0, each of age's release binaries has a [Sigsum](https://www.sigsum.org) proof beside it (a `.proof` file), and age's [`SIGSUM.md`](https://github.com/FiloSottile/age/blob/v1.3.2/SIGSUM.md) gives the public key, the policy and the `sigsum-verify` command to check one. Releases before 1.2.0 have no proof and no checksum file: use a package for those.
 
 Then get the handoff script (next section) and run its setup check: `./handoff.sh --check-setup` (Windows: `.\handoff.ps1 -CheckSetup`). “Check your setup,” below, says what its lines mean.
 
@@ -309,7 +309,7 @@ if ((Get-FileHash .\handoff.ps1 -Algorithm SHA256).Hash -ne $expected) { throw '
 
 Only then remove the Mark of the Web with `Unblock-File .\handoff.ps1`, and run it as “Running handoff.ps1 on Windows” says.
 
-**With `gh`,** you can also check where the file was built: `gh attestation verify handoff.sh --repo cmeans/muse-field-kit` (or `.\handoff.ps1`) proves it came from this repository's release workflow.
+**With `gh`,** you can also check where the file was built: `gh attestation verify handoff.sh --repo cmeans/muse-field-kit --signer-workflow cmeans/muse-field-kit/.github/workflows/release.yml` (or `.\handoff.ps1` in place of `handoff.sh`) proves it came from this repository's release workflow.
 
 **With Git,** `git clone --branch vX.Y.Z https://github.com/cmeans/muse-field-kit` gets the same files, in `muse-field-kit/encrypted-credential-handoff/`; run the script from there. Git isn't required.
 
