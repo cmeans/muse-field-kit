@@ -195,7 +195,7 @@ check_setup() {
   trap '[ -z "$cs_tmp" ] || rm -rf "$cs_tmp"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM HUP
-  cs_tmp=$(mktemp -d 2>/dev/null) && [ -d "$cs_tmp" ] \
+  cs_tmp=$(mktemp -d "${TMPDIR:-/tmp}/handoff-check.XXXXXX" 2>/dev/null) && [ -d "$cs_tmp" ] \
     || { cs_tmp=; cs_out FAIL tempdir "cannot make a private temporary directory (check TMPDIR)"; exit 1; }
   chmod 700 "$cs_tmp"
 

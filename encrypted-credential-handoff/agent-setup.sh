@@ -331,7 +331,7 @@ check_setup() {
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM HUP
-  newd=$(mktemp -d 2>/dev/null) && [ -d "$newd" ] \
+  newd=$(mktemp -d "${TMPDIR:-/tmp}/handoff-check.XXXXXX" 2>/dev/null) && [ -d "$newd" ] \
     || { newd=""; cs_out FAIL tempdir "cannot make a private temporary directory (check TMPDIR)"; exit 1; }
   chmod 700 "$newd"
 

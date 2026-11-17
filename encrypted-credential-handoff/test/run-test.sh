@@ -2833,9 +2833,15 @@ for _ in range(100):
 else:
     p.kill()
     sys.exit("the run never reached age")
-if not os.listdir(c8 + "/tmp"):
+for _ in range(50):
+    if os.listdir(c8 + "/tmp"):
+        break
+    time.sleep(0.1)
+else:
     p.kill()
-    sys.exit("no temporary directory while the run was going")
+    out, err = p.communicate()
+    sys.exit("no temporary directory in %s/tmp while the run was going (TMPDIR there; run's stderr: %r)"
+             % (c8, err.decode("utf-8", "replace")[:400]))
 p.send_signal(getattr(signal, sig))
 out, err = p.communicate(timeout=30)
 if p.returncode == 0:

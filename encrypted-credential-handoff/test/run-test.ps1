@@ -969,6 +969,11 @@ Say 'ok (in process: the host survives, exit 1, $Error untouched)'
 # A signal while age is running: the temporary folder is removed. (Windows has
 # no TERM and no way to send Ctrl-C to a child here.)
 if (-not $OnWindows) {
+  # The script's own folders in the temp area. The .NET runtime keeps files there
+  # too (clr-debug-pipe-*, dotnet-diagnostic-*), which .NET 10 (PowerShell 7.6)
+  # leaves behind when a TERM ends it: not the script's, and nothing secret.
+  function Get-OwnFolders { return @(Get-ChildItem -LiteralPath $T8 -Force | Where-Object { $_.Name -like 'handoff-check-*' }) }
+  function Get-AllNames { return ((@(Get-ChildItem -LiteralPath $T8 -Force) | ForEach-Object { $_.Name }) -join ' ') }
   function Test-Signal([string]$sig) {
     $marker = Join-Path $S 'age-started'
     if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker }
@@ -984,19 +989,13 @@ if (-not $OnWindows) {
     $psi.RedirectStandardInput = $true
     foreach ($k in $tmpEnv.Keys) { $psi.EnvironmentVariables[$k] = $tmpEnv[$k] }
     $psi.EnvironmentVariables['PATH'] = $stub8Path
-    # .NET 10 (PowerShell 7.6) puts its debugger and diagnostics endpoints
-    # (clr-debug-pipe-*, dotnet-diagnostic-*) in TMPDIR and leaves them there
-    # when a TERM ends it. They are the runtime's, not the script's, and they
-    # would be counted as the script's leftover folder; so the runtime doesn't
-    # make them.
-    $psi.EnvironmentVariables['DOTNET_EnableDiagnostics'] = '0'
     $p = [System.Diagnostics.Process]::Start($psi)
     $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
     $p.StandardInput.Close()
     $tries = 0
     while (-not (Test-Path -LiteralPath $marker) -and $tries -lt 200) { Start-Sleep -Milliseconds 100; $tries++ }
     Assert-True (Test-Path -LiteralPath $marker) "$sig test: the run never reached age"
-    Assert-True (@(Get-ChildItem -LiteralPath $T8 -Force).Count -gt 0) "$sig test: no temporary folder while the run was going"
+    Assert-True (@(Get-OwnFolders).Count -gt 0) "$sig test: no temporary folder while the run was going (in the temp area: $(Get-AllNames))"
     [void](Invoke-Proc -Exe 'sh' -Argv @('-c', "kill -$sig $($p.Id)"))
     if (-not $p.WaitForExit(60000)) { $p.Kill(); Fail "$sig test: the run did not end" }
     # PowerShell's own status for an interrupted script is what the caller
@@ -1005,8 +1004,8 @@ if (-not $OnWindows) {
     $out = $o.Result + $e.Result
     foreach ($m in $leaks) { Assert-True (-not $out.Contains($m)) "$sig test: the test payload appeared in the output" }
     $tries = 0
-    while (@(Get-ChildItem -LiteralPath $T8 -Force).Count -gt 0 -and $tries -lt 30) { Start-Sleep -Milliseconds 100; $tries++ }
-    Assert-True (@(Get-ChildItem -LiteralPath $T8 -Force).Count -eq 0) "$sig test: the temporary folder was left behind"
+    while (@(Get-OwnFolders).Count -gt 0 -and $tries -lt 30) { Start-Sleep -Milliseconds 100; $tries++ }
+    Assert-True (@(Get-OwnFolders).Count -eq 0) "$sig test: the temporary folder was left behind (in the temp area: $(Get-AllNames))"
   }
   Test-Signal 'INT'
   Test-Signal 'TERM'
