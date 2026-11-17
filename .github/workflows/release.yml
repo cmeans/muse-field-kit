@@ -1,0 +1,159 @@
+name: Release
+
+# Builds handoff.sh, handoff.ps1 and SHA256SUMS from the tagged tree, attests
+# the two scripts, and publishes them as a GitHub Release whose notes are the
+# CHANGELOG section for the version.
+#
+# Publishing rule (one step, "decide", sets the output every publish step
+# checks):
+#   - a push of a v* tag publishes;
+#   - a workflow_dispatch publishes only with dry_run == 'false' AND when run
+#     on a tag (github.ref starts with refs/tags/v);
+#   - every other case is a dry run: the assets are built and verified,
+#     nothing is attested or published. A dispatch from a branch never
+#     publishes.
+# A dry run on a branch has no tag, so it skips the checks that need one (the
+# tagged commit is on main; the CHANGELOG heading) and builds the assets only.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify only (true), or publish when run on a v* tag (false)"
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+
+# Read-only for the whole workflow; the one job below raises what it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # sign the attestations
+      attestations: write # store the attestations
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # All of main's history, so the tagged commit can be checked
+          # against it.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether to publish
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REF: ${{ github.ref }}
+        run: |
+          on_tag=false
+          case "$REF" in refs/tags/v*) on_tag=true ;; esac
+          publish=false
+          if [ "$EVENT_NAME" = push ] && [ "$on_tag" = true ]; then
+            publish=true
+            echo "case: push of tag $REF, publishing"
+          elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$DRY_RUN" = false ] && [ "$on_tag" = true ]; then
+            publish=true
+            echo "case: dispatch on tag $REF with dry_run=false, publishing"
+          elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
+            echo "case: dispatch with dry_run=false but $REF is not a v* tag, dry run"
+          elif [ "$EVENT_NAME" = workflow_dispatch ]; then
+            echo "case: dispatch with dry_run=$DRY_RUN, dry run"
+          else
+            echo "case: event $EVENT_NAME on $REF, dry run"
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "on_tag=$on_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check the tag, its commit and the CHANGELOG
+        id: tag
+        if: steps.decide.outputs.on_tag == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "tag '$TAG' is not vX.Y.Z"; exit 1 ;;
+          esac
+          version=${TAG#v}
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "tag '$TAG' is not vX.Y.Z"
+            exit 1
+          fi
+          # The tagged commit must be on main.
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "$TAG ($GITHUB_SHA) is not on main"
+            exit 1
+          fi
+          # The CHANGELOG must have a heading for this version; its section
+          # is the release notes.
+          .github/scripts/changelog-section.sh encrypted-credential-handoff/CHANGELOG.md "$version" > "$RUNNER_TEMP/notes.md"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release notes ($(wc -l < "$RUNNER_TEMP/notes.md") lines):"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Build the assets
+        run: |
+          .github/scripts/release-assets.sh "$RUNNER_TEMP/assets"
+          ls -l "$RUNNER_TEMP/assets"
+
+      - name: Verify the assets
+        run: |
+          cd "$RUNNER_TEMP/assets"
+          sha256sum -c SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 2 ]
+          for f in handoff.sh handoff.ps1; do
+            cmp "$f" "$GITHUB_WORKSPACE/encrypted-credential-handoff/$f"
+          done
+          [ "$(printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS handoff.ps1 handoff.sh " ]
+
+      - name: Attest the scripts
+        if: steps.decide.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/assets/handoff.sh
+            ${{ runner.temp }}/assets/handoff.ps1
+
+      - name: Create the release
+        if: steps.decide.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "encrypted-credential-handoff $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            "$RUNNER_TEMP/assets/handoff.sh" \
+            "$RUNNER_TEMP/assets/handoff.ps1" \
+            "$RUNNER_TEMP/assets/SHA256SUMS"
+
+      - name: Summary
+        env:
+          PUBLISH: ${{ steps.decide.outputs.publish }}
+        run: |
+          {
+            if [ "$PUBLISH" = true ]; then
+              echo "Published the release with handoff.sh, handoff.ps1 and SHA256SUMS."
+            else
+              echo "Dry run: the assets were built and verified; nothing was attested or published."
+            fi
+            printf '\140\140\140\n'
+            cat "$RUNNER_TEMP/assets/SHA256SUMS"
+            printf '\140\140\140\n'
+          } >> "$GITHUB_STEP_SUMMARY"

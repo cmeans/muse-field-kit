@@ -164,6 +164,92 @@ jobs:
             exit 1
           fi
 
+  # The release asset set (handoff.sh, handoff.ps1, SHA256SUMS) builds, is
+  # byte-identical to the tree, and README's Linux verify command works on it.
+  # release.yml builds the same set with the same script.
+  assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the assets
+        run: |
+          .github/scripts/release-assets.sh "$RUNNER_TEMP/assets"
+          .github/scripts/release-assets.sh "$RUNNER_TEMP/assets-again"
+          ls -l "$RUNNER_TEMP/assets"
+      - name: The build is deterministic
+        run: |
+          for f in handoff.sh handoff.ps1 SHA256SUMS; do
+            cmp "$RUNNER_TEMP/assets/$f" "$RUNNER_TEMP/assets-again/$f"
+          done
+      - name: Assets are byte-identical to the tree, and the set is exactly three files
+        run: |
+          for f in handoff.sh handoff.ps1; do
+            cmp "$RUNNER_TEMP/assets/$f" "encrypted-credential-handoff/$f"
+          done
+          [ "$(cd "$RUNNER_TEMP/assets" && printf "%s\n" * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS handoff.ps1 handoff.sh " ] \
+            || { echo "unexpected asset set"; ls -l "$RUNNER_TEMP/assets"; exit 1; }
+      - name: SHA256SUMS is sha256sum -c clean, two sorted LF lines
+        run: |
+          cd "$RUNNER_TEMP/assets"
+          sha256sum -c SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 2 ] || { echo "SHA256SUMS must have exactly two lines"; exit 1; }
+          if grep -q $'\r' SHA256SUMS; then echo "CR in SHA256SUMS"; exit 1; fi
+          [ "$(tail -c 1 SHA256SUMS | od -An -c | tr -d ' ')" = '\n' ] || { echo "SHA256SUMS must end in LF"; exit 1; }
+          [ "$(awk '{print $2}' SHA256SUMS | tr '\n' ' ')" = "handoff.ps1 handoff.sh " ] \
+            || { echo "SHA256SUMS names or order wrong"; cat SHA256SUMS; exit 1; }
+          [ "$(grep -Ec '^[0-9a-f]{64}  handoff\.(ps1|sh)$' SHA256SUMS)" -eq 2 ] \
+            || { echo "SHA256SUMS is not in sha256sum format"; cat SHA256SUMS; exit 1; }
+          # A changed byte must fail the check.
+          mkdir "$RUNNER_TEMP/tampered"
+          cp handoff.sh handoff.ps1 SHA256SUMS "$RUNNER_TEMP/tampered/"
+          echo "# tampered" >> "$RUNNER_TEMP/tampered/handoff.sh"
+          if (cd "$RUNNER_TEMP/tampered" && sha256sum -c SHA256SUMS); then
+            echo "sha256sum -c passed on a tampered script"
+            exit 1
+          fi
+      - name: README's Linux verify command works on the assets
+        # The command is read from README between its verify-macos-linux
+        # markers, so a doc change that breaks it (or drops the markers)
+        # fails here.
+        run: |
+          block=$(.github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-macos-linux)
+          cmd=$(printf '%s\n' "$block" | grep '^sha256sum ' || true)
+          [ -n "$cmd" ] || { echo "no sha256sum command in README's verify-macos-linux block"; exit 1; }
+          echo "README command: $cmd"
+          # Only handoff.sh and SHA256SUMS downloaded, as README says.
+          mkdir "$RUNNER_TEMP/sh-only"
+          cp "$RUNNER_TEMP/assets/handoff.sh" "$RUNNER_TEMP/assets/SHA256SUMS" "$RUNNER_TEMP/sh-only/"
+          cd "$RUNNER_TEMP/sh-only"
+          bash -euo pipefail -c "$cmd"
+      - name: Release notes come from the CHANGELOG section
+        # release.yml uses this script; 0.1.0 has a dated heading with a
+        # suffix, 9.9.9 has none.
+        run: |
+          notes=$(.github/scripts/changelog-section.sh encrypted-credential-handoff/CHANGELOG.md 0.1.0)
+          [ -n "$notes" ]
+          if printf '%s\n' "$notes" | grep -q '^## '; then echo "notes run past the section"; exit 1; fi
+          if .github/scripts/changelog-section.sh encrypted-credential-handoff/CHANGELOG.md 9.9.9 2>/dev/null; then
+            echo "changelog-section.sh found a section that does not exist"
+            exit 1
+          fi
+      - name: README's markers are enforced (a missing or unclosed pair fails)
+        run: |
+          fence=$(printf "\140\140\140sh")
+          printf '# no markers\n' > "$RUNNER_TEMP/no-markers.md"
+          printf '<!-- verify-windows:start -->\n%s\nx\n%s\n' "$fence" "$fence" > "$RUNNER_TEMP/unclosed.md"
+          for n in verify-macos-linux verify-windows; do
+            for f in no-markers unclosed; do
+              if .github/scripts/readme-block.sh "$RUNNER_TEMP/$f.md" "$n" 2>/dev/null; then
+                echo "readme-block.sh accepted $f.md for $n"
+                exit 1
+              fi
+            done
+          done
+          .github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-windows > /dev/null
+
   # Older age releases, built from source (go install, checked against
   # sum.golang.org), against the agent side. Not required for merging at first.
   linux-age-versions:
@@ -256,6 +342,25 @@ jobs:
             exit 1
           fi
 
+      - name: Release assets verify with README's macOS command
+        # shasum, because macOS has no sha256sum: release-assets.sh falls back
+        # to it, and the command is read from README's verify-macos-linux block.
+        run: |
+          .github/scripts/release-assets.sh "$RUNNER_TEMP/assets"
+          for f in handoff.sh handoff.ps1; do
+            cmp "$RUNNER_TEMP/assets/$f" "encrypted-credential-handoff/$f"
+          done
+          block=$(.github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-macos-linux)
+          cmd=$(printf '%s\n' "$block" | grep '^shasum -a 256 ' || true)
+          [ -n "$cmd" ] || { echo "no shasum command in README's verify-macos-linux block"; exit 1; }
+          echo "README command: $cmd"
+          mkdir "$RUNNER_TEMP/sh-only"
+          cp "$RUNNER_TEMP/assets/handoff.sh" "$RUNNER_TEMP/assets/SHA256SUMS" "$RUNNER_TEMP/sh-only/"
+          cd "$RUNNER_TEMP/sh-only"
+          bash -euo pipefail -c "$cmd"
+          # SHA256SUMS keeps the sha256sum shape: 64 hex, two spaces, a name.
+          [ "$(grep -Ec '^[0-9a-f]{64}  handoff\.(ps1|sh)$' "$RUNNER_TEMP/assets/SHA256SUMS")" -eq 2 ]
+
   # The Windows side (handoff.ps1) only: no bash, and consume.py, agent-setup.sh
   # and run-test.sh are never run here (the agent side is out of scope on
   # Windows). windows-interop opens what this job writes.
@@ -315,6 +420,48 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "run-test.ps1 exited $($p.ExitCode)" }
           if ($all | Where-Object { $_ -match '^(skip:|FAIL)' }) { throw 'a check failed or was skipped' }
           if ((Get-Content -LiteralPath $log)[-1] -ne 'PASS') { throw 'run-test.ps1 did not end in PASS' }
+      - name: Build the release assets and extract README's Windows command
+        # Git Bash is on the runner; the product itself needs none of it.
+        shell: bash
+        run: |
+          .github/scripts/release-assets.sh "$RUNNER_TEMP/assets"
+          .github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-windows > "$RUNNER_TEMP/verify-windows.ps1"
+          cat "$RUNNER_TEMP/verify-windows.ps1"
+      - name: README's Windows verify command, PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmd = Join-Path $env:RUNNER_TEMP 'verify-windows.ps1'
+          $sb = [scriptblock]::Create((Get-Content -Raw -LiteralPath $cmd))
+          $assets = Join-Path $env:RUNNER_TEMP 'assets'
+          Push-Location $assets
+          try { & $sb } finally { Pop-Location }
+          # A changed byte must make it throw.
+          $bad = Join-Path $env:RUNNER_TEMP 'tampered7'
+          New-Item -ItemType Directory -Force -Path $bad | Out-Null
+          Copy-Item (Join-Path $assets 'SHA256SUMS'), (Join-Path $assets 'handoff.ps1') $bad
+          Add-Content -LiteralPath (Join-Path $bad 'handoff.ps1') -Value '# tampered'
+          Push-Location $bad
+          $threw = $false
+          try { & $sb } catch { $threw = $true } finally { Pop-Location }
+          if (-not $threw) { throw 'the verify command passed on a tampered handoff.ps1' }
+      - name: README's Windows verify command, Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmd = Join-Path $env:RUNNER_TEMP 'verify-windows.ps1'
+          $sb = [scriptblock]::Create((Get-Content -Raw -LiteralPath $cmd))
+          $assets = Join-Path $env:RUNNER_TEMP 'assets'
+          Push-Location $assets
+          try { & $sb } finally { Pop-Location }
+          $bad = Join-Path $env:RUNNER_TEMP 'tampered5'
+          New-Item -ItemType Directory -Force -Path $bad | Out-Null
+          Copy-Item (Join-Path $assets 'SHA256SUMS'), (Join-Path $assets 'handoff.ps1') $bad
+          Add-Content -LiteralPath (Join-Path $bad 'handoff.ps1') -Value '# tampered'
+          Push-Location $bad
+          $threw = $false
+          try { & $sb } catch { $threw = $true } finally { Pop-Location }
+          if (-not $threw) { throw 'the verify command passed on a tampered handoff.ps1' }
       - name: Upload the blobs both editions wrote
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

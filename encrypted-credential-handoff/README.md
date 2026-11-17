@@ -178,6 +178,42 @@ Whatever suite is in force, all ten invariants apply, and the known-answer test 
 
 RSA-2048 with OAEP-SHA256 encrypts at most **190 bytes** per blob (256 − 2×32 − 2). Keep payloads small; the examples above fit comfortably, including the `svc` field.
 
+## Getting the scripts
+
+(Placeholder: the surrounding prose is rewritten in the README rewrite. CI runs the two marked blocks below against the release assets, so keep them identical to what is tested.)
+
+Each tagged release carries `handoff.sh`, `handoff.ps1` and `SHA256SUMS`. Download `handoff.sh` and `SHA256SUMS` for a pinned tag (replace `vX.Y.Z`):
+
+```sh
+curl -fL --remote-name-all "https://github.com/cmeans/muse-field-kit/releases/download/vX.Y.Z/handoff.sh" "https://github.com/cmeans/muse-field-kit/releases/download/vX.Y.Z/SHA256SUMS"
+```
+
+Linux and macOS, check and make executable:
+
+<!-- verify-macos-linux:start -->
+```sh
+# Linux:
+sha256sum -c --ignore-missing SHA256SUMS
+# macOS:
+shasum -a 256 -c --ignore-missing SHA256SUMS
+```
+<!-- verify-macos-linux:end -->
+
+```sh
+chmod +x handoff.sh
+```
+
+Windows (PowerShell), after downloading `handoff.ps1` and `SHA256SUMS` with `Invoke-WebRequest -UseBasicParsing`:
+
+<!-- verify-windows:start -->
+```powershell
+$expected = ((Get-Content .\SHA256SUMS | Where-Object { $_ -match '\s\*?handoff\.ps1$' }) -split '\s+')[0]
+if ((Get-FileHash .\handoff.ps1 -Algorithm SHA256).Hash -ne $expected) { throw 'handoff.ps1 does not match SHA256SUMS' }
+```
+<!-- verify-windows:end -->
+
+Then `Unblock-File .\handoff.ps1`.
+
 ## Platform
 
 The reference scripts are the reviewed **Linux** implementation (bash + OpenSSL), developed and tested on Linux on both sides.
