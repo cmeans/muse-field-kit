@@ -29,7 +29,6 @@ jobs:
           persist-credentials: false
       - name: Tool versions
         run: |
-          openssl version
           python3 --version
           bash --version | head -1
           jq --version
@@ -48,7 +47,7 @@ jobs:
         # .gitattributes keeps them LF on checkout; this catches a commit
         # that slipped a CR in anyway.
         run: |
-          bad=$(git ls-files -z -- '*.sh' '*.py' '*.json' '*.txt' '*.pem' | xargs -0 grep -l $'\r' || true)
+          bad=$(git ls-files -z -- '*.sh' '*.py' '*.json' '*.txt' | xargs -0 grep -l $'\r' || true)
           if [ -n "$bad" ]; then
             echo "CR line endings in: $bad"
             exit 1
@@ -67,11 +66,11 @@ jobs:
       - name: A key file owned by another user, for the key-owner refusal
         # Ubuntu's /etc/shadow is group-readable, so run-test.sh finds no
         # owner-only file of another user's: give it a root-owned 0600 copy
-        # of the dummy key, which is a published test vector.
+        # of the dummy age identity, which is a published test vector.
         run: |
           sudo install -o root -g root -m 600 \
-            encrypted-credential-handoff/test/test-dummy-priv.pem "$RUNNER_TEMP/root-owned-key.pem"
-          echo "HANDOFF_TEST_OTHER_OWNER_KEY=$RUNNER_TEMP/root-owned-key.pem" >> "$GITHUB_ENV"
+            encrypted-credential-handoff/test/test-dummy-identity.txt "$RUNNER_TEMP/root-owned-key.txt"
+          echo "HANDOFF_TEST_OTHER_OWNER_KEY=$RUNNER_TEMP/root-owned-key.txt" >> "$GITHUB_ENV"
       - name: Interop and refusal tests
         # In CI, every check must run: a skip line fails the step.
         # pipefail: GitHub's default bash runs with -e only, so without it

@@ -998,7 +998,7 @@ def main() -> int:
         check_blob_file(target)
         if slot == "current":
             # Already for the current key: rewriting it would only change the
-            # bytes (OAEP is randomized) and confuse a comparison with the store.
+            # bytes (age output is randomized) and confuse a comparison with the store.
             print(f"consume.py: the blob in {target!r} is already for the current key "
                   f"{current}; nothing written", file=sys.stderr)
             return 0

@@ -3,7 +3,8 @@
 #
 # Verifies, against the reference implementation (../consume.py,
 # ../handoff.sh and ../agent-setup.sh):
-#   1. decrypt direction: blob.txt decrypts to expected.json's values, the
+#   1. decrypt direction: blob-age.txt (and blob-age-rage.txt, made by rage)
+#      decrypts to expected.json's values, the
 #      --check output matches expected-check.txt exactly, and the helper's
 #      OWN stdout and stderr never carry a dummy value;
 #   2. the command's stdin passes through consume.py untouched (a stdio
@@ -47,7 +48,7 @@ umask 077
 trap '[ "$BASH_SUBSHELL" = 0 ] && echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 cd "$(dirname "$0")"
 
-# The dummy values in expected.json / blob.txt. Distinct on purpose: a test
+# The dummy values in expected.json / blob-age.txt. Distinct on purpose: a test
 # that can't tell the username from the password can't catch a swap.
 U=dummy-user-Qx7
 P=dummy-pass-K3z9w
@@ -62,14 +63,20 @@ MK=mk-Zq9
 # `set -u` aborts itself and leaves the key copy behind.
 S=$(mktemp -d)
 trap 'rm -rf "$S"' EXIT
-# TMPKEY is the age identity (the dummy key of 0.2.0). RSAKEY is the 0.1.0
-# RSA key: the sections that still test the RSA path use it, and keep doing so
-# until the task that removes them.
+# TMPKEY is the age identity (the dummy key).
 TMPKEY="$S/dummy-identity.txt"
 cp test-dummy-identity.txt "$TMPKEY"
 chmod 600 "$TMPKEY"
-RSAKEY="$S/dummy-priv.pem"
-cp test-dummy-priv.pem "$RSAKEY"
+# fake_pem KIND prints a PEM-shaped text block with a made-up body: the tests of
+# 0.1.0 detection need a file that looks like a 0.1.0 key or public key, and
+# nothing in the kit parses one (only the BEGIN line is looked at), so no real
+# key is made or kept. KIND is the label, e.g. "RSA PRIVATE KEY".
+fake_pem() {
+  printf -- '-----BEGIN %s-----\nMIIBdummyDUMMYdummy0123456789+/abcdef\nDUMMYdummyDUMMYdummy0123456789+/ab==\n-----END %s-----\n' "$1" "$1"
+}
+# RSAKEY: a file shaped like a 0.1.0 RSA private key, owner-only.
+RSAKEY="$S/dummy-priv.txt"
+fake_pem "RSA PRIVATE KEY" > "$RSAKEY"
 chmod 600 "$RSAKEY"
 export HANDOFF_PRIVKEY="$TMPKEY"
 
@@ -97,8 +104,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # consume runs the helper. The key is whatever $HANDOFF_PRIVKEY is: the
 # suite exports the age identity (TMPKEY), and a test that names another key
 # sets it on the same line (HANDOFF_PRIVKEY=X consume ...), which reaches the
-# helper as written. The sections still on RSA (3b, 5b) get their own
-# keys in the task that moves them.
+# helper as written.
 consume() { python3 ../consume.py "$@"; }
 
 # The real interpreter, for the restricted-PATH tests: `command -v python3`
@@ -140,14 +146,6 @@ install_handoff() {
   mkdir -p "$(dirname "$2")"
   cp ../handoff.sh "$2"
   cp "$1" "$(dirname "$2")/handoff-muse.age"
-}
-
-# Encrypt the JSON text in $1 to the dummy public key with openssl (the
-# 0.1.0 RSA path, no validation), for payloads handoff.sh would never produce.
-enc_rsa() {
-  printf '%s' "$1" | openssl pkeyutl -encrypt -pubin -inkey test-dummy-pub.pem \
-    -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
-    -pkeyopt rsa_mgf1_md:sha256 | openssl base64 -A
 }
 
 # Encrypt the text in $1 to the test recipient (handoff-test.age) with age,
@@ -266,7 +264,7 @@ expect_refusal "--env private_key=LD_PRELOAD" 1 "is on the refused list" \
 # Every known field stands alone; none needs another (a label's record says
 # which fields its command needs). Each is injected under its SERVICE_ name.
 for one in private_key app_id installation_id api_key_id; do
-  var="SERVICE_$(printf '%s' "$one" | tr a-z A-Z)"
+  var="SERVICE_$(printf '%s' "$one" | tr "[:lower:]" "[:upper:]")"
   consume --label test --blob "$(enc "$(jq -nc --arg v "mk-Zq9-$one" --arg k "$one" '{svc:"test"} + {($k):$v}')")" -- python3 -c '
 import os, sys
 open(sys.argv[1], "w").write(os.environ[sys.argv[2]])
@@ -387,6 +385,7 @@ max_blob=$(sed -n 's/^MAX_BLOB_FILE = \([0-9]*\).*/\1/p' ../consume.py)
 [ -n "$max_payload" ] && [ -n "$max_blob" ] || fail "test setup: MAX_PAYLOAD or MAX_BLOB_FILE not found"
 # The formula in handoff.sh's comment: blob bytes <= MAX_BLOB_FILE / 4 * 3,
 # less 168 (header) and 32 (payload overhead) and a 256-byte grease margin.
+# shellcheck disable=SC2017  # integer arithmetic exactly as consume.py computes it
 [ "$max_payload" = "$(( max_blob / 4 * 3 - 168 - 32 - 256 ))" ] \
   || fail "MAX_PAYLOAD ($max_payload) is not MAX_BLOB_FILE ($max_blob) / 4 * 3 - 168 - 32 - 256"
 # JSON of exactly $1 bytes, a svc and one private_key value.
@@ -400,6 +399,7 @@ bash "$S/hd/handoff.sh" <<<"$big" >"$S/blob-max" 2>"$S/err" || { cat "$S/err" >&
 # the margin to MAX_BLOB_FILE's decoded size for rage's grease stanza.
 blob_chars=$(( $(wc -c < "$S/blob-max") - 1 ))
 [ "$blob_chars" -le "$max_blob" ] || fail "the blob for a maximum payload is $blob_chars characters, over $max_blob"
+# shellcheck disable=SC2017  # integer arithmetic exactly as consume.py computes it
 [ "$blob_chars" = "$(( (max_payload + 168 + 32 + 2) / 3 * 4 ))" ] \
   || fail "the blob for a maximum payload is not payload + 168 + 32 bytes (the comment's arithmetic is out of date)"
 out=$(HANDOFF_BLOB="$(cat "$S/blob-max")" consume --label example -- python3 -c '
@@ -628,6 +628,9 @@ expect_refusal "no known credential field" 1 "no known credential field" \
 # Unknown fields are counted, never named: unknown.json's is "note".
 grep -qF "ignoring 1 unknown field" "$S/err" || fail "unknown field not counted"
 ! grep -qw note "$S/err" || fail "an unknown field's name was echoed"
+# The committed age blob of unknown.json (made by make-vectors.sh) is refused the same way.
+expect_refusal "no known credential field (the committed blob-unknown.txt)" 1 "no known credential field" \
+  consume --label example --check --blob-file blob-unknown.txt
 expect_refusal "--check with a command" 1 "--check takes no command" \
   consume --label example --check --blob-file blob-age.txt -- true
 expect_refusal "no command and no --check" 1 "no command given" \
@@ -662,52 +665,42 @@ for which in damaged other-key; do
   ! grep -q "no identity matched\|age: \|error:" "$S/err" || fail "the decrypt refusal ($which) shows age's text: $(cat "$S/err")"
   ! grep -q "check that HANDOFF_PRIVKEY" "$S/err" || fail "the decrypt refusal ($which) invites trying another key"
 done
-# An encrypted key is refused, and never takes a passphrase from stdin (the
-# command's transport): the passphrase is right there on stdin.
-openssl pkey -in test-dummy-priv.pem -aes256 -passout pass:mk-Zq9-pass -out "$S/enc-key.pem" 2>/dev/null
-chmod 600 "$S/enc-key.pem"
+# An encrypted 0.1.0 key (a PEM block) is refused, and never takes a
+# passphrase from stdin (the command's transport): the passphrase is right
+# there on stdin.
+fake_pem "ENCRYPTED PRIVATE KEY" > "$S/enc-key.txt"
+chmod 600 "$S/enc-key.txt"
 # shellcheck disable=SC2016  # $1 is the inner shell's argument
 expect_refusal "an encrypted 0.1.0 key, passphrase on stdin" 1 "is an RSA key from 0.1.0" \
-  bash -c 'echo mk-Zq9-pass | HANDOFF_PRIVKEY="$1" python3 ../consume.py --label example --check --blob-file blob-age.txt' _ "$S/enc-key.pem"
+  bash -c 'echo mk-Zq9-pass | HANDOFF_PRIVKEY="$1" python3 ../consume.py --label example --check --blob-file blob-age.txt' _ "$S/enc-key.txt"
 # shellcheck disable=SC2016  # $1 is the inner shell's argument
 expect_refusal "agent-setup.sh --fingerprint, an encrypted 0.1.0 key" 1 "is an RSA key from 0.1.0" \
-  bash -c 'echo mk-Zq9-pass | bash ../agent-setup.sh --fingerprint "$1"' _ "$S/enc-key.pem"
-# Only RSA-2048 keys: an Ed25519 or P-256 key loads but isn't this protocol's.
-openssl genpkey -algorithm ED25519 -out "$S/ed25519.pem" 2>/dev/null
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$S/p256.pem" 2>/dev/null
-# A 2052-bit RSA key has the same 294-byte public key as a 2048-bit one; an
-# RSA-2048 key with e = 3 differs in its exponent (and length), and one with
-# e = 65539 only in its exponent's value (the same length): all refused too.
-# A FIPS-mode openssl may refuse to make some of these: those are skipped.
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2052 -out "$S/rsa2052.pem" 2>/dev/null || true
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:3 -out "$S/rsa-e3.pem" 2>/dev/null || true
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_keygen_pubexp:65539 -out "$S/rsa-e65539.pem" 2>/dev/null || true
-for k in ed25519 p256 rsa2052 rsa-e3 rsa-e65539; do
-  if [ ! -s "$S/$k.pem" ]; then echo "skip: openssl couldn't make a $k key, its refusal wasn't tested"; continue; fi
-  chmod 600 "$S/$k.pem"
-  # Any PEM private key is a 0.1.0 key to agent-setup.sh, as it is to consume.py.
-  expect_refusal "a $k key (agent-setup.sh --fingerprint)" 1 "is an RSA key from 0.1.0" \
-    bash ../agent-setup.sh --fingerprint "$S/$k.pem"
-done
+  bash -c 'echo mk-Zq9-pass | bash ../agent-setup.sh --fingerprint "$1"' _ "$S/enc-key.txt"
+# Any PEM private key (an unwrapped PKCS#8 one is what an Ed25519 or P-256 key
+# is saved as) is a 0.1.0 key to both scripts.
+fake_pem "PRIVATE KEY" > "$S/pkcs8.txt"; chmod 600 "$S/pkcs8.txt"
+expect_refusal "a PKCS#8 PEM key (agent-setup.sh --fingerprint)" 1 "is an RSA key from 0.1.0" \
+  bash ../agent-setup.sh --fingerprint "$S/pkcs8.txt"
+expect_refusal "a PKCS#8 PEM key (consume.py)" 1 "is an RSA key from 0.1.0" \
+  env HANDOFF_PRIVKEY="$S/pkcs8.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 # An unreadable key file is reported as unreadable, not as oversized (root
 # can read anything, so skip it there).
 if [ "$(id -u)" != 0 ]; then
-  cp "$RSAKEY" "$S/noread.pem"; chmod 000 "$S/noread.pem"
+  cp "$RSAKEY" "$S/noread.txt"; chmod 000 "$S/noread.txt"
   expect_refusal "agent-setup.sh --fingerprint, an unreadable key file" 1 "cannot read key file at" \
-    bash ../agent-setup.sh --fingerprint "$S/noread.pem"
+    bash ../agent-setup.sh --fingerprint "$S/noread.txt"
   ! grep -q "over 16384" "$S/err" || fail "an unreadable key file was reported as oversized"
 fi
-# A key file over 16384 bytes is refused before openssl sees it (its decoder
-# is very slow on large junk).
-head -c 20000 /dev/zero | tr '\0' 'A' > "$S/big-key.pem"; chmod 600 "$S/big-key.pem"
+# A key file over 16384 bytes is refused before it is read in full or parsed.
+head -c 20000 /dev/zero | tr '\0' 'A' > "$S/big-key.txt"; chmod 600 "$S/big-key.txt"
 expect_refusal "an oversized key file (consume.py)" 1 "over 16384" \
-  timeout 20 env HANDOFF_PRIVKEY="$S/big-key.pem" python3 ../consume.py --label example --check --blob-file blob-age.txt
+  timeout 20 env HANDOFF_PRIVKEY="$S/big-key.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 expect_refusal "an oversized key file (agent-setup.sh --fingerprint)" 1 "over 16384 bytes" \
-  timeout 20 bash ../agent-setup.sh --fingerprint "$S/big-key.pem"
+  timeout 20 bash ../agent-setup.sh --fingerprint "$S/big-key.txt"
 # Under a terminal (a pseudo-terminal from script), an encrypted key still
 # isn't prompted for: no "Enter pass phrase", and no hang.
 if command -v script >/dev/null; then
-  out=$(HANDOFF_PRIVKEY="$S/enc-key.pem" timeout 20 script -qec "python3 ../consume.py --label example --check --blob-file blob-age.txt" /dev/null 2>&1) || true
+  out=$(HANDOFF_PRIVKEY="$S/enc-key.txt" timeout 20 script -qec "python3 ../consume.py --label example --check --blob-file blob-age.txt" /dev/null 2>&1) || true
   case "$out" in
     *"Enter pass phrase"*) fail "the helper prompted for a key passphrase on a terminal" ;;
     *"an RSA key from 0.1.0"*) echo "ok (refused: an encrypted 0.1.0 key under a terminal, no prompt)" ;;
@@ -717,7 +710,7 @@ else
   echo "skip: script(1) missing, the terminal prompt check didn't run"
 fi
 expect_refusal "missing key" 1 "cannot read private key" \
-  env HANDOFF_PRIVKEY="$S/no-such-key.pem" python3 ../consume.py --label example --check --blob-file blob-age.txt
+  env HANDOFF_PRIVKEY="$S/no-such-key.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 # A key file owned by another user is refused, even at mode 0600. It needs a
 # file this account doesn't own, so: $HANDOFF_TEST_OTHER_OWNER_KEY if set (CI
 # makes a root-owned 0600 copy of the dummy key), else a root-owned,
@@ -833,10 +826,10 @@ HOME="$S/home2" consume --label example --check --blob-file '~/b.txt' >"$S/out" 
   || fail "--blob-file did not expand ~/"
 # shellcheck disable=SC2088
 expect_refusal "~user in HANDOFF_PRIVKEY (consume.py)" 1 "only ~/ is expanded" \
-  env HANDOFF_PRIVKEY='~root/k.pem' python3 ../consume.py --label example --check --blob-file blob-age.txt
+  env HANDOFF_PRIVKEY='~root/k.txt' python3 ../consume.py --label example --check --blob-file blob-age.txt
 # shellcheck disable=SC2088
 expect_refusal "~user in HANDOFF_PRIVKEY (agent-setup.sh)" 1 "only ~/ is expanded" \
-  env HANDOFF_PRIVKEY='~root/k.pem' bash ../agent-setup.sh --fingerprint
+  env HANDOFF_PRIVKEY='~root/k.txt' bash ../agent-setup.sh --fingerprint
 # shellcheck disable=SC2088
 expect_refusal "~user in HANDOFF_KEY_DIR" 1 "only ~/ is expanded" \
   env HANDOFF_KEY_DIR='~root/kd' bash ../agent-setup.sh
@@ -856,8 +849,8 @@ mkdir -p "$S/home4"
 HOME="$S/home4" HANDOFF_KEY_DIR='~' bash ../agent-setup.sh >/dev/null 2>&1 \
   && [ -f "$S/home4/handoff-identity.txt" ] || fail "HANDOFF_KEY_DIR='~' did not land in \$HOME"
 # shellcheck disable=SC2088
-expect_refusal "~user in --fingerprint's KEY" 1 "agent-setup.sh: KEY '~root/k.pem'" \
-  bash ../agent-setup.sh --fingerprint '~root/k.pem'
+expect_refusal "~user in --fingerprint's KEY" 1 "agent-setup.sh: KEY '~root/k.txt'" \
+  bash ../agent-setup.sh --fingerprint '~root/k.txt'
 expect_refusal "--check twice" 1 "--check given twice" \
   consume --label example --check --check --blob-file blob-age.txt
 expect_refusal "blob file missing" 1 "No such file or directory" \
@@ -1001,14 +994,14 @@ expect_refusal "agent-setup.sh unknown argument" 2 "usage: agent-setup.sh" \
   env HANDOFF_KEY_DIR="$S/typo" bash ../agent-setup.sh --fingerprnt
 [ ! -e "$S/typo" ] || fail "agent-setup.sh created a key directory for an unknown argument"
 expect_refusal "agent-setup.sh --fingerprint, no key" 1 "no key file at" \
-  env HANDOFF_PRIVKEY="$S/no-such-key.pem" bash ../agent-setup.sh --fingerprint
+  env HANDOFF_PRIVKEY="$S/no-such-key.txt" bash ../agent-setup.sh --fingerprint
 expect_refusal "agent-setup.sh --fingerprint, two keys" 2 "usage: agent-setup.sh --fingerprint" \
   bash ../agent-setup.sh --fingerprint "$TMPKEY" "$TMPKEY"
 expect_refusal "agent-setup.sh --fingerprint, empty KEY" 2 "empty KEY" \
   bash ../agent-setup.sh --fingerprint ""
-cp test-dummy-pub.pem "$S/pub-copy.pem"; chmod 600 "$S/pub-copy.pem"
+fake_pem "PUBLIC KEY" > "$S/pub-copy.txt"; chmod 600 "$S/pub-copy.txt"
 expect_refusal "agent-setup.sh --fingerprint, a public key" 1 "is not an age identity file" \
-  bash ../agent-setup.sh --fingerprint "$S/pub-copy.pem"
+  bash ../agent-setup.sh --fingerprint "$S/pub-copy.txt"
 expect_refusal "handoff.sh non-object payload" 1 "must be a single JSON object" \
   bash "$S/hd/handoff.sh" <<<'["mk-Zq9"]'
 expect_refusal "handoff.sh two concatenated objects" 1 "must be a single JSON object" \
@@ -1117,6 +1110,7 @@ expect_refusal "the wrong identity" 1 "decryption failed with the key at $S/othe
 ! grep -q "no identity matched\|age: " "$S/err" || fail "the decrypt refusal shows age's text: $(cat "$S/err")"
 # The age that ran is reported, so a refusal can be traced to a version.
 mkdir -p "$S/verstub"
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\ncat >/dev/null\nexit 1\n' >"$S/verstub/age"
 chmod 755 "$S/verstub/age"
 expect_refusal "the age version is reported" 1 "age v9.9.9-test" \
@@ -1137,7 +1131,7 @@ expect_refusal "a plugin identity line" 1 "plugin identity" \
 { cat "$TMPKEY"; echo "AGE-SECRET-KEY-PQ-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"; } >"$S/id-pq.txt"
 expect_refusal "a post-quantum identity line" 1 "post-quantum identity" \
   env HANDOFF_PRIVKEY="$S/id-pq.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
-cp test-dummy-priv.pem "$S/id-rsa.txt"; chmod 600 "$S/id-rsa.txt"
+cp "$RSAKEY" "$S/id-rsa.txt"
 expect_refusal "an RSA PEM at the identity path" 1 "an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again (README.md)" \
   env HANDOFF_PRIVKEY="$S/id-rsa.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 # Any other text is refused before age-keygen runs (a stub age-keygen leaves a marker).
@@ -1202,7 +1196,6 @@ prep_shared
 prep_agent
 K="$S/hk"; mkdir -p "$K"; cp ../handoff.sh "$K/handoff.sh"
 pay='{"svc":"example","password":"mk-Zq9"}'
-RCPT=$(cat handoff-test.age)
 BASH_BIN=$(command -v bash)
 # No recipient file: no ciphertext, and no recipient in the script to fall back on.
 expect_refusal "handoff.sh with no recipient file" 1 "no recipient file for 'muse': $K/handoff-muse.age doesn't exist" \
@@ -1315,7 +1308,7 @@ expect_refusal "handoff.sh with a newline in place of the -" 1 "handoff-muse.age
 rm -f "$S/hn/$nl_name"
 # A 0.1.0 install: handoff-muse.pem beside it and no .age. It says 0.2.0 uses
 # age and to ask the agent for its recipient; the key is never used.
-cp test-dummy-pub.pem "$S/hn/handoff-muse.pem"
+fake_pem "PUBLIC KEY" > "$S/hn/handoff-muse.pem"
 expect_refusal "handoff.sh with a .pem and no .age" 1 "0.2.0 uses age" \
   bash "$S/hn/handoff.sh" <<<"$pay"
 grep -qF "ask your agent for its recipient" "$S/err" || fail "the .pem refusal doesn't say to ask for the recipient"
@@ -1460,9 +1453,11 @@ printf '#!/bin/sh\necho jq-0.9\n' >"$S/stubjq/jq"
 refused_before_prompt "handoff.sh with jq 0.9" "jq 1.6 or newer is required; found jq-0.9" PATH="$S/stubjq:$PATH"
 printf '#!/bin/sh\necho gibberish\n' >"$S/stubjq/jq"
 refused_before_prompt "handoff.sh with an unreadable jq version" "found gibberish" PATH="$S/stubjq:$PATH"
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 printf '#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.6; else exec %s "$@"; fi\n' "$(command -v jq)" >"$S/stubjq/jq"
 env PATH="$S/stubjq:$PATH" bash "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err" \
   || { cat "$S/err" >&2; fail "handoff.sh refused jq 1.6"; }
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 printf '#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.7.1-dirty; else exec %s "$@"; fi\n' "$(command -v jq)" >"$S/stubjq/jq"
 env PATH="$S/stubjq:$PATH" bash "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err" \
   || { cat "$S/err" >&2; fail "handoff.sh refused jq 1.7.1-dirty"; }
@@ -1492,10 +1487,12 @@ env SHELLOPTS=xtrace "$BASH_BIN" "$K/handoff.sh" <<<"$pay" >/dev/null 2>"$S/err"
 # A failing age is reported with its version: at the up-front recipient check,
 # and at the encrypt step (a stub that takes an empty stdin and fails on data).
 mkdir -p "$S/badage"
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\nexit 1\n' >"$S/badage/age"
 chmod 755 "$S/badage/age"
 expect_refusal "handoff.sh with an age that rejects the recipient" 1 "is not a valid age recipient: age v9.9.9-test did not accept it" \
   env PATH="$S/badage:$PATH" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 printf '#!/bin/sh\nif [ "$1" = --version ]; then echo v9.9.9-test; exit 0; fi\n[ "$(wc -c)" = 0 ]\n' >"$S/badage/age"
 expect_refusal "handoff.sh with an age that fails to encrypt" 1 "age failed to encrypt (age v9.9.9-test)" \
   env PATH="$S/badage:$PATH" "$BASH_BIN" "$K/handoff.sh" <<<"$pay"
@@ -1574,7 +1571,7 @@ cmp -s blob-age.txt "$ST/new.txt" && fail "--rewrap left its blob file unchanged
 ! compgen -G "$ST/.new.txt.*" >/dev/null || fail "--rewrap left its temporary file"
 no_dummy_in "$ST/new.txt" "$R/err"
 # The new blob opens with the current key alone, to the same payload.
-mv "$R/k.txt.previous" "$R/held.pem"
+mv "$R/k.txt.previous" "$R/held.txt"
 rk python3 ../consume.py --label example --check --blob-file "$ST/new.txt" >"$R/out" \
   || fail "the rewrapped blob doesn't open with the current key"
 diff "$R/out" expected-check.txt || fail "the rewrapped payload differs"
@@ -1583,7 +1580,7 @@ import os
 print(os.environ["SERVICE_USERNAME"], os.environ["SERVICE_PASSWORD"])
 ')
 [ "$out" = "$U $P" ] || fail "the rewrapped blob's values differ"
-mv "$R/held.pem" "$R/k.txt.previous"
+mv "$R/held.txt" "$R/k.txt.previous"
 # During a rotation, run mode says so for a blob the current key opened: a
 # probe checks for a line that's there.
 rk python3 ../consume.py --label example --blob-file "$ST/new.txt" -- true 2>"$R/err" || fail "run mode on the rewrapped blob failed"
@@ -2154,12 +2151,14 @@ cur_rcpt=$("$AGE_KEYGEN" -y "$KEY")
 # A key generation that fails leaves the old key in place and no temporary
 # file, and shows age-keygen's reason: a fake age-keygen that fails -o and
 # passes everything else on.
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/nogen" 'for a; do [ "$a" = -o ] && { echo "age-keygen: simulated failure" >&2; exit 1; }; done'
 before=$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)
 expect_refusal "--rotate whose key generation fails" 1 "key generation failed; the old key is unchanged" \
   rk env PATH="$S/nogen:/usr/bin:/bin" bash ../agent-setup.sh --rotate
 grep -qF "simulated failure" "$S/err" || fail "a failed key generation hid age-keygen's reason"
 [ "$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$before" ] || fail "a failed --rotate changed the current key"
+# shellcheck disable=SC2015  # the || branch is the failure message, not an else
 ! compgen -G "$R/.handoff-new*" >/dev/null && ! compgen -G "$R/.handoff-tmp*" >/dev/null || fail "a failed --rotate left a temporary key file"
 # It did keep the old key as the previous one: a re-run resumes from there.
 [ "$KEY.previous" -ef "$KEY" ] || fail "a failed --rotate didn't leave the resumable state"
@@ -2170,11 +2169,13 @@ expect_refusal "--rotate, two keys" 2 "usage: agent-setup.sh --rotate" \
   bash ../agent-setup.sh --rotate "$KEY" "$KEY"
 # A key generation that exits 0 after a short write (a full disk) is caught
 # before it replaces anything, in --rotate and at first setup.
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/shortgen" 'prev=; for a; do [ "$prev" = -o ] && { head -c 1024 /dev/zero > "$a"; exit 0; }; prev=$a; done'
 before=$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)
 expect_refusal "--rotate whose age-keygen writes a short file" 1 "the new key didn't check out" \
   rk env PATH="$S/shortgen:/usr/bin:/bin" bash ../agent-setup.sh --rotate
 [ "$(rk bash ../agent-setup.sh --fingerprint 2>/dev/null)" = "$before" ] || fail "a short key write replaced the current key"
+# shellcheck disable=SC2015  # the || branch is the failure message, not an else
 ! compgen -G "$R/.handoff-new*" >/dev/null && ! compgen -G "$R/.handoff-tmp*" >/dev/null || fail "a short key write left a temporary key file"
 cur_blob=$(enc_to "$("$AGE_KEYGEN" -y "$KEY")" '{"svc":"example","password":"mk-Zq9-cur"}')
 rk python3 ../consume.py --label example --check --blob "$cur_blob" >/dev/null || fail "the current key stopped working after a short key write"
@@ -2182,8 +2183,10 @@ rm "$KEY.previous"
 expect_refusal "first setup whose age-keygen writes a short file" 1 "nothing was written" \
   env PATH="$S/shortgen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/short-setup" bash ../agent-setup.sh
 [ ! -e "$S/short-setup/handoff-identity.txt" ] || fail "first setup left a short key file at the key path"
+# shellcheck disable=SC2015  # the || branch is the failure message, not an else
 ! compgen -G "$S/short-setup/.handoff-setup.*" >/dev/null && ! compgen -G "$S/short-setup/.handoff-tmp.*" >/dev/null || fail "first setup left a temporary key file"
 # An age-keygen -y that fails is "cannot load", whatever the file holds.
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/noy" 'for a; do [ "$a" = -y ] && exit 1; done'
 expect_refusal "--fingerprint whose age-keygen -y fails" 1 "cannot load the age identity at $KEY" \
   rk env PATH="$S/noy:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
@@ -2230,10 +2233,12 @@ mkdir -p "$R/dash"; cp "$TMPKEY" "$R/dash/-k.txt"
 [ ! -e "$R/dash/-k.txt.previous" ] || fail "--retire on a key path starting with - left the previous key"
 # Two --rotate runs at once: the second, started while the first is
 # generating, is refused at the lock, and the first one's key is the key.
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/slowgen" 'for a; do [ "$a" = -o ] && sleep 2; done'
 # The second run's recipient read is slow too (its -y takes 4 s), so a run
 # that read the key before taking the lock would see the first run finish,
 # then take that run's new key for its own old one.
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/slowy" 'for a; do [ "$a" = -y ] && sleep 4; done'
 rk env PATH="$S/slowgen:/usr/bin:/bin" bash ../agent-setup.sh --rotate >"$R/race-a" 2>&1 &
 first=$!
@@ -2274,12 +2279,14 @@ mkdir -p "$R/dash2/-d"; cp "$TMPKEY" "$R/dash2/-d/k.txt"
   || fail "a key directory starting with - failed"
 [ -f "$R/dash2/-g/handoff-identity.txt" ] || fail "first setup in a directory starting with - wrote no key"
 # First setup never replaces a key that appears while it generates.
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/racegen" 'prev=; for a; do [ "$prev" = -o ] && printf existing > "$(dirname "$(dirname "$a")")/handoff-identity.txt"; prev=$a; done'
 expect_refusal "first setup when a key appears meanwhile" 1 "could not link the new key into place" \
   env PATH="$S/racegen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/race-setup" bash ../agent-setup.sh
 [ "$(cat "$S/race-setup/handoff-identity.txt")" = existing ] || fail "first setup replaced a key that appeared meanwhile"
 # A TERM while age-keygen runs leaves no temporary private key behind (bash
 # waits for the child, then its EXIT trap removes the file the child wrote).
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/slowgen3" 'for a; do [ "$a" = -o ] && sleep 3; done'
 mkdir -p "$S/term-setup"
 env PATH="$S/slowgen3:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/term-setup" bash ../agent-setup.sh >/dev/null 2>&1 &
@@ -2311,6 +2318,7 @@ grep -qF "interrupted; run --rotate again to finish" "$S/term-rot-err" || fail "
 rm -f "$KEY.previous"
 # A key path that turns into a directory during generation: ln would put the
 # key inside it. Refused, with no copy left behind.
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/dirgen" 'prev=; for a; do [ "$prev" = -o ] && mkdir "$(dirname "$(dirname "$a")")/handoff-identity.txt"; prev=$a; done'
 expect_refusal "first setup when the key path becomes a directory" 1 "it is now a directory" \
   env PATH="$S/dirgen:/usr/bin:/bin" HANDOFF_KEY_DIR="$S/dir-setup" bash ../agent-setup.sh
@@ -2343,6 +2351,7 @@ rk bash ../agent-setup.sh --retire --yes >/dev/null 2>"$R/err" || fail "--retire
 grep -qF "another link to the previous key" "$R/err" || fail "--retire didn't report the link it removed"
 # KEY turning into a directory during --rotate: refused, the new key removed,
 # the old key kept as .previous.
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/dirrot" "T='$S/dr/k.txt'"'
 prev=; for a; do [ "$prev" = -o ] && { rm -f "$T" && mkdir "$T"; }; prev=$a; done'
 mkdir -p "$S/dr"; cp "$TMPKEY" "$S/dr/k.txt"
@@ -2351,10 +2360,12 @@ expect_refusal "--rotate when the key path becomes a directory" 1 "is now a dire
 ! compgen -G "$S/dr/k.txt/.handoff-*" >/dev/null || fail "a new key was left inside the directory at the key path"
 ! compgen -G "$S/dr/.handoff-tmp.*" >/dev/null || fail "a refused --rotate left its private temporary directory"
 # The same with a relative KEY starting with "-": rm, mv and ln must read it as a path.
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/dirrot2" 'prev=; for a; do [ "$prev" = -o ] && { rm -f -- -k.txt && mkdir -- -k.txt; }; prev=$a; done'
 mkdir -p "$S/dr2"; cp "$TMPKEY" "$S/dr2/-k.txt"
 (cd "$S/dr2" && expect_refusal "--rotate when a key path starting with - becomes a directory" 1 "is now a directory; the new key was removed" \
   env -u HANDOFF_PRIVKEY PATH="$S/dirrot2:/usr/bin:/bin" bash "$OLDPWD/../agent-setup.sh" --rotate -k.txt)
+# shellcheck disable=SC2015  # the || branch is the failure message, not an else
 ! compgen -G "$S/dr2/-k.txt/*" >/dev/null && ! compgen -G "$S/dr2/-k.txt/.handoff-*" >/dev/null || fail "a new key was left inside the directory at a key path starting with -"
 ! compgen -G "$S/dr2/.handoff-tmp.*" >/dev/null || fail "the dash-path run left its private temporary directory"
 [ -f "$S/dr/k.txt.previous" ] || fail "the old key wasn't kept as .previous"
@@ -2529,6 +2540,7 @@ run_to() {
   else "$@"; fi
 }
 BASE_TOOLS="sleep sh tail awk base64 tr cmp sed head cat rm mkdir mktemp chmod env dirname grep uname wc ls id stat sort cut od"
+# shellcheck disable=SC2086  # a deliberate word list
 mkpath "$C8/p-all" $BASE_TOOLS bash jq
 ln -s "$REAL_AGE" "$C8/p-all/age"; ln -s "$REAL_KEYGEN" "$C8/p-all/age-keygen"
 ln -s "$PY" "$C8/p-all/python3"
@@ -2581,6 +2593,7 @@ hasnt "SHAPE_ONLY" "PASS recipient"
 echo "ok (recipient file)"
 
 # A PATH without age: FAIL age.
+# shellcheck disable=SC2086  # a deliberate word list
 mkpath "$C8/p-noage" $BASE_TOOLS bash jq age-keygen
 run8 "no age" 1 env TMPDIR="$C8/tmp" PATH="$C8/p-noage" "$BASH" "$H8" --check-setup
 has "no age" "FAIL age: "
@@ -2591,6 +2604,7 @@ printf 'age1notarecipient\n' >"$C8/hd/handoff-bad.age"
 run8 "no age, a recipient file of the wrong shape" 1 env TMPDIR="$C8/tmp" PATH="$C8/p-noage" "$BASH" "$H8" --check-setup --to bad
 has "no age, bad shape" "FAIL recipient: "
 # No age-keygen: INFO, an encrypt-only round trip, header and base64 still checked.
+# shellcheck disable=SC2086  # a deliberate word list
 mkpath "$C8/p-nokg" $BASE_TOOLS bash jq
 ln -s "$REAL_AGE" "$C8/p-nokg/age"
 run8 "no age-keygen" 0 env TMPDIR="$C8/tmp" PATH="$C8/p-nokg" "$BASH" "$H8" --check-setup
@@ -2609,12 +2623,15 @@ mkdir -p "$C8/stubjq"
 printf '#!/bin/sh\necho jq-1.5\n' >"$C8/stubjq/jq"; chmod 755 "$C8/stubjq/jq"
 run8 "jq 1.5" 1 env TMPDIR="$C8/tmp" PATH="$C8/stubjq:$P_ALL" "$BASH" "$H8" --check-setup
 has "jq 1.5" "FAIL jq: .*jq-1.5"
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 printf '#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.6; else exec %s "$@"; fi\n' "$(command -v jq)" >"$C8/stubjq/jq"
 run8 "jq 1.6" 0 env TMPDIR="$C8/tmp" PATH="$C8/stubjq:$P_ALL" "$BASH" "$H8" --check-setup
 has "jq 1.6" "PASS jq: jq-1.6"
+# shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 printf '#!/bin/sh\nif [ "$1" = --version ]; then echo jq-1.6; else echo wrong; fi\n' >"$C8/stubjq/jq"
 run8 "jq whose --rawfile fails" 1 env TMPDIR="$C8/tmp" PATH="$C8/stubjq:$P_ALL" "$BASH" "$H8" --check-setup
 has "jq rawfile" "FAIL jq rawfile: "
+# shellcheck disable=SC2086  # a deliberate word list
 mkpath "$C8/p-nojq" $BASE_TOOLS bash
 ln -s "$REAL_AGE" "$C8/p-nojq/age"; ln -s "$REAL_KEYGEN" "$C8/p-nojq/age-keygen"
 run8 "no jq" 1 env TMPDIR="$C8/tmp" PATH="$C8/p-nojq" "$BASH" "$H8" --check-setup
@@ -2796,9 +2813,11 @@ has "default key path" "INFO identity: "
 echo "ok (identity)"
 
 # Missing tools and failing ones.
+# shellcheck disable=SC2086  # a deliberate word list
 mkpath "$C8/pa-noage" $BASE_TOOLS bash python3 age-keygen
 run8 "agent: no age" 1 env TMPDIR="$C8/tmp" PATH="$C8/pa-noage" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
 has "agent no age" "FAIL age: "
+# shellcheck disable=SC2086  # a deliberate word list
 mkpath "$C8/pa-nokg" $BASE_TOOLS bash python3 age
 run8 "agent: no age-keygen" 1 env TMPDIR="$C8/tmp" PATH="$C8/pa-nokg" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
 has "agent no age-keygen" "FAIL age-keygen: "
@@ -2807,6 +2826,7 @@ mkdir -p "$C8/stubpy"
 printf '#!/bin/sh\necho 3.6\n' >"$C8/stubpy/python3"; chmod 755 "$C8/stubpy/python3"
 run8 "agent: python3 3.6" 1 env TMPDIR="$C8/tmp" PATH="$C8/stubpy:$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
 has "python3 3.6" "FAIL python3: .*3.6"
+# shellcheck disable=SC2086  # a deliberate word list
 mkpath "$C8/pa-nopy" $BASE_TOOLS bash
 ln -s "$REAL_AGE" "$C8/pa-nopy/age"; ln -s "$REAL_KEYGEN" "$C8/pa-nopy/age-keygen"
 run8 "agent: no python3" 1 env TMPDIR="$C8/tmp" PATH="$C8/pa-nopy" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup

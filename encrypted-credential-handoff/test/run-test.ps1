@@ -369,7 +369,9 @@ if (-not $OnWindows) {
   Clear-HN
 } else { NotHere 'a newline in a file name (Windows file names cannot hold one)' }
 # A 0.1.0 install: handoff-muse.pem and no .age.
-Copy-Item -LiteralPath (Join-Path $Here 'test-dummy-pub.pem') -Destination (Join-Path $NearDir 'handoff-muse.pem')
+# A PEM-shaped public key (made-up body: only the file's name matters to handoff.ps1).
+$fakePem = "-----BEGIN PUBLIC KEY-----`nMIIBdummyDUMMYdummy0123456789+/abcdef`nDUMMYdummyDUMMYdummy0123456789+/ab==`n-----END PUBLIC KEY-----`n"
+[IO.File]::WriteAllText((Join-Path $NearDir 'handoff-muse.pem'), $fakePem, $Utf8)
 $r = Invoke-Handoff -Script $hn -Pipe $PayFile
 Assert-Refusal 'a .pem and no .age' 1 '0.2.0 uses age' $r
 Assert-True ($r.Err.Contains('ask your agent for its recipient')) "the .pem refusal doesn't say to ask for the recipient"

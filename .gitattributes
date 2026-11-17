@@ -5,7 +5,6 @@
 *.py   text eol=lf
 *.json text eol=lf
 *.txt  text eol=lf
-*.pem  text eol=lf
 # *.ps1 stays LF too (builder's choice, Task 5w): Windows PowerShell 5.1 and
 # PowerShell 7 both parse LF scripts, and test/run-test.ps1 checks that
 # handoff.ps1 and itself are ASCII only, have no CR and parse, on the Windows
