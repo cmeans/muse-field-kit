@@ -160,6 +160,20 @@ Not stores: Muse's own memory files and workspace (the key's disk); any file on 
 
 If nothing qualifies, don't adopt the pattern yet, or put the key or the store on a genuinely separate volume. A store that fails these requirements doesn't make the pattern slightly weaker; it removes the property the pattern is for.
 
+### Other stores (untested)
+
+These weren't tested for this release, and free tiers and limits change, so check each one against the requirements above before you use it.
+
+- **Cloudflare Workers KV:** a dedicated key-value store, like Upstash, reached through a custom connection. Check the free tier's limits and that no history is kept.
+- **Redis Cloud (free database):** plain Redis, the same model as Upstash, reached through a custom connection.
+- **Supabase or Firebase (free tier):** a private table or record, with more setup. Check row-level access, so nothing is readable by anyone else.
+- **OneDrive or Box:** file storage, like Drive and Dropbox. Use a dedicated account, and check version history and the recycle bin.
+- **Evernote:** a notes app. Check whether your agent can reach it unattended at all, then the note history, the trash and the free plan's limits.
+- **GitHub Gist:** a "secret" gist is only unlisted, not private, and it keeps every revision. It doesn't fit.
+- **Airtable:** check the long-text field limits and the revision history.
+
+<!-- STORE-TEST: link when STORE-TEST.md lands -->
+
 ### Approving a connection: Allow or Allow Always
 
 A connected service's call can bring up an approval for the user, with **Allow** (this time) or **Allow Always**. In Muse's tests on 2026-11-14 none appeared when the blob was staged in Upstash, the remote memory service, Drive or Notion; for Dropbox none was recorded, but its staging needed the user's one-time grant of write access during the run (ranking item 2). The tests didn't ask about approvals on the fetches, though each fetch, run as a wrapper runs it (`env -i`, from a fresh shell), succeeded. So whether an approval can hold up a wrapper's fetch, and when one appears, is not verified. Where one does, which to choose is the user's call, and sometimes there's no practical choice. What each is expected to mean:
