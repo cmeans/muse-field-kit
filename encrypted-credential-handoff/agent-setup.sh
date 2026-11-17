@@ -394,7 +394,12 @@ check_setup() {
         else
           b64="FAIL|this base64 cannot decode the blob"
         fi
-        v=$(HANDOFF_PRIVKEY="$newd/id.txt" python3 "$consume" --label check --check --blob-file "$newd/blob.txt" </dev/null 2>"$newd/cerr")
+        # None of the caller's HANDOFF_* variables (an exported $HANDOFF_BLOB
+        # is a second blob source, a $HANDOFF_LABEL the nesting refusal), and
+        # no PYTHON* ones (-I): the check is of this machine's tools, not of
+        # the calling shell. Unset in the $(...)'s subshell, so it stays there.
+        v=$(unset HANDOFF_BLOB HANDOFF_LABEL HANDOFF_PRIVKEY
+            HANDOFF_PRIVKEY="$newd/id.txt" python3 -I "$consume" --label check --check --blob-file "$newd/blob.txt" </dev/null 2>"$newd/cerr")
         rc=$?
         want="svc: matches label 'check'
 password: 20 bytes"

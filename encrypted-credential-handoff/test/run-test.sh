@@ -2847,6 +2847,14 @@ hasnt "agent-setup.sh --check-setup" "(FAIL|INFO) "
 [ ! -s "$C8/err" ] || { cat "$C8/err" >&2; fail "agent-setup.sh --check-setup wrote to stderr"; }
 [ "$sum_before" = "$(sha "$AKEY")" ] || fail "--check-setup changed the real key"
 echo "ok (agent-setup.sh --check-setup)"
+# The caller's own HANDOFF_BLOB and HANDOFF_LABEL don't reach the round trip's
+# consume.py: a second blob source, or the nesting refusal, would fail it for
+# a reason that isn't this machine's tools.
+run8 "agent-setup.sh --check-setup, HANDOFF_BLOB and HANDOFF_LABEL exported" 0 \
+  env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$AKEY" HANDOFF_BLOB=x HANDOFF_LABEL=other "$BASH" "$A8" --check-setup
+has "HANDOFF_BLOB exported" "PASS round trip: "
+hasnt "HANDOFF_BLOB exported" "(FAIL|INFO) "
+echo "ok (agent-setup.sh --check-setup ignores the caller's HANDOFF_BLOB and HANDOFF_LABEL)"
 
 exec 9<>"$C8/stdin.fifo"
 rc=0; run_to env TMPDIR="$C8/tmp" PATH="$P_ALL" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup <&9 >"$C8/out" 2>"$C8/err" || rc=$?
