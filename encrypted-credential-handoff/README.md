@@ -258,6 +258,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 - **`Unblock-File .\handoff.ps1`** removes the Mark of the Web, the note Windows adds to a downloaded file, which the `RemoteSigned` policy checks. Run it only after the file has passed its checksum (“Getting the scripts”); on its own it doesn't let a script run under `Restricted`. A `git clone` adds no Mark of the Web.
 - **`powershell -NoProfile -ExecutionPolicy Bypass -File .\handoff.ps1`** starts a new PowerShell for one run. Use it only for the interactive paste (or with `-File FILE` after it). Don't pipe a payload into it: the pipe into a new PowerShell process goes through your session's output encoding, which can change non-ASCII characters on the way.
 - **A `private_key` payload** is built with `ConvertTo-Json -Compress` and piped in, as “Payloads” shows.
+- **A payload in a file** goes in with `-File FILE` (`.\handoff.ps1 -File secrets.json`), which reads the file's bytes as UTF-8, or as UTF-16 with a byte-order mark. Piping the file in with `Get-Content` is the other way, and then it needs `-Encoding UTF8` (`Get-Content secrets.json -Encoding UTF8 | .\handoff.ps1`): without it, Windows PowerShell 5.1 reads a UTF-8 file that has no byte-order mark in the ANSI code page, and changes every non-ASCII character in the values without a word.
 
 ### Checking a downloaded age binary
 

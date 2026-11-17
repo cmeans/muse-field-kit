@@ -38,7 +38,10 @@ param(
   [switch]$CheckSetup,
   [switch]$Help,
   # The payload as pipeline input: one string (ConvertTo-Json's output), or
-  # lines (Get-Content's), joined with newlines.
+  # lines (Get-Content's), joined with newlines. A pipeline carries text that
+  # PowerShell has already decoded: 5.1's Get-Content without -Encoding UTF8
+  # reads a UTF-8 file with no byte-order mark in the ANSI code page, so for a
+  # file, -File (its bytes) is the safe way.
   [Parameter(ValueFromPipeline = $true)][AllowNull()][AllowEmptyString()][string]$InputObject,
   # Anything else, so it can be refused with handoff.sh's message and exit 2.
   [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
@@ -109,6 +112,9 @@ Usage:
   handoff.ps1 [-To NAME] -Fingerprint    print the agent's recipient and exit
   handoff.ps1 [-To NAME] -CheckSetup     check that age works on this machine
   handoff.ps1 -Help                      print this usage and exit
+For a payload in a file, use -File FILE. To pipe one in with Get-Content,
+add -Encoding UTF8 (Windows PowerShell 5.1 otherwise reads the file in the
+ANSI code page and changes non-ASCII characters).
 NAME (default muse; up to 64 letters, digits, _ and -, not starting with -)
 picks the agent's recipient file, handoff-NAME.age, in this script's
 folder.
@@ -595,7 +601,12 @@ end {
         $k = [Console]::ReadKey($true)
         $c = $k.KeyChar
         if ($c -eq [char]26 -or $c -eq [char]4) { break }
-        if (($k.Modifiers -band [ConsoleModifiers]::Control) -and ($k.Key -eq [ConsoleKey]::Z -or $k.Key -eq [ConsoleKey]::D)) { break }
+        # Ctrl+Z or Ctrl+D by key, for a console that gives no KeyChar for it
+        # (some keyboard layouts). Not with Alt: Windows reports AltGr as
+        # Ctrl+Alt, and AltGr+Z or AltGr+D types a character in some layouts
+        # (Polish z with dot above, Croatian d with stroke), which must not end
+        # the input. A real Ctrl+Z or Ctrl+D also comes as KeyChar 26 or 4 above.
+        if (($k.Modifiers -band [ConsoleModifiers]::Control) -and -not ($k.Modifiers -band [ConsoleModifiers]::Alt) -and ($k.Key -eq [ConsoleKey]::Z -or $k.Key -eq [ConsoleKey]::D)) { break }
         if ($k.Key -eq [ConsoleKey]::Enter) { [void]$sb.Append("`n"); continue }
         if ($k.Key -eq [ConsoleKey]::Backspace) { if ($sb.Length -gt 0) { [void]$sb.Remove($sb.Length - 1, 1) }; continue }
         if ($c -ne [char]0) { [void]$sb.Append($c) }
