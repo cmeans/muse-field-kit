@@ -558,17 +558,19 @@ $naFile = Join-Path $S 'nonascii.json'
 [IO.File]::WriteAllText($naFile, $naJson, $Utf8)
 $blob = Assert-Blob 'non-ASCII values' (Invoke-Handoff -Script $hk -Pipe $naFile)
 Save-Interop 'nonascii' $blob $naJson $Utf8.GetBytes($naJson)
-# A PEM with CRLF line ends, as Get-Content -Raw keeps them, built into the
-# payload the way the docs show (ConvertTo-Json -Compress into handoff.ps1).
+# A PEM with CRLF line ends, as [IO.File]::ReadAllText keeps them, built into
+# the payload the way README shows (ConvertTo-Json -Compress into handoff.ps1).
+# Not Get-Content -Raw: 5.1's ConvertTo-Json can serialize the note properties
+# it adds as a nested object, which handoff.ps1 refuses.
 $pem = "-----BEGIN PRIVATE KEY-----`r`nmk-Zq9-pem-line-one-AAAA`r`nmk-Zq9-pem-line-two-BBBB`r`n-----END PRIVATE KEY-----`r`n"
 $pemDir = Join-Path $S 'pem'
 $hp = Install-Handoff $pemDir $RcptFile
 [IO.File]::WriteAllText((Join-Path $pemDir 'dummy.pem'), $pem, $Utf8)
-$docCall = "@{svc='test'; private_key=(Get-Content -Raw .\dummy.pem); app_id='12345'; installation_id='67890'} | ConvertTo-Json -Compress | .\handoff.ps1"
+$docCall = "@{svc='test'; private_key=[IO.File]::ReadAllText((Resolve-Path .\dummy.pem)); app_id='12345'; installation_id='67890'} | ConvertTo-Json -Compress | .\handoff.ps1"
 $pkExpect = '{"svc":"test","private_key":' + (ConvertTo-Json -InputObject $pem -Compress) + ',"app_id":"12345","installation_id":"67890"}'
 $r = Invoke-Handoff -Call $docCall -Cwd $pemDir
 if ($r.Exit -ne 0 -and $r.Err.Contains($jsonMsg)) {
-  Fail "the documented private_key pipeline was refused as not all strings under $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion): ConvertTo-Json there may serialize Get-Content's added properties; the docs' form needs changing"
+  Fail "the documented private_key pipeline was refused as not all strings under $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion): the form README shows needs changing"
 }
 $blob = Assert-Blob 'a private_key payload, as the docs build it' $r
 Save-Interop 'private-key' $blob $pkExpect $null
