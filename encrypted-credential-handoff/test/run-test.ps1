@@ -885,8 +885,9 @@ $lines = Assert-Checks $stubNames[2] 1 (Run-Check $h8 '-CheckSetup' @{ PATH = $s
 Assert-Has 'differ' $lines 'FAIL round trip: .*differ'
 Say "ok ($($stubNames[2]))"
 
-# The vectors (Task 0's): refused ones, then the two real blobs (accepted;
-# the decrypt then fails, as they're not for the throwaway key).
+# The vectors (test/vectors/ and the real blobs, from make-vectors.sh): refused
+# ones, then the two real blobs (accepted; the decrypt then fails, as they're
+# not for the throwaway key).
 $vec = Join-Path $S 'vec8'
 New-Item -ItemType Directory -Path $vec | Out-Null
 function Test-Vector([string]$name, [string]$file, [bool]$accepted) {

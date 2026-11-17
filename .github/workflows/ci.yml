@@ -62,7 +62,7 @@ jobs:
         # .gitattributes keeps them LF on checkout; this catches a commit
         # that slipped a CR in anyway.
         run: |
-          bad=$(git ls-files -z -- '*.sh' '*.py' '*.json' '*.txt' | xargs -0 grep -l $'\r' || true)
+          bad=$(git ls-files -z -- '*.sh' '*.py' '*.json' '*.txt' '*.ps1' '*.age' | xargs -0 grep -l $'\r' || true)
           if [ -n "$bad" ]; then
             echo "CR line endings in: $bad"
             exit 1

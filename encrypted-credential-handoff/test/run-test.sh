@@ -424,8 +424,8 @@ else
   echo "skip: no /proc, signal dispositions not checked"
 fi
 # The payload cap: MAX_PAYLOAD bytes works, one more is refused with the limit
-# named, and the number agrees with consume.py's MAX_BLOB_FILE (Task 9
-# changes both). Both are read from their files, so a change to one alone
+# named, and the number agrees with consume.py's MAX_BLOB_FILE (a change to
+# one changes both). Both are read from their files, so a change to one alone
 # fails here.
 max_payload=$(sed -n 's/^MAX_PAYLOAD=\([0-9]*\).*/\1/p' ../handoff.sh)
 max_blob=$(sed -n 's/^MAX_BLOB_FILE = \([0-9]*\).*/\1/p' ../consume.py)
@@ -2015,8 +2015,8 @@ sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.a
 exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
 ' "$R/beside.txt"
 cmp -s blob-age.txt "$R/beside.txt" || fail "a refused --rewrap changed a file beside the key"
-# A symlinked identity is refused (Task 2's rule), --rewrap included, and
-# nothing is written.
+# A symlinked identity is refused (the key must be a regular file, not a
+# link to one), --rewrap included, and nothing is written.
 mkdir -p "$S/lk"; ln -s "$KEY" "$S/lk/k.txt"; ln -s "$KEY.previous" "$S/lk/k.txt.previous"; cp blob-age.txt "$S/lk/beside.txt"
 cp blob-age.txt "$ST/lkb.txt"
 expect_refusal "--rewrap with a symlinked identity" 1 "is a symbolic link" \

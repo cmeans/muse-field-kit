@@ -5,8 +5,11 @@
 *.py   text eol=lf
 *.json text eol=lf
 *.txt  text eol=lf
-# *.ps1 stays LF too (builder's choice, Task 5w): Windows PowerShell 5.1 and
-# PowerShell 7 both parse LF scripts, and test/run-test.ps1 checks that
-# handoff.ps1 and itself are ASCII only, have no CR and parse, on the Windows
-# runner as everywhere (the CI CR check does not list *.ps1; it could).
+# *.ps1 stays LF too: one line ending for every script, and Windows
+# PowerShell 5.1 and PowerShell 7 both parse LF scripts. test/run-test.ps1
+# checks that handoff.ps1 and itself are ASCII only, have no CR and parse, on
+# the Windows runner as everywhere, and the CI CR check lists *.ps1.
 *.ps1  text eol=lf
+# A recipient file (handoff-NAME.age, one age1... line) is text, compared
+# byte for byte by the tests: LF too. (No binary age file is kept in git.)
+*.age  text eol=lf

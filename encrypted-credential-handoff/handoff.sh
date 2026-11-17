@@ -44,7 +44,7 @@ MAX_KEY_BYTES=16384
 # NAME's length cap: keeps handoff-NAME.age far under any file system's 255-byte name limit.
 MAX_NAME=64
 # The largest payload, in bytes, handed to age. Twin of consume.py's
-# MAX_BLOB_FILE (65536 characters); Task 9 changes both together:
+# MAX_BLOB_FILE (65536 characters); a change to one changes both:
 #   a blob is at most MAX_BLOB_FILE / 4 * 3 = 49152 bytes (base64: 3 bytes in 4 characters)
 #   Go age's blob = 168 (version line, X25519 stanza, MAC) + 32 (payload nonce 16
 #     + tag 16) + payload
