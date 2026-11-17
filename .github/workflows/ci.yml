@@ -375,7 +375,10 @@ jobs:
           set -o pipefail
           export HANDOFF_TEST_ONLY="1a 1b 1c 1d 2a 2b 3a 4a 4b 5a 6 8"
           ./encrypted-credential-handoff/test/run-test.sh | tee "$RUNNER_TEMP/run-test.log"
-          grep -q "^age: .*${{ matrix.age }}" "$RUNNER_TEMP/run-test.log" || echo "note: age --version does not show ${{ matrix.age }}"
+          if ! grep -q "^age: .*${{ matrix.age }}" "$RUNNER_TEMP/run-test.log"; then
+            echo "age --version does not show ${{ matrix.age }}: the matrix did not test that version"
+            exit 1
+          fi
           if grep -E '^(skip:|n/a on this OS)' "$RUNNER_TEMP/run-test.log"; then
             echo "a check was skipped in CI"
             exit 1
@@ -483,7 +486,7 @@ jobs:
           $all | Where-Object { $_ -like 'n/a on this OS*' }
           if ($p.ExitCode -ne 0) { throw "run-test.ps1 exited $($p.ExitCode)" }
           if ($all | Where-Object { $_ -match '^(skip:|FAIL)' }) { throw 'a check failed or was skipped' }
-          if ((Get-Content -LiteralPath $log)[-1] -ne 'PASS') { throw 'run-test.ps1 did not end in PASS' }
+          if (@(Get-Content -LiteralPath $log)[-1] -ne 'PASS') { throw 'run-test.ps1 did not end in PASS' }
       - name: handoff.ps1 tests under PowerShell 7
         shell: pwsh
         run: |
@@ -498,7 +501,7 @@ jobs:
           $all | Where-Object { $_ -like 'n/a on this OS*' }
           if ($p.ExitCode -ne 0) { throw "run-test.ps1 exited $($p.ExitCode)" }
           if ($all | Where-Object { $_ -match '^(skip:|FAIL)' }) { throw 'a check failed or was skipped' }
-          if ((Get-Content -LiteralPath $log)[-1] -ne 'PASS') { throw 'run-test.ps1 did not end in PASS' }
+          if (@(Get-Content -LiteralPath $log)[-1] -ne 'PASS') { throw 'run-test.ps1 did not end in PASS' }
       - name: Download the release assets built on Linux
         # SHA256SUMS and handoff.ps1 as the assets job built them (the ones
         # that ship), plus README's verify-windows block it extracted.

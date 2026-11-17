@@ -42,6 +42,17 @@ ENV_NAMES = {
 }
 
 
+def differ(got, want):
+    """How two byte strings differ, with none of their content: a payload
+    may be a credential, and a log keeps what is printed."""
+    if got is None:
+        return "missing (wanted %d bytes)" % len(want)
+    n = 0
+    while n < len(got) and n < len(want) and got[n] == want[n]:
+        n += 1
+    return "%d bytes, wanted %d; first difference at byte %d" % (len(got), len(want), n)
+
+
 def fail(msg):
     print("FAIL: " + msg, file=sys.stderr)
     sys.exit(1)
@@ -93,8 +104,8 @@ def main(dirs):
                                         "--blob-file", str(blob)], env=env)
                     want = (HERE / "expected-check.txt").read_bytes()
                     if rc != 0 or out != want:
-                        fail("%s/expected: consume.py --check: rc %d, output %r, wanted %r (%s)"
-                             % (d, rc, out, want, err.decode("utf-8", "replace")))
+                        fail("%s/expected: consume.py --check: rc %d, output %s (%s)"
+                             % (d, rc, differ(out, want), err.decode("utf-8", "replace")))
                 elif name in ("nonascii", "private-key"):
                     rc, out, err = run([sys.executable, "-I", str(CONSUME), "--label", label,
                                         "--blob-file", str(blob), "--", "env", "-0"], env=env)
@@ -109,7 +120,7 @@ def main(dirs):
                         if field in expect:
                             want = expect[field].encode("utf-8")
                             if got.get(var) != want:
-                                fail("%s/%s: %s is %r, wanted %r" % (d, name, var.decode(), got.get(var), want))
+                                fail("%s/%s: %s: %s" % (d, name, var.decode(), differ(got.get(var), want)))
                     if name == "private-key" and b"\r\n" not in got.get(b"SERVICE_PRIVATE_KEY", b""):
                         fail("%s/private-key: the PEM lost its CRLF line ends" % d)
                 print("ok: %s/%s" % (d.name, name))
