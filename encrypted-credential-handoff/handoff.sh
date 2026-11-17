@@ -454,9 +454,14 @@ fi
 # At a terminal this uses `stty -echo` + `cat`, not `read -d ''`: bash puts
 # the terminal in character mode for `read -d ''`, where Ctrl-D is just
 # another byte and the script would wait forever.
+#
+# Every read maps a NUL byte to \001 before the $(...): a substitution drops
+# NULs (with only a warning), so a raw NUL, a NUL between tokens or a BOM-less
+# UTF-16 file would otherwise be encrypted shortened. \001 is a control byte,
+# which no JSON text holds raw: the check after the read refuses it.
 if [ "$file_given" = 1 ]; then
   [ -r "$file" ] || { echo "handoff.sh: cannot read $(qp "$file")" >&2; exit 1; }
-  SECRET_JSON=$(<"$file")       # note: plaintext is already on disk in this path
+  SECRET_JSON=$(LC_ALL=C tr '\000' '\001' <"$file")   # note: plaintext is already on disk in this path
 elif [ -t 0 ]; then
   {
     echo "Paste or type the JSON, then press Enter and Ctrl-D."
@@ -467,12 +472,12 @@ elif [ -t 0 ]; then
   trap 'stty "$tty_saved"' EXIT          # always give the terminal its echo back
   trap 'exit 130' INT TERM
   stty -echo
-  SECRET_JSON=$(cat)
+  SECRET_JSON=$(LC_ALL=C tr '\000' '\001')
   stty "$tty_saved"
   trap - EXIT INT TERM
   echo >&2
 else
-  SECRET_JSON=$(cat)            # piped input: no terminal to manage
+  SECRET_JSON=$(LC_ALL=C tr '\000' '\001')   # piped input: no terminal to manage
 fi
 
 # A UTF-8 byte-order mark, as some Windows editors save: dropped, as
@@ -482,6 +487,12 @@ SECRET_JSON=${SECRET_JSON#$'\xef\xbb\xbf'}
 
 # --- validate ---------------------------------------------------------
 bad_json() { echo "handoff.sh: input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2; exit 1; }
+# No raw control byte (a NUL arrives as \001, above): JSON allows only tab, LF
+# and CR, and only between tokens, which jq checks next. Checked here too, in
+# this shell, so it doesn't rest on each jq version's parser. The bytes are
+# listed, not a range, which can match more in some locales.
+ctl=$(printf '\001\002\003\004\005\006\007\010\013\014\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037')
+case "$SECRET_JSON" in *["$ctl"]*) bad_json ;; esac
 # UTF-8 text only, as consume.py decodes it: jq -R replaces each invalid
 # byte sequence with U+FFFD, so its copy differs from the input exactly when
 # the input isn't valid UTF-8. (printf is a builtin: the secret is in no

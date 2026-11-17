@@ -46,7 +46,7 @@ Anything not on this list — fixing a typo in a message, recording setup notes 
 ## Steps
 
 1. **Check prerequisites** on your own machine: `age` and `age-keygen` on `PATH` (the `age` package; README, “Installing age”). There's no minimum `age` version, since `consume.py` checks each blob's header itself (README, “Choosing the suite”), but use the current release where you can choose, and recommend it to the user. Python 3.7 or later for `consume.py`. Nothing needs OpenSSL. A directory for the private key (default `~/.config/handoff/`, created mode `0700` by the setup script), on a filesystem with hard links (any Linux or macOS native one; not FAT or exFAT, nor some network mounts), since `agent-setup.sh` links each new key into place. The identity file itself must end up mode `0600`, owned by your account, readable by no one else.
-   Two environment variables set the key's location; leave both unset to use the default (`agent-setup.sh`'s key modes, `--fingerprint`, `--public-key`, `--rotate` and `--retire`, refuse `HANDOFF_KEY_DIR` without `HANDOFF_PRIVKEY`):
+   Two environment variables set the key's location; leave both unset to use the default (`agent-setup.sh`'s key modes, `--fingerprint`, `--public-key`, `--rotate` and `--retire`, refuse `HANDOFF_KEY_DIR` without `HANDOFF_PRIVKEY`, and `--check-setup` gives it a `FAIL identity` line):
    - `HANDOFF_KEY_DIR` — where `agent-setup.sh` generates a **new** key (`$HANDOFF_KEY_DIR/handoff-identity.txt`).
    - `HANDOFF_PRIVKEY` — the full path of the **existing** key that `consume.py` decrypts with and `agent-setup.sh --fingerprint` reads.
 

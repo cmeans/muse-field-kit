@@ -240,6 +240,30 @@
   "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
  },
  {
+  "name": "rawnul",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay0AWnE5In0=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "rawnulbetween",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwAInBhc3N3b3JkIjoibWstWnE5In0=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "utf16lenobom",
+  "payload_base64": "ewAiAHMAdgBjACIAOgAiAGUAeABhAG0AcABsAGUAIgAsACIAcABhAHMAcwB3AG8AcgBkACIAOgAiAG0AawAtAFoAcQA5ACIAfQA=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "rawctl",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay0BWnE5In0=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
   "name": "rawsurrogate",
   "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay1acTntoIAifQ==",
   "exit": 1,

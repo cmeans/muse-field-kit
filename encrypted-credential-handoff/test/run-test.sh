@@ -566,6 +566,12 @@ env -u HANDOFF_KEY_DIR HANDOFF_PRIVKEY="$XT/handoff-identity.txt" SHELLOPTS=xtra
 env -u HANDOFF_KEY_DIR HANDOFF_PRIVKEY="$XT/handoff-identity.txt" bash -x ../agent-setup.sh --retire --yes >"$S/out" 2>"$S/err" \
   || { cat "$S/err" >&2; fail "--retire failed under bash -x"; }
 ! secret_in "$S/out" "$S/err" || fail "bash -x agent-setup.sh --retire printed a secret key"
+# No here-string or here-document in agent-setup.sh's code: bash before 5.1
+# (macOS's /bin/bash is 3.2) backs both with a temporary file, which would put
+# an identity's text on disk. Comment lines are skipped.
+if grep -nE '<<' ../agent-setup.sh | grep -vE '^[0-9]+:[[:space:]]*#'; then
+  fail "agent-setup.sh uses a here-string or here-document (a temporary file on bash < 5.1)"
+fi
 # The caller's allexport (SHELLOPTS=allexport) never exports the identity's
 # text: no command agent-setup.sh runs (shims of the ones that run after it
 # is read, logging their environment) sees it.
@@ -3039,6 +3045,15 @@ mkdir -p "$C8/home"
 run8 "the default key path" 0 env TMPDIR="$C8/tmp" PATH="$P_ALL" HOME="$C8/home" HANDOFF_PRIVKEY= "$BASH" "$A8" --check-setup
 has "default key path" "INFO identity: "
 [ ! -e "$C8/home/.config" ] || fail "--check-setup made the default key directory"
+# HANDOFF_KEY_DIR alone (the documented non-default setup, without the
+# wrappers' HANDOFF_PRIVKEY): a FAIL naming HANDOFF_PRIVKEY, as --fingerprint
+# refuses it, never "no key yet" for a key that exists.
+run8 "HANDOFF_KEY_DIR without HANDOFF_PRIVKEY" 1 env -u HANDOFF_PRIVKEY TMPDIR="$C8/tmp" PATH="$P_ALL" HOME="$C8/home" HANDOFF_KEY_DIR="${AKEY%/*}" "$BASH" "$A8" --check-setup
+has "HANDOFF_KEY_DIR alone" "FAIL identity: HANDOFF_KEY_DIR applies only to generating a key; for --check-setup, set HANDOFF_PRIVKEY="
+hasnt "HANDOFF_KEY_DIR alone" "INFO identity: "
+has "HANDOFF_KEY_DIR alone" "PASS round trip: "
+run8 "HANDOFF_KEY_DIR with HANDOFF_PRIVKEY" 0 env TMPDIR="$C8/tmp" PATH="$P_ALL" HOME="$C8/home" HANDOFF_KEY_DIR="${AKEY%/*}" HANDOFF_PRIVKEY="$AKEY" "$BASH" "$A8" --check-setup
+has "HANDOFF_KEY_DIR with HANDOFF_PRIVKEY" "PASS identity: "
 echo "ok (identity)"
 
 # Missing tools and failing ones.

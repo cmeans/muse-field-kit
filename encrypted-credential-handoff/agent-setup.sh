@@ -39,7 +39,8 @@
 #                    default (~/.config/handoff/handoff-identity.txt), that
 #                    consume.py decrypts with. A KEY argument overrides it.
 #                    These modes refuse HANDOFF_KEY_DIR without HANDOFF_PRIVKEY
-#                    (exit 2).
+#                    (exit 2); --check-setup reads the same identity and gives
+#                    that case a FAIL identity line.
 # Needs age-keygen (the age package) on the PATH. It runs with an environment
 # of PATH only, as consume.py's age does, and is given an identity on its
 # stdin, never as a path.
@@ -203,7 +204,9 @@ recipient_of() {  # FILE
       echo "the file at $(qp "$f") is not an age identity file" >&2
       return 2
     fi
-  done <<<"$data"
+  # A pipe, not a here-string: bash before 5.1 (macOS's /bin/bash is 3.2)
+  # backs <<< with a temporary file, which would put the secret line on disk.
+  done < <(printf '%s\n' "$data")
   if [ "$secrets" -eq 0 ]; then
     if [ "$recipient" -eq 1 ]; then
       echo "the file at $(qp "$f") is not an age identity file; that is a recipient (public), not an identity" >&2
@@ -444,7 +447,11 @@ password: 20 bytes"
   fi
 
   # The real key, if there is one: read with the same checks as --fingerprint.
-  if [ "$have_keygen" = 1 ]; then
+  # HANDOFF_KEY_DIR alone: the same refusal as --fingerprint's, since the
+  # default path would be the wrong key, and "no key yet" the wrong advice.
+  if [ "$have_keygen" = 1 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
+    cs_out FAIL identity "HANDOFF_KEY_DIR applies only to generating a key; for --check-setup, set HANDOFF_PRIVKEY=<dir>/handoff-identity.txt as the wrappers do"
+  elif [ "$have_keygen" = 1 ]; then
     k=$( { resolve_key; printf '%s' "$key"; } 2>"$newd/kerr" )
     if [ -z "$k" ]; then
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null); kmsg=${kmsg#agent-setup.sh: }
