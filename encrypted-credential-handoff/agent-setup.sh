@@ -99,6 +99,10 @@ expand_home() {  # PATH WHAT
   esac
 }
 
+# A path in a message, quoted as the shell would (printf %q): a name with a
+# newline or other control character can't pass for a line of output.
+qp() { printf '%q' "$1"; }
+
 # The PATH age-keygen is looked for on, in the words of consume.py's
 # age_missing (long ones cut at 300 characters).
 path_was() {
@@ -141,36 +145,36 @@ keygen_cannot_run() {  # RC
 recipient_of() {  # FILE
   local f=$1 mode size nonul data line secrets=0 recipient=0 out rc=0
   if [ -L "$f" ]; then
-    echo "key file at $f is a symbolic link; give the identity file itself. Refusing." >&2
+    echo "key file at $(qp "$f") is a symbolic link; give the identity file itself. Refusing." >&2
     return 1
   fi
-  [ -f "$f" ] || { echo "no key file at $f" >&2; return 1; }
+  [ -f "$f" ] || { echo "no key file at $(qp "$f")" >&2; return 1; }
   # Only group and other bits matter, as in consume.py: a setgid bit alone
   # doesn't. GNU stat first, BSD's if that isn't understood.
   mode=$(stat -c %a -- "$f" 2>/dev/null) || mode=$(stat -f %Lp -- "$f" 2>/dev/null) || mode=""
-  [ -n "$mode" ] || { echo "cannot read key file at $f" >&2; return 1; }
+  [ -n "$mode" ] || { echo "cannot read key file at $(qp "$f")" >&2; return 1; }
   if [ $(( 8#$mode & 8#077 )) -ne 0 ]; then
-    echo "key file at $f is mode $mode; it must be owner-only (0600). Refusing." >&2
+    echo "key file at $(qp "$f") is mode $mode; it must be owner-only (0600). Refusing." >&2
     return 1
   fi
-  [ -O "$f" ] || { echo "key file at $f is not owned by this user. Refusing." >&2; return 1; }
-  size=$( { wc -c < "$f"; } 2>/dev/null ) || { echo "cannot read key file at $f" >&2; return 1; }
+  [ -O "$f" ] || { echo "key file at $(qp "$f") is not owned by this user. Refusing." >&2; return 1; }
+  size=$( { wc -c < "$f"; } 2>/dev/null ) || { echo "cannot read key file at $(qp "$f")" >&2; return 1; }
   size=${size//[[:space:]]/}
   if [ "$size" -gt "$MAX_KEY_BYTES" ]; then
-    echo "key file at $f is over $MAX_KEY_BYTES bytes; not an age identity file" >&2
+    echo "key file at $(qp "$f") is over $MAX_KEY_BYTES bytes; not an age identity file" >&2
     return 1
   fi
-  data=$( { LC_ALL=C cat -- "$f"; } 2>/dev/null ) || { echo "cannot read key file at $f" >&2; return 1; }
+  data=$( { LC_ALL=C cat -- "$f"; } 2>/dev/null ) || { echo "cannot read key file at $(qp "$f")" >&2; return 1; }
   # A NUL byte is never in an identity (bash would drop it): not one.
   nonul=$( { LC_ALL=C tr -d '\000' < "$f" | wc -c; } 2>/dev/null ) || nonul=-1
   nonul=${nonul//[[:space:]]/}
   if [ "$nonul" != "$size" ]; then
-    echo "the file at $f is not an age identity file" >&2
+    echo "the file at $(qp "$f") is not an age identity file" >&2
     return 2
   fi
   case "$data" in
     *"-----BEGIN RSA PRIVATE KEY-----"*|*"-----BEGIN PRIVATE KEY-----"*|*"-----BEGIN ENCRYPTED PRIVATE KEY-----"*)
-      echo "the key at $f is an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again (README.md)" >&2
+      echo "the key at $(qp "$f") is an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again (README.md)" >&2
       return 2 ;;
   esac
   while IFS= read -r line || [ -n "$line" ]; do
@@ -179,10 +183,10 @@ recipient_of() {  # FILE
     [ -n "${line//[[:space:]]/}" ] || continue
     case "$line" in
       AGE-PLUGIN-*)
-        echo "the identity at $f holds a plugin identity; only a plain age identity is supported" >&2
+        echo "the identity at $(qp "$f") holds a plugin identity; only a plain age identity is supported" >&2
         return 2 ;;
       AGE-SECRET-KEY-PQ-1*)
-        echo "the identity at $f is a post-quantum identity; only a plain age identity is supported" >&2
+        echo "the identity at $(qp "$f") is a post-quantum identity; only a plain age identity is supported" >&2
         return 2 ;;
     esac
     if [[ $line =~ $SECRET_RE ]]; then
@@ -190,24 +194,24 @@ recipient_of() {  # FILE
     elif [[ $line =~ $RECIPIENT_RE ]]; then
       recipient=1
     else
-      echo "the file at $f is not an age identity file" >&2
+      echo "the file at $(qp "$f") is not an age identity file" >&2
       return 2
     fi
   done <<<"$data"
   if [ "$secrets" -eq 0 ]; then
     if [ "$recipient" -eq 1 ]; then
-      echo "the file at $f is not an age identity file; that is a recipient (public), not an identity" >&2
+      echo "the file at $(qp "$f") is not an age identity file; that is a recipient (public), not an identity" >&2
     else
-      echo "the file at $f is not an age identity file" >&2
+      echo "the file at $(qp "$f") is not an age identity file" >&2
     fi
     return 2
   fi
   if [ "$secrets" -gt 1 ]; then
-    echo "the identity at $f holds $secrets secret keys; it must hold exactly one" >&2
+    echo "the identity at $(qp "$f") holds $secrets secret keys; it must hold exactly one" >&2
     return 2
   fi
   if [ "$recipient" -eq 1 ]; then
-    echo "the file at $f is not an age identity file" >&2
+    echo "the file at $(qp "$f") is not an age identity file" >&2
     return 2
   fi
   # The text just checked goes to age-keygen on its stdin, so what it reads is
@@ -215,11 +219,11 @@ recipient_of() {  # FILE
   out=$(printf '%s\n' "$data" | age_keygen -y 2>/dev/null) || rc=$?
   if [ "$rc" -ne 0 ]; then
     keygen_cannot_run "$rc" && return 1
-    echo "cannot load the age identity at $f" >&2
+    echo "cannot load the age identity at $(qp "$f")" >&2
     return 1
   fi
   if ! [[ $out =~ $RECIPIENT_RE ]]; then
-    echo "cannot load the age identity at $f" >&2
+    echo "cannot load the age identity at $(qp "$f")" >&2
     return 1
   fi
   printf '%s\n' "$out"
@@ -526,7 +530,7 @@ case "$mode" in
   --check-setup) check_setup ;;
   --fingerprint)
     key_recipient "$key"
-    echo "key file: $key" >&2
+    echo "key file: $(qp "$key")" >&2
     echo "recipient: $rcpt"
     exit 0
     ;;
@@ -542,7 +546,7 @@ case "$mode" in
     # their inodes, so a copied .previous (a backup restore) reads the same.
     prev="$key.previous"
     no_symlinks
-    [ -f "$key" ] || { echo "no key file at $key" >&2; exit 1; }
+    [ -f "$key" ] || { echo "no key file at $(qp "$key")" >&2; exit 1; }
     dir=$(dirname -- "$key")
     # The lock first, then the state: a run that read the key before another
     # finished would otherwise take that run's new key for its own old one.
@@ -561,57 +565,57 @@ case "$mode" in
       # slash KEY must still match.
       if [ "$f" = "$dir/${key##*/}" ] || [ "$f" = "$dir/${prev##*/}" ]; then continue; fi
       if [ ! -f "$f" ] || [ -L "$f" ]; then
-        echo "agent-setup.sh: $f is not a temporary key file; report it to the user" >&2; exit 1
+        echo "agent-setup.sh: $(qp "$f") is not a temporary key file; report it to the user" >&2; exit 1
       fi
       rm -f -- "$f"
-      echo "note: removed a temporary key a killed --rotate left behind: $f" >&2
+      echo "note: removed a temporary key a killed --rotate left behind: $(qp "$f")" >&2
     done
     for f in "$dir"/.handoff-tmp.*; do
       # The private directory of a killed --rotate or setup (the lock says
       # none is running).
       [ -d "$f" ] && [ ! -L "$f" ] || continue
       rm -rf -- "$f"
-      echo "note: removed a temporary key directory a killed run left behind: $f" >&2
+      echo "note: removed a temporary key directory a killed run left behind: $(qp "$f")" >&2
     done
     if [ -e "$prev" ]; then
-      [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
+      [ -f "$prev" ] || { echo "agent-setup.sh: $(qp "$prev") is not a regular file; report it to the user" >&2; exit 1; }
       prev_rcpt=$(recipient_of "$prev") || exit 1
       if [ "$prev_rcpt" != "$rcpt" ]; then
         # The new key is in place: show its recipient again, since an
         # interruption may have come before the user got it (SETUP step 3).
-        echo "agent-setup.sh: a rotation is under way ($prev is the old key), and the new key is in place: nothing rotated." >&2
+        echo "agent-setup.sh: a rotation is under way ($(qp "$prev") is the old key), and the new key is in place: nothing rotated." >&2
         echo "If the user hasn't saved this recipient as their handoff-<name>.age and confirmed it, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
         echo "current (new) recipient: $rcpt"
         echo
         show_recipient "$rcpt"
         exit 0
       fi
-      echo "note: resuming an interrupted rotation ($prev holds the current key)" >&2
+      echo "note: resuming an interrupted rotation ($(qp "$prev") holds the current key)" >&2
     else
-      ln -- "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $prev (the key directory needs hard links, SETUP.md step 1); nothing changed" >&2; exit 1; }
+      ln -- "$key" "$prev" || { echo "agent-setup.sh: could not keep the old key as $(qp "$prev") (the key directory needs hard links, SETUP.md step 1); nothing changed" >&2; exit 1; }
     fi
     # A private directory (mode 0700, beside KEY so the rename stays on one
     # filesystem) holds the new key until it is checked: age-keygen makes the
     # file in it, and no name is ever freed for someone else to plant a link on.
-    newd=$(mktemp -d -- "$dir/.handoff-tmp.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $dir" >&2; exit 1; }
+    newd=$(mktemp -d -- "$dir/.handoff-tmp.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $(qp "$dir")" >&2; exit 1; }
     new="$newd/${newd##*/}.key"
     make_identity "$new" \
-      || { echo "key generation failed; the old key is unchanged, and $prev holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
+      || { echo "key generation failed; the old key is unchanged, and $(qp "$prev") holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
     chmod -- 600 "$new"
     # Checked before it replaces anything: age-keygen can exit 0 after a short
     # write (a full disk).
     new_rcpt=$(recipient_of "$new" 2>/dev/null) \
-      || { echo "the new key didn't check out (a full disk?); the old key is unchanged, and $prev holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
+      || { echo "the new key didn't check out (a full disk?); the old key is unchanged, and $(qp "$prev") holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
     mv -f -- "$new" "$key"
     if [ -d "$key" ]; then
       # KEY became a directory meanwhile, and mv put the new key inside it.
       rm -f -- "$key/${new##*/}"
       new=""
-      echo "agent-setup.sh: $key is now a directory; the new key was removed, and the old key is $prev. Report it to the user." >&2
+      echo "agent-setup.sh: $(qp "$key") is now a directory; the new key was removed, and the old key is $(qp "$prev"). Report it to the user." >&2
       exit 1
     fi
     new=""
-    echo "new key written to $key (mode 600); the old key is now $prev"
+    echo "new key written to $(qp "$key") (mode 600); the old key is now $(qp "$prev")"
     echo
     echo "new recipient: $new_rcpt"
     echo "report this recipient to the human; they compare it with handoff.sh's output"
@@ -637,21 +641,21 @@ case "$mode" in
       # A hint only for a KEY typed on the command line (not HANDOFF_PRIVKEY)
       # when --yes wasn't given: then the KEY may be a typo of it.
       case "$yes:$key_given:$key" in
-        :1:-[Yy]|:1:-[Yy][Ee]|:1:-[Yy][Ee][Ss]|:1:[Yy]|:1:[Yy][Ee]|:1:[Yy][Ee][Ss]) echo "no key file at $key (the confirmation is spelled --yes)" >&2 ;;
-        *) echo "no key file at $key" >&2 ;;
+        :1:-[Yy]|:1:-[Yy][Ee]|:1:-[Yy][Ee][Ss]|:1:[Yy]|:1:[Yy][Ee]|:1:[Yy][Ee][Ss]) echo "no key file at $(qp "$key") (the confirmation is spelled --yes)" >&2 ;;
+        *) echo "no key file at $(qp "$key")" >&2 ;;
       esac
       exit 1
     fi
     if [ ! -e "$prev" ]; then
-      echo "agent-setup.sh: no $prev: no rotation to retire" >&2; exit 1
+      echo "agent-setup.sh: no $(qp "$prev"): no rotation to retire" >&2; exit 1
     fi
-    [ -f "$prev" ] || { echo "agent-setup.sh: $prev is not a regular file; report it to the user" >&2; exit 1; }
+    [ -f "$prev" ] || { echo "agent-setup.sh: $(qp "$prev") is not a regular file; report it to the user" >&2; exit 1; }
     trap cleanup EXIT
     lock_dir "$(dirname -- "$key")"
     key_recipient "$key"
     prev_rcpt=$(recipient_of "$prev") || exit 1
     if [ "$prev_rcpt" = "$rcpt" ]; then
-      echo "agent-setup.sh: $prev holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
+      echo "agent-setup.sh: $(qp "$prev") holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
       exit 1
     fi
     # A killed setup or --rotate can leave a temporary file that is a hard
@@ -662,7 +666,7 @@ case "$mode" in
       if [ "$f" = "$kdir/${prev##*/}" ] || [ "$f" = "$kdir/${key##*/}" ]; then continue; fi
       if [ -f "$f" ] && [ ! -L "$f" ] && [ "$f" -ef "$prev" ]; then
         rm -f -- "$f"
-        echo "note: removed $f, another link to the previous key" >&2
+        echo "note: removed $(qp "$f"), another link to the previous key" >&2
       fi
     done
     # Another name for the old key (a backup copy made with ln) would keep it
@@ -670,7 +674,7 @@ case "$mode" in
     # find reads a path starting with - as a predicate: ./ in front. And a
     # find that fails is a refusal, not a pass.
     case "$prev" in /*) q=$prev ;; *) q=./$prev ;; esac
-    links=$(find "$q" -links +1) || { echo "agent-setup.sh: couldn't check $prev's links; report it to the user" >&2; exit 1; }
+    links=$(find "$q" -links +1) || { echo "agent-setup.sh: couldn't check $(qp "$prev")'s links; report it to the user" >&2; exit 1; }
     if [ -n "$links" ]; then
       # Where to look: the mount point of the old key's disk (df's last
       # field; a mount point with a space in it reads short, hence the
@@ -686,13 +690,13 @@ case "$mode" in
       sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
-      echo "agent-setup.sh: $prev has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $prev, which the command lists too (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
+      echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $(qp "$prev"), which the command lists too (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
       exit 1
     fi
     # Last, so every other refusal comes first: a hard link to resolve shows
     # up before the confirmation, not after it.
     if [ -z "$yes" ]; then
-      echo "agent-setup.sh: --retire deletes the previous key $prev (recipient $prev_rcpt), and a blob still made for it never opens again; it was not deleted." >&2
+      echo "agent-setup.sh: --retire deletes the previous key $(qp "$prev") (recipient $prev_rcpt), and a blob still made for it never opens again; it was not deleted." >&2
       echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user in a direct conversational turn, and no blob stored since that pass began (SETUP.md Rotation step 5). In a compromise response your notes record (the user's go-ahead, given directly), run it at Compromise step 2 or 4." >&2
       exit 1
     fi
@@ -700,7 +704,7 @@ case "$mode" in
     # advisory) keeps the old key on disk. That takes a deliberate actor with
     # the key directory's write access, which can copy the key anyway.
     rm -f -- "$prev"
-    echo "deleted the previous key $prev; the current key is $key (recipient $rcpt)"
+    echo "deleted the previous key $(qp "$prev"); the current key is $(qp "$key") (recipient $rcpt)"
     exit 0
     ;;
   --public-key)
@@ -708,7 +712,7 @@ case "$mode" in
     # or rotation needs it for the user; the recipient isn't a secret),
     # from a key that passes the same checks as --fingerprint.
     key_recipient "$key"
-    echo "key file: $key" >&2
+    echo "key file: $(qp "$key")" >&2
     echo "recipient: $rcpt"
     echo
     show_recipient "$rcpt"
@@ -734,7 +738,7 @@ fi
 # HANDOFF_KEY_DIR at an existing directory by mistake, silently tightening
 # its permissions would be a nasty surprise. Say so when that happens.
 if [ -d "$KEY_DIR" ]; then
-  echo "note: key directory $KEY_DIR already exists; its permissions were left unchanged (expected 0700)" >&2
+  echo "note: key directory $(qp "$KEY_DIR") already exists; its permissions were left unchanged (expected 0700)" >&2
 else
   mkdir -p -- "$KEY_DIR"
   # `--` before the mode: BSD chmod stops reading options at the mode, so a
@@ -760,15 +764,15 @@ for f in "$KEY_DIR"/.handoff-setup.*; do
   # A temporary key a killed (SIGKILL) setup left behind: never a live key.
   [ -f "$f" ] && [ ! -L "$f" ] || continue
   rm -f -- "$f"
-  echo "note: removed a temporary key a killed (or concurrent) setup left behind: $f" >&2
+  echo "note: removed a temporary key a killed (or concurrent) setup left behind: $(qp "$f")" >&2
 done
 for f in "$KEY_DIR"/.handoff-tmp.*; do
   [ -d "$f" ] && [ ! -L "$f" ] || continue
   rm -rf -- "$f"
-  echo "note: removed a temporary key directory a killed (or concurrent) setup left behind: $f" >&2
+  echo "note: removed a temporary key directory a killed (or concurrent) setup left behind: $(qp "$f")" >&2
 done
 # A private directory holds the new key until it is checked (see --rotate).
-newd=$(mktemp -d -- "$KEY_DIR/.handoff-tmp.XXXXXX") || { echo "cannot write a key in $KEY_DIR" >&2; exit 1; }
+newd=$(mktemp -d -- "$KEY_DIR/.handoff-tmp.XXXXXX") || { echo "cannot write a key in $(qp "$KEY_DIR")" >&2; exit 1; }
 new="$newd/${newd##*/}.key"
 make_identity "$new" || { echo "key generation failed" >&2; exit 1; }
 chmod -- 600 "$new"

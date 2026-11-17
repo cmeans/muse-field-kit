@@ -54,6 +54,10 @@ MAX_NAME=64
 # run-test.sh checks this arithmetic against consume.py and a real blob.
 MAX_PAYLOAD=48696
 
+# A path in a message, quoted as the shell would (printf %q): a name with a
+# newline or other control character can't pass for a line of output.
+qp() { printf '%q' "$1"; }
+
 usage() {
   cat >&2 <<'USAGE'
 Usage:
@@ -252,7 +256,7 @@ check_setup() {
     probe_msg="no script path to find the recipient file beside; save handoff.sh to a file and run that file"
     probe_info=1
   elif [ ! -e "$keyfile" ] && [ ! -L "$keyfile" ]; then
-    probe_msg="no $keyfile yet; save the agent's recipient there (SETUP.md, setup step 3)"
+    probe_msg="no $(qp "$keyfile") yet; save the agent's recipient there (SETUP.md, setup step 3)"
     probe_info=1
   else
     # With age: this script's own --fingerprint, in a clean environment (the
@@ -325,9 +329,9 @@ check_setup() {
 
   # The recipient file, if it's saved.
   if [ "$probe_rc" = 0 ] && [ "$have_age" = 0 ]; then
-    cs_out INFO recipient "$keyfile has the shape of an age X25519 recipient; its checksum is not checked (no age)"
+    cs_out INFO recipient "$(qp "$keyfile") has the shape of an age X25519 recipient; its checksum is not checked (no age)"
   elif [ "$probe_rc" = 0 ]; then
-    cs_out PASS recipient "$keyfile is a valid age X25519 recipient"
+    cs_out PASS recipient "$(qp "$keyfile") is a valid age X25519 recipient"
   elif [ "$probe_info" = 1 ]; then
     cs_out INFO recipient "$probe_msg"
   else
@@ -370,7 +374,7 @@ no_key() { echo "handoff.sh: $1" >&2; exit 1; }
 # there is no age to ask about the checksum.
 load_recipient() {
   if [ ! -e "$keyfile" ]; then
-    [ ! -L "$keyfile" ] || no_key "$keyfile is a symlink that doesn't resolve to a file"
+    [ ! -L "$keyfile" ] || no_key "$(qp "$keyfile") is a symlink that doesn't resolve to a file"
     # A near miss beside it is named, from a short allow-list only: a _ or . in
     # place of the -, another case (handoff_muse.age, handoff-Muse.age), or an
     # editor's extra extension (handoff-muse.age.txt, handoff-muse.age.age). Anything
@@ -388,26 +392,26 @@ load_recipient() {
     nm=${near#handoff-}; nm=${nm%.age}
     lc() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
     if [ -n "$near" ] && [ "$near" = "handoff-$nm.age" ] && [ "$nm" != "$to" ] && [ "$(lc "$nm")" = "$(lc "$to")" ]; then
-      no_key "no recipient file for '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. Names are case-sensitive: did you mean --to $(printf '%q' "$nm")?"
+      no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(printf '%q' "$near") does. Names are case-sensitive: did you mean --to $(printf '%q' "$nm")?"
     fi
-    [ -z "$near" ] || no_key "no recipient file for '$to': $keyfile doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current recipient, rename it to handoff-$to.age, then compare --fingerprint with the recipient the agent reports"
+    [ -z "$near" ] || no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current recipient, rename it to handoff-$to.age, then compare --fingerprint with the recipient the agent reports"
     # A 0.1.0 install: the RSA public key is beside it, the age recipient isn't.
     if [ -f "${dir%/}/handoff-$to.pem" ]; then
-      no_key "found handoff-$to.pem but no $keyfile. Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$to.age beside handoff.sh"
+      no_key "found handoff-$to.pem but no $(qp "$keyfile"). Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$to.age beside handoff.sh"
     fi
-    no_key "no recipient file for '$to': $keyfile doesn't exist. Save the agent's recipient there (SETUP.md, setup step 3), or name another agent with --to NAME"
+    no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist. Save the agent's recipient there (SETUP.md, setup step 3), or name another agent with --to NAME"
   fi
-  [ -f "$keyfile" ] || no_key "$keyfile is not a regular file"
+  [ -f "$keyfile" ] || no_key "$(qp "$keyfile") is not a regular file"
   # One bounded read, and the size checked on what was read: a file swapped
   # after the check above can't bring back an unbounded read.
   # (The x keeps $(...) from dropping trailing newlines before they're counted,
   # and NULs, which $(...) would drop too, are counted as another byte.)
-  raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" | LC_ALL=C tr '\000' '\001' && printf x; } 2>/dev/null ) || no_key "cannot read $keyfile"
+  raw=$( { LC_ALL=C head -c "$((MAX_KEY_BYTES + 1))" -- "$keyfile" | LC_ALL=C tr '\000' '\001' && printf x; } 2>/dev/null ) || no_key "cannot read $(qp "$keyfile")"
   size=$(( $(printf '%s' "$raw" | LC_ALL=C wc -c) - 1 ))
-  [ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$keyfile is over $MAX_KEY_BYTES bytes; not a recipient file"
+  [ "$size" -le "$MAX_KEY_BYTES" ] || no_key "$(qp "$keyfile") is over $MAX_KEY_BYTES bytes; not a recipient file"
   RECIPIENT=${raw%x}
   case "$RECIPIENT" in   # matched in place: a pipe to head -c 2 could break the writer's pipe
-    $'\xff\xfe'*|$'\xfe\xff'*) no_key "$keyfile is saved as UTF-16: save it as UTF-8 or plain text" ;;
+    $'\xff\xfe'*|$'\xfe\xff'*) no_key "$(qp "$keyfile") is saved as UTF-16: save it as UTF-8 or plain text" ;;
   esac
   RECIPIENT=${RECIPIENT#$'\xef\xbb\xbf'}   # a UTF-8 byte-order mark, as some Windows editors save
   # A copy saved on Windows or by an editor, or copied from an indented block,
@@ -416,27 +420,27 @@ load_recipient() {
   RECIPIENT=$(printf '%s\n' "$RECIPIENT" | tr -d '\r' | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' | grep -v '^$' || true)
   # An identity (private key) here means it left the agent's machine.
   if printf '%s\n' "$RECIPIENT" | grep -q -e '^AGE-SECRET-KEY-' -e '^AGE-PLUGIN-'; then
-    no_key "$keyfile holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
+    no_key "$(qp "$keyfile") holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
   fi
   case "$RECIPIENT" in
-    ''|*$'\n'*) no_key "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it" ;;
+    ''|*$'\n'*) no_key "$(qp "$keyfile") must hold exactly one age recipient line (age1...), as agent-setup.sh prints it" ;;
   esac
   # An X25519 recipient exactly: HRP age, separator 1, then 58 lowercase
   # characters of the bech32 alphabet, 62 in all. That refuses age1pq1... and
   # age1tag1... and every plugin recipient, which also begin age1.
   recipient_re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
   [[ "$RECIPIENT" =~ $recipient_re ]] \
-    || no_key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
+    || no_key "$(qp "$keyfile") is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
 }
 [ "$mode" != check-setup ] || check_setup
 load_recipient
 # The bech32 checksum: age itself rejects a recipient that fails it. Asked
 # now, on nothing, so a mistyped file is refused before the secret is typed.
 env -i PATH="${PATH-}" age -r "$RECIPIENT" </dev/null >/dev/null 2>&1 \
-  || no_key "$keyfile is not a valid age recipient: age $age_version did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
+  || no_key "$(qp "$keyfile") is not a valid age recipient: age $age_version did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
 
 if [ "$mode" = fingerprint ]; then
-  echo "key file: $keyfile" >&2
+  echo "key file: $(qp "$keyfile")" >&2
   echo "recipient: $RECIPIENT"
   exit 0
 fi
@@ -451,7 +455,7 @@ fi
 # the terminal in character mode for `read -d ''`, where Ctrl-D is just
 # another byte and the script would wait forever.
 if [ "$file_given" = 1 ]; then
-  [ -r "$file" ] || { echo "handoff.sh: cannot read $file" >&2; exit 1; }
+  [ -r "$file" ] || { echo "handoff.sh: cannot read $(qp "$file")" >&2; exit 1; }
   SECRET_JSON=$(<"$file")       # note: plaintext is already on disk in this path
 elif [ -t 0 ]; then
   {
@@ -549,9 +553,9 @@ fi
 # base64 programs add).
 blob=$(printf '%s' "$SECRET_JSON" | env -i PATH="${PATH-}" age -r "$RECIPIENT" 2>/dev/null | base64 | tr -d '\n') \
   || { echo "handoff.sh: age failed to encrypt (age $age_version), aborting" >&2; exit 1; }
-echo "recipient: $RECIPIENT (from $keyfile)  <- compare with the recipient" >&2
+echo "recipient: $RECIPIENT (from $(qp "$keyfile"))  <- compare with the recipient" >&2
 echo "   your agent reports for its key before trusting this output" >&2
-echo "--- paste everything below into chat with $to (recipient file $keyfile) ---" >&2
+echo "--- paste everything below into chat with $to (recipient file $(qp "$keyfile")) ---" >&2
 printf '%s\n' "$blob"
 
 echo "--- end ---" >&2

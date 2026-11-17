@@ -347,16 +347,16 @@ def read_identity(path: str) -> bytes:
     try:
         lst = os.lstat(path)
     except OSError:
-        raise fail(f"cannot read private key at {path}") from None
+        raise fail(f"cannot read private key at {path!r}") from None
     if stat.S_ISLNK(lst.st_mode):
-        raise fail(f"private key at {path} is a symbolic link; "
+        raise fail(f"private key at {path!r} is a symbolic link; "
                    "give the identity file itself. Refusing.")
     check_identity_stat(path, lst)
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                      | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0))
     except OSError:
-        raise fail(f"cannot read private key at {path}") from None
+        raise fail(f"cannot read private key at {path!r}") from None
     with os.fdopen(fd, "rb") as f:
         check_identity_stat(path, os.fstat(f.fileno()))
         return f.read(MAX_KEY_FILE + 1)
@@ -364,18 +364,18 @@ def read_identity(path: str) -> bytes:
 
 def check_identity_stat(path: str, st: os.stat_result) -> None:
     if not stat.S_ISREG(st.st_mode):
-        raise fail(f"cannot read private key at {path}")
+        raise fail(f"cannot read private key at {path!r}")
     mode = stat.S_IMODE(st.st_mode)
     if mode & 0o077:
         raise fail(
-            f"private key at {path} is mode {mode:03o}; "
+            f"private key at {path!r} is mode {mode:03o}; "
             "it must be owner-only (0600). Refusing."
         )
     if st.st_uid != os.geteuid():
-        raise fail(f"private key at {path} is not owned by this user. Refusing.")
+        raise fail(f"private key at {path!r} is not owned by this user. Refusing.")
     if st.st_size > MAX_KEY_FILE:
         raise fail(
-            f"private key at {path} is {st.st_size} bytes, over {MAX_KEY_FILE}; "
+            f"private key at {path!r} is {st.st_size} bytes, over {MAX_KEY_FILE}; "
             "not an age identity file"
         )
 
@@ -396,9 +396,9 @@ def check_key(privkey: str) -> str:
     if text is not None and any(
             f"-----BEGIN {kind}-----" in text
             for kind in ("RSA PRIVATE KEY", "PRIVATE KEY", "ENCRYPTED PRIVATE KEY")):
-        raise fail(f"the key at {privkey} is an RSA key from 0.1.0; 0.2.0 uses age: "
+        raise fail(f"the key at {privkey!r} is an RSA key from 0.1.0; 0.2.0 uses age: "
                    "a 0.1.0 install sets up again (README.md)")
-    not_identity = f"the file at {privkey} is not an age identity file"
+    not_identity = f"the file at {privkey!r} is not an age identity file"
     if text is None:
         raise fail(not_identity)
     secrets = 0
@@ -408,10 +408,10 @@ def check_key(privkey: str) -> str:
         if not line.strip() or line.startswith("#"):
             continue
         if line.startswith("AGE-PLUGIN-"):
-            raise fail(f"the identity at {privkey} holds a plugin identity; "
+            raise fail(f"the identity at {privkey!r} holds a plugin identity; "
                        "only a plain age identity is supported")
         if line.startswith("AGE-SECRET-KEY-PQ-1"):
-            raise fail(f"the identity at {privkey} is a post-quantum identity; "
+            raise fail(f"the identity at {privkey!r} is a post-quantum identity; "
                        "only a plain age identity is supported")
         if AGE_SECRET_RE.fullmatch(line):
             secrets += 1
@@ -423,7 +423,7 @@ def check_key(privkey: str) -> str:
         raise fail(not_identity + (
             "; that is a recipient (public), not an identity" if recipient else ""))
     if secrets > 1:
-        raise fail(f"the identity at {privkey} holds {secrets} secret keys; "
+        raise fail(f"the identity at {privkey!r} holds {secrets} secret keys; "
                    "it must hold exactly one")
     if recipient:
         raise fail(not_identity)
@@ -440,7 +440,7 @@ def check_key(privkey: str) -> str:
     out = proc.stdout.decode("utf-8", "replace").strip()
     if proc.returncode != 0 or not AGE_RECIPIENT_RE.fullmatch(out):
         # age-keygen's own text is not shown.
-        raise fail(f"cannot load the age identity at {privkey}")
+        raise fail(f"cannot load the age identity at {privkey!r}")
     return out
 
 
@@ -486,14 +486,14 @@ def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
     plain = age_decrypt(raw, current)
     if plain is not None:
         return plain, "current"
-    tried = f"decryption failed with the key at {current}"
+    tried = f"decryption failed with the key at {current!r}"
     if os.path.lexists(previous):
         check_key(previous)
         plain = age_decrypt(raw, previous)
         if plain is not None:
             return plain, "previous"
-        tried = (f"decryption failed with the current key ({current}) "
-                 f"and with the previous key ({previous})")
+        tried = (f"decryption failed with the current key ({current!r}) "
+                 f"and with the previous key ({previous!r})")
     # One fixed message, whichever key failed and however, without age's
     # own text, which depends on the blob. It names the key files it tried
     # (paths, never payload data) and the age that ran. It's a stop condition:
@@ -838,7 +838,7 @@ def parse_args(argv):
         elif a == "--rewrap":
             do_rewrap = True
         else:
-            raise fail(f"unrecognized argument: {a}")
+            raise fail(f"unrecognized argument: {a!r}")
         i += 1
     # Counted over the whole map, the default mappings included: a payload
     # may carry any known field, so no two may ever share a target.
@@ -873,7 +873,7 @@ def parse_args(argv):
             raise fail("--blob-file is empty")
         path = expand_home(blob_file, "--blob-file")
         not_regular = (
-            f"blob file at {blob_file} is not a regular file (a "
+            f"blob file at {blob_file!r} is not a regular file (a "
             "directory, pipe, FIFO or device); give the blob with "
             "--blob or $HANDOFF_BLOB"
         )
@@ -900,11 +900,11 @@ def parse_args(argv):
                 blob = fh.read(MAX_BLOB_FILE_RAW + 1)
         except OSError as e:
             # strerror comes from the OS, never from the file's contents.
-            raise fail(f"cannot read blob file at {blob_file}: {e.strerror}") from None
+            raise fail(f"cannot read blob file at {blob_file!r}: {e.strerror}") from None
         except UnicodeError:
-            raise fail(f"cannot read blob file at {blob_file} as text") from None
+            raise fail(f"cannot read blob file at {blob_file!r} as text") from None
         if len(blob) > MAX_BLOB_FILE_RAW:
-            raise fail(f"blob file at {blob_file} is over {MAX_BLOB_FILE_RAW} characters "
+            raise fail(f"blob file at {blob_file!r} is over {MAX_BLOB_FILE_RAW} characters "
                        "(line breaks and blanks included); not a blob")
     if blob is None:
         blob = os.environ.get(BLOB_ENV)
@@ -983,7 +983,7 @@ def main() -> int:
         # key beside this one, HANDOFF_PRIVKEY names the wrong key, or there's
         # no rotation to rewrap for.
         raise fail(
-            f"--rewrap: no rotation under way at {current} (no {previous}). "
+            f"--rewrap: no rotation under way at {current!r} (no {previous!r}). "
             "Run it with HANDOFF_PRIVKEY as the label's wrappers set it, during "
             "a rotation (SETUP.md, Rotation); anything else, stop and report it."
         )
@@ -995,7 +995,7 @@ def main() -> int:
         # Between agent-setup.sh --rotate's two steps both names hold the old
         # key: a blob "for the current key" then is for the key being retired.
         raise fail(
-            f"--rewrap: {previous} holds the same key as {current}: the rotation "
+            f"--rewrap: {previous!r} holds the same key as {current!r}: the rotation "
             "didn't finish. Run agent-setup.sh --rotate again (SETUP.md, Rotation step 1)."
         )
     if do_rewrap:
@@ -1021,8 +1021,8 @@ def main() -> int:
                                    (os.path.realpath(asked), asked)):
             if under_dir(target, key_dir):
                 raise fail(f"--rewrap's --blob-file {shown(target)!r} resolves to {target!r}, "
-                           f"under the key's directory ({given_dir}"
-                           + ("" if given_dir == key_dir else f", that is {key_dir}") + "); "
+                           f"under the key's directory ({given_dir!r}"
+                           + ("" if given_dir == key_dir else f", that is {key_dir!r}") + "); "
                            "the blob belongs in the store")
     plaintext, slot = decrypt(blob, current, previous)
     creds = check_payload(parse_payload(plaintext), label, env_map)
@@ -1037,13 +1037,13 @@ def main() -> int:
             # Already for the current key: rewriting it would only change the
             # bytes (age output is randomized) and confuse a comparison with the store.
             print(f"consume.py: the blob in {shown(target)!r} is already for the current key "
-                  f"{current}; nothing written", file=sys.stderr)
+                  f"{current!r}; nothing written", file=sys.stderr)
             return 0
         # The new blob is ciphertext, written over the blob file only once it's
         # whole and checked.
         write_atomically(target, (rewrap(plaintext, current) + "\n").encode("ascii"))
-        print(f"consume.py: rewrapped {shown(target)!r} to the current key {current}; the blob "
-              f"was for the previous key ({previous})", file=sys.stderr)
+        print(f"consume.py: rewrapped {shown(target)!r} to the current key {current!r}; the blob "
+              f"was for the previous key ({previous!r})", file=sys.stderr)
         return 0
     if slot == "current" and os.path.lexists(previous):
         # During a rotation, a positive line too: a probe's check is then for

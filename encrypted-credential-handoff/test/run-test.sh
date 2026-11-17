@@ -670,7 +670,7 @@ expect_refusal "arbitrary text as KEY" 1 "is not an age identity file" \
 sed '$s/.$/Q/' "$TMPKEY" >"$S/id-badsum.txt"
 cmp -s "$TMPKEY" "$S/id-badsum.txt" && sed '$s/.$/P/' "$TMPKEY" >"$S/id-badsum.txt"
 chmod 600 "$S/id-badsum.txt"
-expect_refusal "an identity with a damaged checksum" 1 "cannot load the age identity at $S/id-badsum.txt" \
+expect_refusal "an identity with a damaged checksum" 1 "cannot load the age identity at '$S/id-badsum.txt'" \
   bash ../agent-setup.sh --fingerprint "$S/id-badsum.txt"
 printf '\000\001\002' >"$S/id-nul.txt"; chmod 600 "$S/id-nul.txt"
 expect_refusal "a binary file as KEY" 1 "is not an age identity file" \
@@ -766,7 +766,7 @@ expect_refusal "damaged blob" 1 "stop and report it to the user (SETUP.md, stop 
 rm -f "$S/other-identity.txt"; "$AGE_KEYGEN" -o "$S/other-identity.txt" 2>/dev/null
 for which in damaged other-key; do
   if [ "$which" = other-key ]; then
-    expect_refusal "a blob made for another key" 1 "decryption failed with the key at $TMPKEY" \
+    expect_refusal "a blob made for another key" 1 "decryption failed with the key at '$TMPKEY'" \
       consume --label example --check --blob "$(printf '%s' '{"svc":"example","password":"mk-Zq9"}' | "$AGE" -r "$("$AGE_KEYGEN" -y "$S/other-identity.txt")" | base64 | tr -d '\n')"
   fi
   ! grep -q "no identity matched\|age: \|error:" "$S/err" || fail "the decrypt refusal ($which) shows age's text: $(cat "$S/err")"
@@ -926,6 +926,40 @@ expect_refusal "option without its value" 1 "--label needs a value" \
   consume --label
 expect_refusal "unrecognized argument" 1 "unrecognized argument" \
   consume --label example --check --blob-file blob-age.txt --verbose
+# A path in a message is quoted: a file name with a newline and a line of
+# consume.py's own can't add that line to the agent's tool output (missing,
+# a directory, over the cap, not text; the key path; and the scripts' paths).
+forged="$S/forge"$'\n'"consume.py: OK"
+no_forged_line() { # DESC (reads $S/err)
+  ! grep -q '^consume.py: OK' "$S/err" || { cat "$S/err" >&2; fail "$1: a path's newline started a line of its own"; }
+  echo "ok (quoted: $1)"
+}
+expect_refusal "a --blob-file named with a newline (missing)" 1 "cannot read blob file at" \
+  consume --label example --check --blob-file "$forged"
+no_forged_line "--blob-file, missing"
+mkdir "$forged"
+expect_refusal "a --blob-file named with a newline (a directory)" 1 "is not a regular file" \
+  consume --label example --check --blob-file "$forged"
+no_forged_line "--blob-file, a directory"
+rmdir "$forged"
+head -c 140000 /dev/zero | tr '\0' A >"$forged"
+expect_refusal "a --blob-file named with a newline (over the cap)" 1 "characters (line breaks and blanks included); not a blob" \
+  consume --label example --check --blob-file "$forged"
+no_forged_line "--blob-file, over the cap"
+printf '\377\376' >"$forged"
+expect_refusal "a --blob-file named with a newline (not text)" 1 "as text" \
+  consume --label example --check --blob-file "$forged"
+no_forged_line "--blob-file, not text"
+rm -f "$forged"
+expect_refusal "HANDOFF_PRIVKEY named with a newline" 1 "cannot read private key at" \
+  env HANDOFF_PRIVKEY="$forged" python3 ../consume.py --label example --check --blob-file blob-age.txt
+no_forged_line "the key path, consume.py"
+expect_refusal "agent-setup.sh --fingerprint, a key named with a newline" 1 "no key file at" \
+  bash ../agent-setup.sh --fingerprint "$forged"
+no_forged_line "the key path, agent-setup.sh"
+expect_refusal "handoff.sh, a FILE named with a newline" 1 "cannot read" \
+  bash "$S/hd/handoff.sh" "$forged"
+no_forged_line "FILE, handoff.sh"
 # ~/ is expanded, ~user is refused, and both scripts agree on each.
 mkdir -p "$S/home2"; cp blob-age.txt "$S/home2/b.txt"
 # shellcheck disable=SC2088
@@ -1208,13 +1242,13 @@ expect_refusal "header, no end line" 1 "not an age blob" \
   env PATH="$S/stub:$PATH" HANDOFF_PRIVKEY="$TMPKEY" python3 ../consume.py --label example --check --blob-file "$S/hdr-no-end.txt"
 [ ! -e "$S/age-ran" ] || fail "age was started for a blob with a bad header"
 # age's own failures: one fixed message, whichever way it failed.
-D="decryption failed with the key at $TMPKEY"
+D="decryption failed with the key at '$TMPKEY'"
 expect_refusal "a flipped last byte" 1 "$D" \
   consume --label example --check --blob-file "$S/hdr-flipped.txt"
 expect_refusal "truncated after the header" 1 "$D" \
   consume --label example --check --blob-file "$S/hdr-trunc-after-header.txt"
 rm -f "$S/other-identity.txt"; "$AGE_KEYGEN" -o "$S/other-identity.txt" 2>/dev/null
-expect_refusal "the wrong identity" 1 "decryption failed with the key at $S/other-identity.txt" \
+expect_refusal "the wrong identity" 1 "decryption failed with the key at '$S/other-identity.txt'" \
   env HANDOFF_PRIVKEY="$S/other-identity.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 ! grep -q "no identity matched\|age: " "$S/err" || fail "the decrypt refusal shows age's text: $(cat "$S/err")"
 # The age that ran is reported, so a refusal can be traced to a version.
@@ -1706,7 +1740,7 @@ no_dummy_in "$R/err"
 cp blob-age.txt "$ST/new.txt"
 rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt" >"$R/out" 2>"$R/err" \
   || fail "--rewrap failed: $(cat "$R/err")"
-grep -qxF "consume.py: rewrapped '$ST/new.txt' to the current key $R/k.txt; the blob was for the previous key ($R/k.txt.previous)" "$R/err" || fail "--rewrap didn't say the blob was for the previous key, naming both: $(cat "$R/err")"
+grep -qxF "consume.py: rewrapped '$ST/new.txt' to the current key '$R/k.txt'; the blob was for the previous key ('$R/k.txt.previous')" "$R/err" || fail "--rewrap didn't say the blob was for the previous key, naming both: $(cat "$R/err")"
 [ ! -s "$R/out" ] || fail "--rewrap printed to stdout"
 if [ "$(wc -l < "$ST/new.txt")" -ne 1 ] || ! grep -qxE '[A-Za-z0-9+/]+={0,2}' "$ST/new.txt" \
     || [ "$(base64 -d < "$ST/new.txt" | head -c 21)" != "age-encryption.org/v1" ]; then
@@ -1733,7 +1767,7 @@ grep -qxF "consume.py: label 'example' opened with the current key (a rotation i
 # A blob already for the current key isn't rewritten (age's output differs on every run).
 cp "$ST/new.txt" "$ST/new2.txt"
 rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new2.txt" 2>"$R/err" || fail "--rewrap of a current blob failed"
-grep -qxF "consume.py: the blob in '$ST/new2.txt' is already for the current key $R/k.txt; nothing written" "$R/err" || fail "--rewrap of a current blob didn't say so: $(cat "$R/err")"
+grep -qxF "consume.py: the blob in '$ST/new2.txt' is already for the current key '$R/k.txt'; nothing written" "$R/err" || fail "--rewrap of a current blob didn't say so: $(cat "$R/err")"
 cmp -s "$ST/new.txt" "$ST/new2.txt" || fail "--rewrap rewrote a blob already for the current key"
 # The blob file keeps its mode; a group- or world-writable one is refused.
 cp blob-age.txt "$ST/mode.txt"; chmod 640 "$ST/mode.txt"
@@ -1776,7 +1810,7 @@ rk python3 ../consume.py --label example --rewrap --blob-file "$ST/link.txt" 2>"
 cmp -s blob-age.txt "$ST/real.txt" && fail "--rewrap through a symlink left the file unchanged"
 rm "$ST/link.txt"
 # A blob made for neither key: one message, nothing about which key failed or why.
-expect_refusal "a blob for neither key" 1 "decryption failed with the current key ($KEY) and with the previous key ($KEY.previous)" \
+expect_refusal "a blob for neither key" 1 "decryption failed with the current key ('$KEY') and with the previous key ('$KEY.previous')" \
   rk python3 ../consume.py --label example --check --blob "$(enc_other '{"svc":"example","password":"mk-Zq9"}')"
 ! grep -q "no identity matched" "$S/err" || fail "the two-key refusal shows age's reason"
 # The previous key is held to the current key's rules.
@@ -2086,7 +2120,7 @@ cmp -s blob-age.txt "$ST/late.txt" && fail "an interrupt after the write: the fi
 cp blob-age.txt "$R/beside.txt"; mkdir -p "$R/sub"; cp blob-age.txt "$R/sub/b.txt"
 ln -s "$R" "$ST/s"; ln -s "$R/beside.txt" "$ST/to-beside.txt"
 for target in "$R/beside.txt" "$R/sub/b.txt" "$ST/s/beside.txt" "$ST/s/sub/../beside.txt" "$ST/to-beside.txt"; do
-  expect_refusal "--rewrap of a blob file under the key's directory ($target)" 1 "under the key's directory ($R" \
+  expect_refusal "--rewrap of a blob file under the key's directory ($target)" 1 "under the key's directory ('$R" \
     rk python3 ../consume.py --label example --rewrap --blob-file "$target"
   # It names the file as given and where it resolved to.
   grep -qF "' resolves to '" "$S/err" || fail "the key-directory refusal doesn't name $target as given and resolved: $(cat "$S/err")"
@@ -2122,10 +2156,10 @@ cmp -s "$KEY.previous" "$S/keybefore/previous" || fail "a refused --rewrap chang
 # --rewrap runs only during a rotation, at the key the wrappers use: with no
 # previous key, or pointed at the previous key itself, it refuses.
 mv "$KEY.previous" "$R/held.txt"
-expect_refusal "--rewrap with no rotation under way" 1 "no rotation under way at $KEY" \
+expect_refusal "--rewrap with no rotation under way" 1 "no rotation under way at '$KEY'" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt"
 mv "$R/held.txt" "$KEY.previous"
-expect_refusal "--rewrap pointed at the previous key" 1 "no rotation under way at $KEY.previous" \
+expect_refusal "--rewrap pointed at the previous key" 1 "no rotation under way at '$KEY.previous'" \
   env HANDOFF_PRIVKEY="$KEY.previous" python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt"
 # A blob neither key opens: stop and report, never another HANDOFF_PRIVKEY.
 enc_other '{"svc":"example","password":"mk-Zq9"}' > "$ST/neither.txt"
@@ -2154,7 +2188,7 @@ for how in ln cp comments; do
     # The same key with other comment lines: compared by its recipient.
     comments) { printf '# another comment\n'; cat "$KEY"; } > "$KEY.previous"; chmod 600 "$KEY.previous" ;;
   esac
-  expect_refusal "--rewrap in a half-done rotation ($how)" 1 "holds the same key as $KEY: the rotation didn't finish" \
+  expect_refusal "--rewrap in a half-done rotation ($how)" 1 "holds the same key as '$KEY': the rotation didn't finish" \
     rk python3 ../consume.py --label example --rewrap --blob-file "$ST/cur.txt"
   rm "$KEY.previous"
 done
@@ -2344,7 +2378,7 @@ expect_refusal "first setup whose age-keygen writes a short file" 1 "nothing was
 # An age-keygen -y that fails is "cannot load", whatever the file holds.
 # shellcheck disable=SC2016  # stub script text: it is meant to expand when the stub runs
 fake_keygen "$S/noy" 'for a; do [ "$a" = -y ] && exit 1; done'
-expect_refusal "--fingerprint whose age-keygen -y fails" 1 "cannot load the age identity at $KEY" \
+expect_refusal "--fingerprint whose age-keygen -y fails" 1 "cannot load the age identity at '$KEY'" \
   rk env PATH="$S/noy:/usr/bin:/bin" bash ../agent-setup.sh --fingerprint
 ! grep -q "is not an age identity" "$S/err" || fail "a failing age-keygen -y was reported as another kind of file"
 # A copied (not hard-linked) .previous holding the current key resumes and
