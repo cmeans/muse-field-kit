@@ -1009,6 +1009,14 @@ if (-not $OnWindows) {
   NotHere $stubNames[4]
 }
 
+# An execution-policy block, told by its error id (UnauthorizedAccess, category
+# PSSecurityException) and not by English text: Windows PowerShell 5.1 and 7 word
+# it differently, and a localized Windows differently again. The text of 5.1 and
+# 7 is accepted too, for a host whose error view leaves the id out.
+function Test-PolicyBlock($r) {
+  return [bool]($r.Err -match 'UnauthorizedAccess|PSSecurityException|not digitally signed|running scripts is disabled|cannot be loaded')
+}
+
 # --- Windows: Mark of the Web and execution policy --------------------------------
 Say '== win. Mark of the Web, execution policy, the documented invocations =='
 $epCases = @('a Mark-of-the-Web copy is blocked under RemoteSigned',
@@ -1027,7 +1035,7 @@ if ($OnWindows) {
   Assert-True ((Get-Content -LiteralPath $hm -Stream Zone.Identifier) -contains 'ZoneId=3') 'test setup: the Mark of the Web was not written'
 
   $r = Invoke-Proc -Exe $PSExe -Argv @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File', $hm, '-Fingerprint') -Cwd $mw
-  Assert-True ($r.Exit -ne 0 -and $r.Out.Length -eq 0 -and ($r.Err -match 'not digitally signed|cannot be loaded')) "RemoteSigned ran a marked copy: exit $($r.Exit) $($r.Err)"
+  Assert-True ($r.Exit -ne 0 -and $r.Out.Length -eq 0 -and (Test-PolicyBlock $r)) "RemoteSigned ran a marked copy: exit $($r.Exit) $($r.Err)"
   # The same copy, unmarked, runs under RemoteSigned (so the block above is the mark's).
   $r = Invoke-Proc -Exe $PSExe -Argv @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File', $hu, '-Fingerprint') -Cwd $un
   Assert-True ($r.Exit -eq 0 -and $r.Out.TrimEnd("`r", "`n") -ceq $Want) "RemoteSigned refused an unmarked copy: $($r.Err)"
@@ -1035,9 +1043,9 @@ if ($OnWindows) {
 
   foreach ($h in @($hm, $hu)) {
     $r = Invoke-Proc -Exe $PSExe -Argv @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-File', $h, '-Fingerprint') -Cwd (Split-Path $h)
-    Assert-True ($r.Exit -ne 0 -and $r.Out.Length -eq 0 -and ($r.Err -match 'disabled|cannot be loaded')) "Restricted ran $h : exit $($r.Exit) $($r.Err)"
+    Assert-True ($r.Exit -ne 0 -and $r.Out.Length -eq 0 -and (Test-PolicyBlock $r)) "Restricted ran $h : exit $($r.Exit) $($r.Err)"
     $r = Invoke-Proc -Exe $PSExe -Argv @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-Command', '.\handoff.ps1 -Fingerprint') -Cwd (Split-Path $h)
-    Assert-True ($r.Out.Length -eq 0 -and ($r.Err -match 'disabled|cannot be loaded')) "Restricted ran .\handoff.ps1 in $h : $($r.Err)"
+    Assert-True ($r.Out.Length -eq 0 -and (Test-PolicyBlock $r)) "Restricted ran .\handoff.ps1 in $h : $($r.Err)"
   }
   Say "ok ($($epCases[1]))"
 
