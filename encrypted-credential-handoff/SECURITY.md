@@ -11,4 +11,4 @@ This folder is a security pattern; flaws in it matter more than most bugs.
 ## Scope notes
 
 - The threat model and the ten invariants in `README.md` define what this pattern claims to defend against. A report that something in the “does not defend against” list is indeed not defended is a documentation discussion, not a vulnerability — but if the README's wording anywhere overstates the defended side, that overstatement is itself worth reporting.
-- The keypair under `test/` is a published, throwaway test vector. It protects nothing; never use it for a real credential.
+- The identity under `test/` (`test-dummy-identity.txt`) is a published, throwaway test vector. It protects nothing; never use it for a real credential.

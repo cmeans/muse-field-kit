@@ -17,7 +17,7 @@ Known-answer vectors for the encrypted credential handoff reference protocol (`a
 - `user-side-cases.json`, `payload-cases.json` — tables shared by `run-test.sh` and `run-test.ps1` for the user-side scripts (`handoff.sh`, `handoff.ps1`) and the payload checks.
 - `run-test.sh` — runs the full check against the reference implementation in this folder. `HANDOFF_TEST_AGE` and `HANDOFF_TEST_AGE_KEYGEN` name the `age` binaries to test against; `HANDOFF_TEST_ONLY="3b 5a"` runs only the named sections (`1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7 8`) and prints `ran: <ids>` (an unknown id, or an empty list, fails instead of running nothing). It needs `age`, `age-keygen`, `bash`, `python3` and `jq`; nothing else crypto-related.
 - `check-interop.py` — CI only: opens the blobs `run-test.ps1` wrote on Windows (5.1 and 7) with the reference `consume.py` and checks the values byte for byte.
-- `run-test.ps1` — the same checks for the Windows side (`handoff.ps1`), on Windows PowerShell 5.1 and PowerShell 7.
+- `run-test.ps1` — the same checks for the Windows side (`handoff.ps1`), on Windows PowerShell 5.1 and PowerShell 7, including the forms README shows: the `private_key` payload built with `[IO.File]::ReadAllText` and `ConvertTo-Json -Compress` (with a CRLF PEM, opened byte for byte on Linux by `check-interop.py`), and, on Windows, the Mark of the Web and execution-policy routes.
 
 0.1.0 detection is tested with made-up PEM-shaped text written inline by the tests (a `-----BEGIN RSA PRIVATE KEY-----` or `-----BEGIN PUBLIC KEY-----` block with a nonsense body): the scripts look only at the header line, so no real RSA key exists in the repo.
 

@@ -50,7 +50,7 @@ shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*
 pipx run ruff==0.15.7 check encrypted-credential-handoff/
 ```
 
-The suite needs only what the folder needs: `bash`, `python3` 3.7 or later, the folder's crypto tool (OpenSSL 3 or 4 in 0.1.x), and `jq`. CI also parses the scripts under bash 3.2 (macOS's `/bin/bash`) and fails on any skipped check.
+The suite needs only what the folder needs: `bash`, `python3` 3.7 or later, the folder's crypto tool (`age`, with `age-keygen`), and `jq`. `test/run-test.ps1` checks the Windows script, `handoff.ps1`, under PowerShell 7 (on any OS) or Windows PowerShell 5.1. CI also parses the scripts under bash 3.2 (macOS's `/bin/bash`) and fails on any skipped check.
 
 ## Style
 
