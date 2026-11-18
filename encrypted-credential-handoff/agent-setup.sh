@@ -27,9 +27,10 @@
 #                                       delete, keeps the old key, removing
 #                                       only a leftover temporary link to it,
 #                                       and exits 1)
-#   agent-setup.sh --check-setup        run age, age-keygen and consume.py --check
-#                                       on a throwaway identity; prints PASS,
-#                                       INFO or FAIL lines, exits 1 on a FAIL
+#   agent-setup.sh --check-setup        run age, age-keygen and consume.py (--check,
+#                                       then a run with a program) on a throwaway
+#                                       identity; prints PASS, INFO or FAIL lines,
+#                                       exits 1 on a FAIL
 # Exit codes: 0 done (or, for --rotate during a rotation, shown), 1 refused
 # or failed (the reason on stderr), 2 a usage error.
 #
@@ -66,8 +67,10 @@ set -euo pipefail
 # Glob behavior a caller's BASHOPTS or SHELLOPTS could change: noglob (set -f)
 # would make every sweep match nothing, failglob would make every unmatched
 # cleanup glob fatal (--rotate's .handoff-new.*), nullglob and dotglob would
-# change what the sweeps match. This script's own settings.
+# change what the sweeps match. This script's own settings. noclobber (set -C)
+# would make a second write to a scratch file fail.
 set +f
+set +C
 shopt -u failglob nullglob dotglob nocaseglob nocasematch extglob 2>/dev/null || true
 umask 077
 
@@ -386,6 +389,14 @@ rotate_save_text() {  # RECIPIENT
   fi
 }
 
+# A directory's physical absolute path, for a command the user copies. A
+# relative one gets ./ first: `cd -- -` would go to $OLDPWD, and print it.
+phys_dir() {  # DIR
+  local d="$1"
+  case "$d" in /*) ;; *) d="./$d" ;; esac
+  (cd -- "$d" 2>/dev/null && pwd -P)
+}
+
 # One setup, --rotate or --retire at a time per key directory: a portable lock
 # (mkdir is atomic everywhere; flock isn't on macOS). An interrupted run
 # that couldn't remove it says so on the next run.
@@ -395,7 +406,7 @@ lock_dir() {  # DIR
     if [ -e "$l" ]; then
       # Absolute and single-quoted, so the command works from any directory
       # and in a POSIX shell, as --retire's hard-link hint is.
-      abs=$(cd -- "$1" 2>/dev/null && pwd -P)/.handoff-lock || abs=$l
+      abs=$(phys_dir "$1")/.handoff-lock || abs=$l
       echo "agent-setup.sh: another setup, --rotate or --retire is running ($(qp "$l") exists)." >&2
       echo "Stop and report it to the user: if no run is going (one was killed), they remove it with: rmdir '$(printf '%s' "$abs" | sed "s/'/'\\\\''/g")'" >&2
     else
@@ -410,7 +421,7 @@ lock_dir() {  # DIR
 # perhaps a temporary copy of the key (a second hard link to it). Named, with
 # the lock's rmdir, for a refusal that stops before the lock would; nothing
 # printed when there's neither. Only by the names this script makes.
-leftover_note() {  # DIR
+leftover_note() {  # DIR KEY-EXISTS (yes or no)
   local d="$1" abs f nd=0 nf=0 tmps=
   for f in "$d"/.handoff-tmp.??????; do
     if [ -d "$f" ] && [ ! -L "$f" ]; then nd=$((nd + 1)); fi
@@ -418,15 +429,20 @@ leftover_note() {  # DIR
   for f in "$d"/.handoff-setup.??????; do
     if [ -f "$f" ] && [ ! -L "$f" ]; then nf=$((nf + 1)); fi
   done
-  # Who removes what: --rotate sweeps the directories; once a key exists,
+  # Who removes what. With no key yet, the next setup sweeps both kinds (and
+  # --rotate refuses). Once a key exists, --rotate sweeps the directories, and
   # nothing here removes a .handoff-setup file (--retire only one that is a
   # hard link to the previous key), so the user is told.
-  [ "$nd" -eq 0 ] || tmps="$nd temporary key directory(ies) a killed run left (the next --rotate removes them)"
-  if [ "$nf" -gt 0 ]; then
-    tmps="${tmps:+$tmps, and }$nf temporary key file(s) a killed setup left (report them to the user, who removes them)"
+  if [ "$2" = no ]; then
+    [ $((nd + nf)) -eq 0 ] || tmps="$((nd + nf)) temporary key file(s) or directory(ies) a killed setup left (the next setup removes them)"
+  else
+    [ "$nd" -eq 0 ] || tmps="$nd temporary key directory(ies) a killed run left (the next --rotate removes them)"
+    if [ "$nf" -gt 0 ]; then
+      tmps="${tmps:+$tmps, and }$nf temporary key file(s) a killed setup left (report them to the user, who removes them)"
+    fi
   fi
   if [ -d "$d/.handoff-lock" ] && [ ! -L "$d/.handoff-lock" ]; then
-    abs=$(cd -- "$d" 2>/dev/null && pwd -P) || abs=$d
+    abs=$(phys_dir "$d") || abs=$d
     echo "note: $(qp "$d/.handoff-lock") exists: a setup, --rotate or --retire is running, or one was killed${tmps:+; also $tmps}. If none is running, report it to the user, who removes the lock with: rmdir $(sq "$abs/.handoff-lock")"
   elif [ -n "$tmps" ]; then
     echo "note: $(qp "$d") holds $tmps"
@@ -469,7 +485,7 @@ cs_out() {  # STATUS NAME DETAIL
 }
 check_setup() {
   local p v rc blob rcpt re have_age=0 have_keygen=0 have_py=0 here consume
-  local payload rt="" hdr="" b64="" want k kmsg kc same got
+  local payload rt="" hdr="" b64="" want k kmsg kc same got wl
   set +e
   # The traps first, so no signal can fall between the folder and its cleanup
   # (newd starts empty, and cleanup removes it only if set).
@@ -551,9 +567,14 @@ password: 20 bytes"
         # The bytes too, not only the length --check reports: the throwaway
         # password (no secret) goes to a one-line program the way a wrapper's
         # tool gets it, and is compared byte for byte with what was encrypted.
-        same=no got=
+        # In the locale a wrapper sets (SETUP.md step 7: LANG=C.UTF-8, or
+        # en_US.UTF-8 on macOS, with no LC_ALL), not the caller's: the check
+        # is of what the wrappers will do.
+        same=no got='' wl=C.UTF-8
+        [ "$(uname -s 2>/dev/null)" != Darwin ] || wl=en_US.UTF-8
         if [ "$rc" -eq 0 ] && [ "$v" = "$want" ]; then
-          got=$(unset HANDOFF_BLOB HANDOFF_LABEL HANDOFF_PRIVKEY
+          got=$(unset HANDOFF_BLOB HANDOFF_LABEL HANDOFF_PRIVKEY LC_ALL LC_CTYPE
+              export LANG="$wl"
               HANDOFF_PRIVKEY="$newd/id.txt" python3 -I "$consume" --label check --blob-file "$newd/blob.txt" \
                 -- python3 -I -c 'import os, sys; sys.stdout.write(os.environb[b"SERVICE_PASSWORD"].hex())' </dev/null 2>"$newd/rerr") || got=
           [ "$got" = "$(printf '%s' 'pässwörd-ü-日本' | od -An -tx1 | tr -d ' \n')" ] && same=yes
@@ -569,7 +590,7 @@ password: 20 bytes"
           kmsg=$(grep -v '^[[:space:]]*$' "$newd/rerr" 2>/dev/null | tail -n 1)
           kmsg=${kmsg#consume.py: }
           case "$kmsg" in
-            *codec*|*[Uu]nicode*) kmsg="$kmsg (this shell's locale is not UTF-8; a wrapper sets LANG= to a UTF-8 locale, SETUP.md step 7)" ;;
+            *codec*|*[Uu]nicode*) kmsg="$kmsg (under LANG=$wl, the locale a wrapper sets, SETUP.md step 7: check that this machine has that locale)" ;;
           esac
           rt="FAIL|consume.py --check passed, but running a program with the password failed: ${kmsg:-no message}"
         elif [ "$rc" -eq 0 ] && [ "$v" = "$want" ]; then
@@ -633,7 +654,8 @@ password: 20 bytes"
       cs_out FAIL identity "${kmsg:-the key at $k did not pass the identity checks}"
     fi
     # A killed run's lock would stop the next --rotate; say so now.
-    if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")") && [ -n "$kmsg" ]; then
+    kc=no; if [ -e "$k" ] || [ -L "$k" ]; then kc=yes; fi
+    if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")" "$kc") && [ -n "$kmsg" ]; then
       cs_out INFO leftovers "${kmsg#note: }"
     fi
   else
@@ -670,7 +692,8 @@ case "${1-}" in
           case "$a" in
             (--yes) if [ -n "$yes" ]; then why="--yes given twice"; else why="--yes goes right after --retire, before KEY"; fi; break ;;
             (--yes=*|--[Yy][Ee][Ss]|--[Yy]|--[Yy][Ee]|-[Yy]|-[Yy][Ee]|-[Yy][Ee][Ss]|[Yy]|[Yy][Ee]|[Yy][Ee][Ss])
-              if [ -n "$yes" ]; then why="$a: a second, misspelled --yes"; else why="the confirmation is spelled --yes, right after --retire"; fi; break ;;
+              # With --yes given, not called a misspelling of it (as with one argument).
+              if [ -n "$yes" ]; then why="$a isn't a KEY"; else why="the confirmation is spelled --yes, right after --retire"; fi; break ;;
           esac
         done
       fi
@@ -926,7 +949,7 @@ case "$mode" in
       mnt=$(df -P -- "$q" 2>/dev/null | awk 'NR == 2 { print $NF }')
       case $mnt in /*) [ -d "$mnt" ] || mnt= ;; *) mnt= ;; esac
       # Absolute, so the command works from any directory (sudo -i changes it).
-      abs=$(cd -- "$(dirname -- "$prev")" && pwd -P)/${prev##*/} || abs=$prev
+      abs=$(phys_dir "$(dirname -- "$prev")")/${prev##*/} || abs=$prev
       # shellcheck disable=SC2012  # ls -di is the portable inode read (find -printf is GNU's)
       ino=$(ls -di -- "$q" 2>/dev/null | awk 'NR == 1 { print $1; exit }')
       case $ino in ''|*[!0-9]*) ino= ;; esac
@@ -974,7 +997,7 @@ PRIV="$KEY_DIR/handoff-identity.txt"
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
   printf 'if a setup was cut short, this is its key: HANDOFF_PRIVKEY=%q agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
-  leftover_note "$(dirname -- "$PRIV")" >&2
+  leftover_note "$(dirname -- "$PRIV")" yes >&2
   exit 1
 fi
 

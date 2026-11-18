@@ -582,12 +582,28 @@ if [ "\$1 \$2" = "-I -c" ]; then case "\$3" in *SERVICE_PASSWORD*)
 exec $(command -v python3) "\$@"
 EOF
 chmod 755 "$S/pyshim/python3"
+wl=C.UTF-8; [ "$(uname -s)" != Darwin ] || wl=en_US.UTF-8
 rc=0; env PATH="$S/pyshim:$PATH" HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || rc=$?
 if [ "$rc" != 1 ] || ! grep -q '^PASS header' "$S/out" \
-   || ! grep -qxF "FAIL round trip: consume.py --check passed, but running a program with the password failed: UnicodeEncodeError: 'latin-1' codec can't encode characters (this shell's locale is not UTF-8; a wrapper sets LANG= to a UTF-8 locale, SETUP.md step 7)" "$S/out"; then
+   || ! grep -qxF "FAIL round trip: consume.py --check passed, but running a program with the password failed: UnicodeEncodeError: 'latin-1' codec can't encode characters (under LANG=$wl, the locale a wrapper sets, SETUP.md step 7: check that this machine has that locale)" "$S/out"; then
   fail "--check-setup misreported a failed run (exit $rc): $(grep -E 'round trip|header' "$S/out")"
 fi
 echo "ok (--check-setup's byte comparison: a mismatch and a failed run each FAIL with their own cause)"
+# The byte check runs in the locale a wrapper sets, not the caller's: a
+# Latin-1 shell still PASSes (where such a locale is installed).
+l1=
+for l in en_US.iso88591 en_US.ISO-8859-1 de_DE.iso88591; do
+  case "$(LC_ALL=$l python3 -I -c 'import sys; print(sys.getfilesystemencoding())' 2>/dev/null)" in
+    iso8859-1|latin-1|iso-8859-1) l1=$l; break ;;
+  esac
+done
+if [ -n "$l1" ]; then
+  env LC_ALL="$l1" LANG="$l1" HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+  grep -q '^PASS round trip: .*byte for byte$' "$S/out" || fail "--check-setup under LC_ALL=$l1 didn't pass the round trip: $(grep 'round trip' "$S/out")"
+  echo "ok (--check-setup's round trip under the caller's LC_ALL=$l1)"
+else
+  echo "skip: no ISO-8859-1 locale installed, --check-setup under a Latin-1 caller wasn't run"
+fi
 # Its "no key yet" advice fits the key path (#66): plain setup only for the
 # default path, HANDOFF_KEY_DIR for another directory's handoff-identity.txt,
 # and a warning for a name no setup makes.
@@ -2644,7 +2660,9 @@ for args in "-y $KEY" "$KEY -y" "$KEY -Y" "$KEY --YES" "--y $KEY" "$KEY yes" "ye
   expect_refusal "--retire $args" 2 "the confirmation is spelled --yes, right after --retire" \
     rk bash ../agent-setup.sh --retire $args
 done
-expect_refusal "--retire --yes --YES KEY" 2 "(--YES: a second, misspelled --yes)" \
+# With --yes given, a stray --YES isn't called a misspelling of it, with a
+# KEY after it as without one (below).
+expect_refusal "--retire --yes --YES KEY" 2 "(--YES isn't a KEY)" \
   rk bash ../agent-setup.sh --retire --yes --YES "$KEY"
 expect_refusal "--retire --yes --yes KEY" 2 "(--yes given twice)" \
   rk bash ../agent-setup.sh --retire --yes --yes "$KEY"
@@ -2982,10 +3000,44 @@ env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.s
 rm "$S/locked-setup/.handoff-setup.Leftov"
 env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 ! grep -q '^INFO leftovers' "$S/out" || fail "--check-setup named leftovers where there are none: $(cat "$S/out")"
+# With no key yet (where SETUP step 1 runs --check-setup), the next setup
+# removes both kinds, and --rotate refuses: the line says setup.
+mkdir -p "$S/nokey-left"; chmod 700 "$S/nokey-left"
+printf 'leftover\n' >"$S/nokey-left/.handoff-setup.AbCdEf"; mkdir "$S/nokey-left/.handoff-tmp.XyZ123"
+env HANDOFF_PRIVKEY="$S/nokey-left/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qxF "INFO leftovers: $S/nokey-left holds 2 temporary key file(s) or directory(ies) a killed setup left (the next setup removes them)" "$S/out" \
+  || fail "--check-setup's leftovers line with no key is wrong: $(grep leftovers "$S/out")"
+HANDOFF_KEY_DIR="$S/nokey-left" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "setup into a directory with leftovers failed"; }
+[ -z "$(find "$S/nokey-left" -name '.handoff-*' -print)" ] || fail "setup didn't remove what the leftovers line said it removes"
+# A relative key directory named "-" is a directory, not cd's $OLDPWD, in
+# the commands printed for the user: the overwrite refusal's lock note, and
+# --rotate's lock refusal.
+mkdir -p "$S/dashdir/-"; chmod 700 "$S/dashdir/-"; mkdir "$S/dashdir/-/.handoff-lock"
+cp "$TMPKEY" "$S/dashdir/-/handoff-identity.txt"; chmod 600 "$S/dashdir/-/handoff-identity.txt"
+dashlock="rmdir '$(cd "$S/dashdir/-" && pwd -P)/.handoff-lock'"
+(cd "$S/dashdir" && expect_refusal "setup into a key directory named -" 1 "$dashlock" \
+  env HANDOFF_KEY_DIR=- bash "$OLDPWD/../agent-setup.sh")
+(cd "$S/dashdir" && expect_refusal "--rotate of a key in a directory named -" 1 "$dashlock" \
+  env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -/handoff-identity.txt)
+rm -r "$S/dashdir"
+# A caller's SHELLOPTS=noclobber doesn't make --check-setup's second write
+# to a scratch file fail (a false FAIL identity).
+env SHELLOPTS=noclobber HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" \
+  || { cat "$S/out" "$S/err" >&2; fail "--check-setup failed under SHELLOPTS=noclobber"; }
+grep -q '^PASS identity' "$S/out" || fail "--check-setup under SHELLOPTS=noclobber: $(grep identity "$S/out")"
 # A caller's SHELLOPTS=noglob doesn't stop the sweep (issue #43 item 12).
 mkdir -p "$S/noglob-setup"; chmod 700 "$S/noglob-setup"; mkdir "$S/noglob-setup/.handoff-tmp.QwErTy"
 env SHELLOPTS=noglob HANDOFF_KEY_DIR="$S/noglob-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "first setup under SHELLOPTS=noglob failed"; }
 [ ! -e "$S/noglob-setup/.handoff-tmp.QwErTy" ] || fail "first setup under SHELLOPTS=noglob didn't sweep a killed run's leftovers"
+# A temporary copy that goes between the link and the check (an ln shim
+# removes its source after linking) is reported as that, not trusted.
+mkdir -p "$S/lnshim" "$S/gone-setup"; chmod 700 "$S/gone-setup"
+# shellcheck disable=SC2016  # $@ and $2 are the shim's own, not this shell's
+printf '#!/bin/sh\n%s "$@" || exit\nrm -f -- "$2"\n' "$(command -v ln)" >"$S/lnshim/ln"; chmod 755 "$S/lnshim/ln"
+expect_refusal "first setup whose temporary copy goes after the link" 1 "but its temporary copy has gone (another run?): don't trust this run's recipient" \
+  env PATH="$S/lnshim:$PATH" HANDOFF_KEY_DIR="$S/gone-setup" bash ../agent-setup.sh
+[ -f "$S/gone-setup/handoff-identity.txt" ] || fail "the key linked before its temporary copy went isn't there"
+[ -z "$(find "$S/gone-setup" -name '.handoff-*' -print)" ] || fail "setup left files after its temporary copy went: $(find "$S/gone-setup" -name '.handoff-*')"
 # An existing key directory that isn't 0700 (but isn't writable by others)
 # gets the note.
 mkdir -p "$S/note-setup"; chmod 750 "$S/note-setup"

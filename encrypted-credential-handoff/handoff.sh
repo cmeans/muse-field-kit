@@ -40,8 +40,10 @@ set -euo pipefail
 # (noglob, failglob, nullglob, nocasematch on the payload checks' case
 # patterns): this script's own. The rest of a caller's shell (BASH_ENV,
 # exported functions) belongs to whoever set it up: run
-# `bash -p ./handoff.sh` to ignore them.
+# `bash -p ./handoff.sh` to ignore them. noclobber (set -C) would make a
+# second write to a scratch file fail.
 set +f
+set +C
 shopt -u failglob nullglob dotglob nocaseglob nocasematch extglob 2>/dev/null || true
 # A SECRET_JSON exported by the caller would sit in every child's environment:
 unset SECRET_JSON blob
