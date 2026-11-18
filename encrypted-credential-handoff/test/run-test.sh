@@ -612,7 +612,7 @@ env -u HANDOFF_PRIVKEY -u HANDOFF_KEY_DIR HOME="$S/nokey-home" bash ../agent-set
 grep -qF "INFO identity: no key at $S/nokey-home/.config/handoff/handoff-identity.txt yet; agent-setup.sh with no argument makes it" "$S/out" \
   || fail "--check-setup's no-key advice for the default path is wrong: $(grep identity "$S/out")"
 env HANDOFF_PRIVKEY="$nk/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-grep -qF "INFO identity: no key at $nk/handoff-identity.txt yet; HANDOFF_KEY_DIR=$(printf '%q' "$nk") agent-setup.sh makes it" "$S/out" \
+grep -qF "INFO identity: no key at $nk/handoff-identity.txt yet; HANDOFF_KEY_DIR='$nk' agent-setup.sh makes it" "$S/out" \
   || fail "--check-setup's no-key advice for another directory is wrong: $(grep identity "$S/out")"
 # A key in / or named without a directory gets that directory, not the name
 # or an empty one.
@@ -3304,21 +3304,57 @@ rm -r "$S/dangle"
 # starts in the output.
 nld="$S/b"$'\n'"recipient: age1fake"
 mkdir -p "$nld/.handoff-lock"; chmod 700 "$nld"; cp "$TMPKEY" "$nld/k.txt"; chmod 600 "$nld/k.txt"
-expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "they remove it by hand: its path has a hidden or control character, so no command to paste is printed" \
+expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "they remove the .handoff-lock directory with rmdir (never rm -r) by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name)" \
   env HANDOFF_PRIVKEY="$nld/k.txt" bash ../agent-setup.sh --rotate
 ! grep -q '^recipient: age1fake' "$S/err" || fail "the lock message for a directory with a newline printed it raw: $(cat "$S/err")"
-! grep -q 'rmdir' "$S/err" || fail "the lock message printed a command for a directory with a newline: $(cat "$S/err")"
+! grep -qE "rmdir ['\$/]" "$S/err" || fail "the lock message printed a command for a directory with a newline: $(cat "$S/err")"
 rm -r "$nld"
 # The dash injection QA found: a soft hyphen (U+00AD), a quote and a # in the
 # name. --check-setup's leftovers line prints no rmdir to paste.
 inj="$S/a"$'\xc2\xad'"';echo PWNED #"
 mkdir -p "$inj/.handoff-lock"; chmod 700 "$inj"
 env HANDOFF_PRIVKEY="$inj/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-grep -q '^INFO leftovers: .*removes the lock by hand' "$S/out" || fail "--check-setup's lock line for a hidden-character path: $(grep leftovers "$S/out")"
-! grep -q 'rmdir' "$S/out" || fail "--check-setup printed an rmdir for a hidden-character path: $(grep leftovers "$S/out")"
+grep -q '^INFO leftovers: .*removes the .handoff-lock directory with rmdir (never rm -r) by hand' "$S/out" || fail "--check-setup's lock line for a hidden-character path: $(grep leftovers "$S/out")"
+! grep -qE "rmdir ['\$/]" "$S/out" || fail "--check-setup printed an rmdir for a hidden-character path: $(grep leftovers "$S/out")"
 rm -r "$inj"
-# Every rmdir and find command printed for a plain path runs under dash as
-# under bash, where dash is installed.
+# The overwrite refusal names --rotate only for HANDOFF_PRIVKEY naming this
+# key itself: a symlink to it (--rotate refuses one) or a hard link in
+# another directory (--rotate would sweep that one) gets "the user".
+mkdir -p "$S/hp-d/.handoff-tmp.AbCdEf" "$S/hp-o"; chmod 700 "$S/hp-d" "$S/hp-o"
+cp "$TMPKEY" "$S/hp-d/handoff-identity.txt"; chmod 600 "$S/hp-d/handoff-identity.txt"
+ln -s "$S/hp-d/handoff-identity.txt" "$S/hp-o/link.txt"; ln "$S/hp-d/handoff-identity.txt" "$S/hp-o/handoff-identity.txt"
+for hp in "$S/hp-o/link.txt" "$S/hp-o/handoff-identity.txt"; do
+  expect_refusal "the overwrite refusal with HANDOFF_PRIVKEY=${hp##*/} in another directory" 1 "(report them to the user, who removes them)" \
+    env HANDOFF_KEY_DIR="$S/hp-d" HANDOFF_PRIVKEY="$hp" bash ../agent-setup.sh
+done
+rm -rf "$S/hp-d" "$S/hp-o"
+# No command to paste uses printf %q's $'...' form, which dash turns into
+# code: under LC_ALL=C, %q gives it for any non-ASCII path. QA's case, a
+# directory é';touch PWNED #, in the no-key advice, the chmod hint (0770),
+# and setup's overwrite refusal; each command runs under dash where dash is
+# installed, and touches nothing.
+pd="$S/"$'\xc3\xa9'"';touch PWNED #"; mkdir -p "$pd"; chmod 700 "$pd"
+LC_ALL=C env HANDOFF_PRIVKEY="$pd/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+c1=$(sed -n 's/^INFO identity: no key at .* yet; \(HANDOFF_KEY_DIR=.*\) agent-setup.sh makes it$/\1/p' "$S/out")
+chmod 770 "$pd"
+LC_ALL=C env HANDOFF_PRIVKEY="$pd/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+c2=$(sed -n 's/.*who runs: \(chmod -- go-w .*\)$/\1/p' "$S/out")
+chmod 700 "$pd"; cp "$TMPKEY" "$pd/handoff-identity.txt"; chmod 600 "$pd/handoff-identity.txt"
+LC_ALL=C env HANDOFF_KEY_DIR="$pd" bash ../agent-setup.sh >/dev/null 2>"$S/err" || true
+c3=$(sed -n 's/.*this is its key: \(HANDOFF_PRIVKEY=.*\) agent-setup.sh --public-key shows it.*/\1/p' "$S/err")
+for c in "$c1" "$c2" "$c3"; do
+  [ -n "$c" ] || fail "a command for QA's path wasn't printed: c1=$c1 c2=$c2 c3=$c3"
+  case "$c" in *"\$'"*) fail "a command to paste uses the \$'...' form: $c" ;; esac
+done
+if command -v dash >/dev/null 2>&1; then
+  (cd "$S" && dash -c "$c1 true; $c3 true; $(printf '%s' "$c2" | sed 's/^chmod -- go-w/: /')") || true
+  [ ! -e "$S/PWNED" ] && [ ! -e "$pd/PWNED" ] || fail "a printed command ran code under dash"
+  echo "ok (commands for a non-ASCII path with a quote run as data under dash)"
+fi
+rm -rf "$pd" "$S/PWNED"
+echo "ok (no command to paste uses printf %q's \$'...' form)"
+# Every rmdir printed for a plain path runs under dash as under bash, where
+# dash is installed (--check-setup's lock line).
 if command -v dash >/dev/null 2>&1; then
   qd="$S/it's \$(echo X) dir"; mkdir -p "$qd/.handoff-lock"; chmod 700 "$qd"
   env HANDOFF_PRIVKEY="$qd/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
@@ -3477,7 +3513,7 @@ env HANDOFF_PRIVKEY="$nl/k.txt" bash ../agent-setup.sh --rotate >/dev/null 2>&1 
 ln "$nl/k.txt.previous" "$S/nlbackup.txt"
 rc=0; env HANDOFF_PRIVKEY="$nl/k.txt" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
 [ "$rc" = 1 ] || fail "--retire with a newline in the path and another link: exit $rc"
-grep -qE -- "-xdev -inum [0-9]+\), as root" "$S/qerr" || fail "the -inum hint isn't one number: $(cat "$S/qerr")"
+grep -qE -- "-xdev -inum [0-9]+, as root" "$S/qerr" || fail "the -inum hint isn't one number: $(cat "$S/qerr")"
 ! grep -q '^touch), as root' "$S/qerr" || fail "the -inum hint split on the newline: $(cat "$S/qerr")"
 rm -rf "$nl" "$S/nlbackup.txt"
 # A relative key path still gets an absolute path in the find hint.

@@ -160,7 +160,16 @@ sq() {
   if has_ctl "$1"; then return 1; fi
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
-by_hand_note="by hand: its path has a hidden or control character, so no command to paste is printed (ls -b shows such a name)"
+# sq only when the path needs it, as Python's shlex.quote does: a plain path
+# reads as it did before (the chmod hint), and any other gets sq's quotes.
+pq() {
+  case "$1" in
+    '') sq "$1" ;;
+    *[!A-Za-z0-9_@%+=:,./-]*) sq "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+by_hand_note="by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name)"
 
 # The PATH age-keygen is looked for on, in the words of consume.py's
 # age_missing (long ones cut at 300 characters).
@@ -336,8 +345,13 @@ key_dir_unsafe_msg() {  # DIR
   # chmod is the fix only for this account's own directory: on a shared one
   # (/tmp, owned by root) it would break the directory for everyone.
   mine=$(find "$q/." -prune -user "$me" -print 2>/dev/null) || mine=
-  if [ -n "$mine" ]; then
-    printf "the key's directory %s is writable by others; stop and report it to the user, who runs: chmod -- go-w %s" "$(qp "$d")" "$(qp "$d")"
+  if [ -n "$mine" ] && has_ctl "$d"; then
+    # No command to paste for such a path (sq refuses one).
+    printf "the key's directory %s is writable by others; stop and report it to the user, who removes group and other write access with chmod go-w %s" "$(qp "$d")" "$by_hand_note"
+  elif [ -n "$mine" ]; then
+    # sq, not qp: printf %q's $'...' form (any non-ASCII path under LC_ALL=C)
+    # turns into code when pasted into dash.
+    printf "the key's directory %s is writable by others; stop and report it to the user, who runs: chmod -- go-w %s" "$(qp "$d")" "$(pq "$d")"
   else
     printf "the key's directory %s is writable by others; stop and report it to the user: the key belongs in a directory of this account's own (SETUP.md step 1)" "$(qp "$d")"
   fi
@@ -465,7 +479,7 @@ lock_dir() {  # DIR
       # $'...' form only for a path with a control character).
       abs=$(phys_dir "$1")/.handoff-lock || abs=$l
       echo "agent-setup.sh: another setup, --rotate or --retire is running ($(qp "$l") exists)." >&2
-      if has_ctl "$abs"; then hint="they remove it $by_hand_note"; else hint="they remove it with: rmdir $(sq "$abs")"; fi
+      if has_ctl "$abs"; then hint="they remove the .handoff-lock directory with rmdir (never rm -r) $by_hand_note"; else hint="they remove it with: rmdir $(sq "$abs")"; fi
       echo "Stop and report it to the user: if no run is going (one was killed), $hint" >&2
     else
       echo "agent-setup.sh: cannot create the lock in $(qp "$1"): ${err//$'\n'/ }" >&2
@@ -507,7 +521,7 @@ leftover_note() {  # DIR WHO (setup: no key, setup sweeps; rotate: a key --rotat
     echo "note: $(qp "$d/.handoff-lock") exists but isn't a directory (no run makes one), and it stops setup, --rotate and --retire${tmps:+; also $tmps}. Report it to the user."
   elif [ -d "$d/.handoff-lock" ]; then
     abs=$(phys_dir "$d") || abs=$d
-    if has_ctl "$abs"; then hint="removes the lock $by_hand_note"; else hint="removes the lock with: rmdir $(sq "$abs/.handoff-lock")"; fi
+    if has_ctl "$abs"; then hint="removes the .handoff-lock directory with rmdir (never rm -r) $by_hand_note"; else hint="removes the lock with: rmdir $(sq "$abs/.handoff-lock")"; fi
     echo "note: $(qp "$d/.handoff-lock") exists: a setup, --rotate or --retire is running, or one was killed${tmps:+; also $tmps}. If none is running, report it to the user, who $hint"
   elif [ -n "$tmps" ]; then
     echo "note: $(qp "$d") holds $tmps"
@@ -710,7 +724,9 @@ password: $pwn bytes"
     # Who removes a killed run's leftovers (the leftovers line below) follows
     # this identity line: setup only where it advises setup, --rotate only
     # where it passes a key --rotate would rotate, and the user anywhere else
-    # (a FAIL, a relative path, a held lock, a name no setup makes).
+    # (a FAIL, a relative path with no key there, a held lock, a name no
+    # setup makes). A relative path to an existing key is right from this
+    # directory, as --rotate would be.
     who=user
     if [ -z "$k" ]; then
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null); kmsg=${kmsg#agent-setup.sh: }
@@ -747,7 +763,9 @@ password: $pwn bytes"
         # next branch names the directory.)
         cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"; who=setup
       else
-        cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(qp "$kd") agent-setup.sh makes it"; who=setup
+        # sq, not qp: a command to paste (has_ctl already ruled out a
+        # path sq refuses, above).
+        cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(pq "$kd") agent-setup.sh makes it"; who=setup
       fi
     elif kmsg=$(key_dir_unsafe_msg "$(dirname -- "$k")"); then
       # consume.py refuses such a directory: every wrapper would fail.
@@ -1067,11 +1085,11 @@ case "$mode" in
         # The -inum form names no path but the mount point's, so it stays
         # when that one is plain.
         if [ -n "$mnt" ] && [ -n "$ino" ] && ! has_ctl "$mnt"; then
-          alt="find $(sq "$mnt") -xdev -inum $ino), as root to see every directory"
+          alt="with: find $(sq "$mnt") -xdev -inum $ino, as root to see every directory"
         else
-          alt="find's -samefile on the old key), as root"
+          alt="as root, with find's -inum and the old key's inode (ls -di) from its disk's mount point"
         fi
-        echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name (with: $alt, and removes that other name first, not the old key itself; the old key's own path has a hidden or control character, so no command names it (ls -b shows such a name) (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
+        echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name ($alt) and removes that other name first, not the old key itself. The old key's own path has a hidden or control character, so no command names it; LC_ALL=C ls -b shows such a name (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
         exit 1
       fi
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
@@ -1126,12 +1144,19 @@ PRIV="$KEY_DIR/handoff-identity.txt"
 
 if [ -e "$PRIV" ] || [ -L "$PRIV" ]; then  # a dangling symlink there too
   echo "refusing to overwrite existing key: $PRIV" >&2
-  printf 'if a setup was cut short, this is its key: HANDOFF_PRIVKEY=%q agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
+  # sq, not %q (dash); setup refused a path sq won't quote, above.
+  echo "if a setup was cut short, this is its key: HANDOFF_PRIVKEY=$(pq "$PRIV") agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation" >&2
   # --rotate sweeps only for a key it would rotate, and only if it would
   # rotate this one: HANDOFF_PRIVKEY names this key, or neither variable is
   # set and this is the default. Anything else: the user.
+  # "This key" by its own name in its own directory, as --rotate would sweep
+  # it: not a symlink to it (--rotate refuses one), nor a hard link elsewhere
+  # (--rotate would sweep that directory).
+  hp=
+  if [ -n "${HANDOFF_PRIVKEY-}" ]; then hp=$(expand_home "$HANDOFF_PRIVKEY" HANDOFF_PRIVKEY 2>/dev/null) || hp=; fi
   if rotate_would_sweep "$PRIV" \
-     && { { [ -n "${HANDOFF_PRIVKEY-}" ] && [ "$HANDOFF_PRIVKEY" -ef "$PRIV" ]; } \
+     && { { [ -n "$hp" ] && [ ! -L "$hp" ] && [ "${hp##*/}" = "${PRIV##*/}" ] \
+            && [ "$(dirname -- "$hp")" -ef "$(dirname -- "$PRIV")" ]; } \
           || { [ -z "${HANDOFF_PRIVKEY-}" ] && [ -z "${HANDOFF_KEY_DIR-}" ]; }; }; then
     leftover_note "$(dirname -- "$PRIV")" rotate >&2
   else leftover_note "$(dirname -- "$PRIV")" user >&2; fi
@@ -1216,7 +1241,7 @@ fi
 if [ ! "$PRIV" -ef "$new" ]; then
   # Linked, then the temporary copy went (the lock should prevent that):
   # the key at $PRIV may be this run's, or another run's.
-  echo "agent-setup.sh: linked the new key into place at $PRIV, but its temporary copy has gone (another run?): don't trust this run's recipient. Run HANDOFF_PRIVKEY=$(qp "$PRIV") agent-setup.sh --public-key to see the key that is there, and report it to the user." >&2
+  echo "agent-setup.sh: linked the new key into place at $PRIV, but its temporary copy has gone (another run?): don't trust this run's recipient. Run HANDOFF_PRIVKEY=$(pq "$PRIV") agent-setup.sh --public-key to see the key that is there, and report it to the user." >&2
   exit 1
 fi
 # The temporary name is a second hard link to the live key: removed at once,
