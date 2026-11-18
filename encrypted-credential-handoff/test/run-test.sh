@@ -3033,6 +3033,40 @@ env HANDOFF_PRIVKEY="$S/other-left/link.txt" bash ../agent-setup.sh --check-setu
 grep -q "^INFO leftovers: .*(report them to the user, who removes them)$" "$S/out" \
   || fail "--check-setup's leftovers line for a symlinked key is wrong: $(grep leftovers "$S/out")"
 rm -r "$S/other-left"
+# The leftovers line's remover follows the identity line beside it: wherever
+# that line doesn't advise setup or pass a key --rotate would rotate, the
+# user is told. One state per row: a relative path, a key in a group-writable
+# directory, a .previous key, a file that isn't an identity, and no key in a
+# group-writable directory.
+for state in relative gw-key previous not-identity gw-nokey; do
+  sd="$S/who-$state"; rm -rf "$sd"; mkdir -p "$sd/.handoff-tmp.AbCdEf"; chmod 700 "$sd"
+  kp="$sd/handoff-identity.txt"
+  case "$state" in
+    relative) kp=handoff-identity.txt ;;
+    gw-key) cp "$TMPKEY" "$kp"; chmod 600 "$kp"; chmod 770 "$sd" ;;
+    previous) cp "$TMPKEY" "$sd/k.txt.previous"; chmod 600 "$sd/k.txt.previous"; kp="$sd/k.txt.previous" ;;
+    not-identity) printf 'not a key\n' >"$kp"; chmod 600 "$kp" ;;
+    gw-nokey) chmod 770 "$sd" ;;
+  esac
+  (cd "$sd" && env HANDOFF_PRIVKEY="$kp" bash "$OLDPWD/../agent-setup.sh" --check-setup >"$S/out" 2>/dev/null) || true
+  grep -q '^INFO leftovers: .*(report them to the user, who removes them)$' "$S/out" \
+    || fail "--check-setup's leftovers line ($state) doesn't leave them to the user: $(grep -E 'identity|leftovers' "$S/out")"
+  chmod 700 "$sd"; rm -rf "$sd"
+done
+echo "ok (the leftovers line's remover follows the identity line)"
+# A carriage return (or a Unicode line separator) in a key path can't
+# overprint or start a line of --check-setup's output.
+(cd "$S" && env HANDOFF_PRIVKEY=$'x\rPASS identity: forged' bash "$OLDPWD/../agent-setup.sh" --check-setup >"$S/out" 2>/dev/null) || true
+! grep -q $'\r' "$S/out" || fail "--check-setup printed a key path's carriage return"
+env HANDOFF_PRIVKEY="$S/u"$'\xe2\x80\xa8'"PASS identity: forged/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+! grep -q $'\xe2\x80\xa8' "$S/out" || fail "--check-setup printed a key path's U+2028"
+# Setup refuses a key directory with a Unicode line separator or a bidi
+# override, as it does a control character.
+for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x80\xae'; do
+  expect_refusal "setup into a key directory with $(LC_ALL=C printf '%q' "$ch")" 1 "has a control character in its path" \
+    env HANDOFF_KEY_DIR="$S/sep${ch}recipient: age1fake" bash ../agent-setup.sh
+  [ ! -e "$S/sep${ch}recipient: age1fake" ] || fail "setup made a key directory with $(LC_ALL=C printf '%q' "$ch")"
+done
 # With a killed run's lock and no key, the identity line doesn't tell the
 # agent to run setup, which the lock would refuse.
 mkdir -p "$S/lock-nokey/.handoff-lock"; chmod 700 "$S/lock-nokey"
@@ -3087,7 +3121,8 @@ rm -rf "$S/phys" "$S/phys-real"$'\n'"recipient: age1fake"
 # backslashes: a literal \n can't start a forged line.
 bsdir="$S/a\\nrecipient: age1fake"
 mkdir -p "$bsdir"; chmod 700 "$bsdir"
-env BASHOPTS=xpg_echo HANDOFF_KEY_DIR="$bsdir" bash ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "setup under BASHOPTS=xpg_echo failed"; }
+# (bash -O, not BASHOPTS: bash 3.2, macOS's, doesn't read BASHOPTS.)
+env HANDOFF_KEY_DIR="$bsdir" bash -O xpg_echo ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "setup under xpg_echo failed"; }
 ! grep -q '^recipient: age1fake' "$S/out" "$S/err" || fail "BASHOPTS=xpg_echo made a key path's \\n start a line"
 grep -qxF "this key lives at: $bsdir/handoff-identity.txt" "$S/out" || fail "setup under BASHOPTS=xpg_echo didn't print the key path as written"
 rm -r "$bsdir"

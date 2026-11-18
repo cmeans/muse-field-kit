@@ -130,12 +130,24 @@ expand_home() {  # PATH WHAT
 # A path in a message, quoted as the shell would (printf %q): a name with a
 # newline or other control character can't pass for a line of output.
 qp() { printf '%q' "$1"; }
+# Whether a string has a control character, or a UTF-8 character that breaks
+# or reorders a line where it's shown (U+0085, U+2028, U+2029, and the bidi
+# embeddings, overrides and isolates). Checked in C, by bytes.
+has_ctl() {
+  ( LC_ALL=C
+    [[ "$1" =~ [[:cntrl:]] ]] && exit 0
+    case "$1" in
+      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*|*$'\xe2\x81'[$'\xa6'-$'\xa9']*) exit 0 ;;
+    esac
+    exit 1 )
+}
 # A path single-quoted for a POSIX shell, for a command the user copies (and
-# may run as root, or under sh).
-# A path with a control character (a newline, say) gets printf %q's $'...'
-# form instead: bash-only, but it can't pass for another line of output.
+# may run as root, or under sh). The one exception: a path has_ctl flags gets
+# printf %q's $'...' form in C (every such byte escaped), which bash, zsh and
+# BusyBox read but dash doesn't. It can't pass for another line of output,
+# and a path like that comes only from a key directory made by hand.
 sq() {
-  if ( LC_ALL=C; [[ "$1" =~ [[:cntrl:]] ]] ); then printf '%q' "$1"; return; fi
+  if has_ctl "$1"; then ( LC_ALL=C; printf '%q' "$1" ); return; fi
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
@@ -419,7 +431,8 @@ lock_dir() {  # DIR
       echo "agent-setup.sh: $(qp "$l") exists but isn't a directory (no run makes one); nothing was written. Stop and report it to the user." >&2
     elif [ -e "$l" ]; then
       # Absolute and single-quoted, so the command works from any directory
-      # and in a POSIX shell, as --retire's hard-link hint is.
+      # and in a POSIX shell, as --retire's hard-link hint is (sq: bash's
+      # $'...' form only for a path with a control character).
       abs=$(phys_dir "$1")/.handoff-lock || abs=$l
       echo "agent-setup.sh: another setup, --rotate or --retire is running ($(qp "$l") exists)." >&2
       echo "Stop and report it to the user: if no run is going (one was killed), they remove it with: rmdir $(sq "$abs")" >&2
@@ -499,13 +512,22 @@ usage() {
 # only read, by recipient_of's checks, and never printed. No prompt, no stdin.
 cs_failed=0
 cs_out() {  # STATUS NAME DETAIL
-  local d=${3//$'\n'/ }
+  # Every character has_ctl flags becomes a space (a \r would let the rest
+  # of a path overprint the line), in C, by bytes.
+  local d
+  d=$( LC_ALL=C
+       x=$3
+       x=${x//[[:cntrl:]]/ }
+       x=${x//$'\xc2'[$'\x80'-$'\x9f']/ }
+       x=${x//$'\xe2\x80'[$'\xa8'-$'\xae']/ }
+       x=${x//$'\xe2\x81'[$'\xa6'-$'\xa9']/ }
+       printf '%s' "$x" )
   printf '%s %s: %s\n' "$1" "$2" "$d"
   [ "$1" != FAIL ] || cs_failed=1
 }
 check_setup() {
   local p v rc blob rcpt re have_age=0 have_keygen=0 have_py=0 here consume
-  local payload rt="" hdr="" b64="" want k kmsg kc same got wl who pw pwn
+  local payload rt="" hdr="" b64="" want k kmsg kc same got wl who pw pwn kd lockd
   set +e
   # The traps first, so no signal can fall between the folder and its cleanup
   # (newd starts empty, and cleanup removes it only if set).
@@ -648,6 +670,11 @@ password: $pwn bytes"
     cs_out FAIL identity "HANDOFF_KEY_DIR applies only to generating a key; for --check-setup, set HANDOFF_PRIVKEY=<dir>/handoff-identity.txt as the wrappers do"
   elif [ "$have_keygen" = 1 ]; then
     k=$( { resolve_key; printf '%s' "$key"; } 2>"$newd/kerr" )
+    # Who removes a killed run's leftovers (the leftovers line below) follows
+    # this identity line: setup only where it advises setup, --rotate only
+    # where it passes a key --rotate would rotate, and the user anywhere else
+    # (a FAIL, a relative path, a held lock, a name no setup makes).
+    who=user
     if [ -z "$k" ]; then
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null); kmsg=${kmsg#agent-setup.sh: }
       cs_out FAIL identity "${kmsg:-cannot work out where the key is}"
@@ -660,22 +687,28 @@ password: $pwn bytes"
       # Which setup makes it: plain setup only makes the default path, and
       # any setup names its key handoff-identity.txt. No setup advice where
       # it would mislead: a relative path (it names a key only from one
-      # directory), or a lock that would stop setup (the leftovers line).
+      # directory), a path setup refuses, a directory setup refuses, a name
+      # no setup makes, or a lock that would stop setup (the leftovers line),
+      # checked in that order, the lock last, so the line names what still
+      # stands once the lock is gone.
+      kd=$(dirname -- "$k")
+      lockd=no
+      if [ -e "$kd/.handoff-lock" ] || [ -L "$kd/.handoff-lock" ]; then lockd=yes; fi
       if case "$k" in /*) false ;; *) true ;; esac; then
         cs_out INFO identity "no key at $k from here; HANDOFF_PRIVKEY must be an absolute path, as the wrappers set it (SETUP.md step 1)"
-      elif ( LC_ALL=C; [[ "$k" =~ [[:cntrl:]] ]] ); then
+      elif has_ctl "$k"; then
         cs_out INFO identity "no key at $(qp "$k") yet, and setup refuses a key path with a control character: check HANDOFF_PRIVKEY"
-      elif [ -e "$(dirname -- "$k")/.handoff-lock" ] || [ -L "$(dirname -- "$k")/.handoff-lock" ]; then
-        cs_out INFO identity "no key at $k yet; setup there is held up by the .handoff-lock the leftovers line below names"
-      elif [ -d "$(dirname -- "$k")" ] && kmsg=$(key_dir_unsafe_msg "$(dirname -- "$k")"); then
+      elif [ -d "$kd" ] && kmsg=$(key_dir_unsafe_msg "$kd"); then
         # Setup would refuse this directory too.
         cs_out FAIL identity "$kmsg"
-      elif [ -n "${HOME-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
-        cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
-      elif [ "${k##*/}" = handoff-identity.txt ]; then
-        cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(qp "$(dirname -- "$k")") agent-setup.sh makes it"
-      else
+      elif [ "${k##*/}" != handoff-identity.txt ]; then
         cs_out INFO identity "no key at $k yet, and no setup makes that name (setup names its key handoff-identity.txt): check HANDOFF_PRIVKEY"
+      elif [ "$lockd" = yes ]; then
+        cs_out INFO identity "no key at $k yet; setup there is held up by the .handoff-lock the leftovers line below names"
+      elif [ -n "${HOME-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
+        cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"; who=setup
+      else
+        cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(qp "$kd") agent-setup.sh makes it"; who=setup
       fi
     elif kmsg=$(key_dir_unsafe_msg "$(dirname -- "$k")"); then
       # consume.py refuses such a directory: every wrapper would fail.
@@ -684,21 +717,14 @@ password: $pwn bytes"
       cs_out FAIL identity "$k.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)"
     elif recipient_of "$k" >/dev/null 2>"$newd/kerr"; then
       cs_out PASS identity "the key at $k passes the identity checks (owner-only, one plain age identity)"
+      # --rotate refuses a symlinked key.
+      [ -L "$k" ] || who=rotate
     else
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null)
       cs_out FAIL identity "${kmsg:-the key at $k did not pass the identity checks}"
     fi
-    # A killed run's lock would stop the next --rotate; say so now. Who
-    # removes the leftovers depends on what would run in that directory:
-    # --rotate, for a key file it can rotate; setup, where there's no key to
-    # refuse to overwrite; otherwise (a symlinked key, something else at the
-    # key path, another key in the way, or a .previous.previous, which
-    # --rotate refuses before its sweep) the user.
-    who=setup
-    if [ -L "$k" ] || [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then who=user
-    elif [ -f "$k" ]; then who=rotate
-    elif [ -e "$k" ] || [ -e "$(dirname -- "$k")/handoff-identity.txt" ] || [ -L "$(dirname -- "$k")/handoff-identity.txt" ]; then who=user
-    fi
+    # A killed run's lock would stop the next --rotate; say so now, with the
+    # remover the identity line above chose (who).
     if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")" "$who") && [ -n "$kmsg" ]; then
       cs_out INFO leftovers "${kmsg#note: }"
     fi
@@ -997,7 +1023,8 @@ case "$mode" in
       # shellcheck disable=SC2012  # ls -di is the portable inode read (find -printf is GNU's)
       ino=$(ls -di -- "$q" 2>/dev/null | awk 'NR == 1 { print $1; exit }')
       case $ino in ''|*[!0-9]*) ino= ;; esac
-      # Each path single-quoted (sq): the user may run this as root.
+      # Each path single-quoted (sq; bash's $'...' form for a path with a
+      # control character): the user may run this as root.
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
       echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $(sq "$abs"), which the command lists too (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
@@ -1042,7 +1069,7 @@ fi
 # made, with the current directory in front of a relative one, as the
 # absolute path below will have it.
 case "$KEY_DIR" in /*) kd_abs=$KEY_DIR ;; *) kd_abs=$PWD/$KEY_DIR ;; esac
-if ( LC_ALL=C; [[ "$kd_abs" =~ [[:cntrl:]] ]] ); then
+if has_ctl "$kd_abs"; then
   echo "agent-setup.sh: the key directory $(qp "$kd_abs") has a control character in its path (a newline?); nothing was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
   exit 1
 fi
@@ -1051,10 +1078,13 @@ PRIV="$KEY_DIR/handoff-identity.txt"
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
   printf 'if a setup was cut short, this is its key: HANDOFF_PRIVKEY=%q agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
-  # --rotate sweeps only for a key it can rotate: not a symlink.
-  if [ -L "$PRIV" ] || [ ! -f "$PRIV" ] || [ -e "$PRIV.previous.previous" ] || [ -L "$PRIV.previous.previous" ]; then
-    leftover_note "$(dirname -- "$PRIV")" user >&2
-  else leftover_note "$(dirname -- "$PRIV")" rotate >&2; fi
+  # --rotate sweeps only for a key it would rotate: a regular file, in a
+  # directory it accepts, that passes the identity checks, with no
+  # .previous.previous beside it. Anything else: the user.
+  if [ ! -L "$PRIV" ] && [ -f "$PRIV" ] && [ ! -e "$PRIV.previous.previous" ] && [ ! -L "$PRIV.previous.previous" ] \
+     && ! key_dir_unsafe_msg "$(dirname -- "$PRIV")" >/dev/null && recipient_of "$PRIV" >/dev/null 2>&1; then
+    leftover_note "$(dirname -- "$PRIV")" rotate >&2
+  else leftover_note "$(dirname -- "$PRIV")" user >&2; fi
   exit 1
 fi
 
@@ -1080,7 +1110,7 @@ fi
 case "$KEY_DIR" in /*) ;; *) KEY_DIR="./$KEY_DIR" ;; esac  # not cd's "-" or a search
 KEY_DIR=$(cd -- "$KEY_DIR" && pwd)
 # Again on the path that is printed (the check above saw the logical one).
-if ( LC_ALL=C; [[ "$KEY_DIR" =~ [[:cntrl:]] ]] ); then
+if has_ctl "$KEY_DIR"; then
   echo "agent-setup.sh: the key directory $(qp "$KEY_DIR") has a control character in its path (a newline?); no key was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
   exit 1
 fi
