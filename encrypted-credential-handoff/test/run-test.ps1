@@ -397,6 +397,10 @@ Clear-HN
 Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir 'handoff_muse.age')
 Assert-Refusal '-To Muse with handoff_muse.age beside it' 1 "but handoff_muse.age does. If that file is the agent's current recipient, rename it to handoff-muse.age and run with -To muse (names are case-sensitive)" (Invoke-Handoff -Script $hn -ArgText '-To Muse -Fingerprint')
 Clear-HN
+# -To naming the default gets the rename to the default name, as no -To does.
+Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir 'handoff_Muse.age')
+Assert-Refusal '-To muse with handoff_Muse.age beside it' 1 "but handoff_Muse.age does. If that file is the agent's current recipient, rename it to handoff-muse.age, then compare -Fingerprint" (Invoke-Handoff -Script $hn -ArgText '-To muse -Fingerprint')
+Clear-HN
 # A look-alike that a case-blind match folds to ASCII (U+212A KELVIN SIGN to
 # k) isn't a near miss (issue #27 item 1).
 Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir ('handoff-' + [char]0x212A + 'im.age'))
@@ -511,6 +515,13 @@ Assert-Refusal 'no input at all' 1 'empty, aborting' (Invoke-Handoff -Script $hk
 Assert-Refusal '-File that is not there' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File $(Q (Join-Path $S 'nothere.json'))")
 Assert-Refusal '-File with an empty path' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File ''")
 Assert-Refusal '-File that is a folder' 1 'is a directory, not a payload file' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $S)")
+# One raw NUL beside the { is a control character, not UTF-16.
+$nulLead = Join-Path $S 'nul-lead.json'
+[IO.File]::WriteAllBytes($nulLead, [byte[]](@(0x7B, 0x00) + [Text.Encoding]::ASCII.GetBytes('"svc":"example","password":"mk-Zq9"}')))
+$r = Invoke-Handoff -Script $hk -ArgText "-File $(Q $nulLead)"
+Assert-Refusal 'a raw NUL right after {' 1 $jsonMsg $r
+Assert-True (-not $r.Err.Contains('UTF-16')) 'a raw NUL after { was called UTF-16'
+Remove-Item -LiteralPath $nulLead
 # The read is bounded (#65 F12): a large file, stdin's bytes or a pipeline
 # ends at the cap with the size refusal, before the JSON check.
 $spaces = Join-Path $S 'spaces.json'
@@ -529,6 +540,16 @@ Remove-Item -LiteralPath $spaces
 $u16 = Join-Path $S 'u16bom.json'
 [IO.File]::WriteAllText($u16, '{"svc":"example","password":"mk-Zq9"}', (New-Object System.Text.UnicodeEncoding $false, $true))
 [void](Assert-Blob 'a UTF-16 payload with a byte-order mark (-File)' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $u16)"))
+# One whose UTF-16 bytes are over the read cap but whose UTF-8 size is under
+# MAX_PAYLOAD is still read whole: the cap for UTF-16 is twice the bytes.
+$long = '{"svc":"example","password":"mk-Zq9' + ('a' * 30000) + '"}'
+[IO.File]::WriteAllText($u16, $long, (New-Object System.Text.UnicodeEncoding $false, $true))
+Assert-True ((Get-Item -LiteralPath $u16).Length -gt 52792) 'test setup: the long UTF-16 payload is not over the read cap in bytes'
+[void](Assert-Blob 'a 30,000-character UTF-16 payload with a byte-order mark (-File)' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $u16)"))
+[void](Assert-Blob 'a 30,000-character UTF-16 payload with a byte-order mark (stdin)' (Invoke-Handoff -Script $hk -Stdin ([IO.File]::ReadAllBytes($u16))))
+# And past twice the cap, it's refused on size.
+[IO.File]::WriteAllText($u16, '{"svc":"example","password":"mk-Zq9' + ('a' * 60000) + '"}', (New-Object System.Text.UnicodeEncoding $false, $true))
+Assert-Refusal 'a 60,000-character UTF-16 payload' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $u16)")
 Remove-Item -LiteralPath $u16
 
 # Run in the caller's own session (& .\handoff.ps1 in-process), handoff.ps1

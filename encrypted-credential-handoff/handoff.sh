@@ -142,7 +142,7 @@ while [ $# -gt 0 ]; do
         file=$1; file_given=1; shift
       fi
       break ;;
-    -?*) usage_error "unknown option $(printf '%q' "$1")" ;;
+    -?*) usage_error "unknown option $(qp "$1")" ;;
     *)
       [ "$file_given" = 0 ] || usage_error "at most one FILE"
       file=$1; file_given=1 ;;
@@ -156,9 +156,9 @@ done
 # can't name another directory; not starting with -, so it never reads as an
 # option.
 case "$to" in
-  -*) usage_error "--to NAME can't start with - (got $(printf '%q' "$to"))" ;;
+  -*) usage_error "--to NAME can't start with - (got $(qp "$to"))" ;;
   ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*)
-    usage_error "--to NAME takes only letters, digits, _ and - (got $(printf '%q' "$to"))" ;;
+    usage_error "--to NAME takes only letters, digits, _ and - (got $(qp "$to"))" ;;
 esac
 [ "${#to}" -le "$MAX_NAME" ] || usage_error "--to NAME is at most $MAX_NAME characters"
 
@@ -448,11 +448,11 @@ load_recipient() {
         || no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(qp "$near") does. Names are case-sensitive: did you mean --to $nm?"
       # The case and something else differ, for a NAME given with --to
       # (handoff_muse.age for --to Muse): the rename keeps the file's own NAME,
-      # which --to then names, as a later run with no --to would want. (With
-      # no --to, the rename below to the default name is the one that run needs.)
-      [ "$to_given" = 0 ] || no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(qp "$near") does. If that file is the agent's current recipient, rename it to handoff-$nm.age and run with --to $nm (names are case-sensitive), then compare --fingerprint with the recipient the agent reports"
+      # which --to then names. (With no --to, or --to naming the default, the
+      # rename below to the default name is the one a run with no --to needs.)
+      [ "$to_given" = 0 ] || [ "$to" = muse ] || no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(qp "$near") does. If that file is the agent's current recipient, rename it to handoff-$nm.age and run with --to $nm (names are case-sensitive), then compare --fingerprint with the recipient the agent reports"
     fi
-    [ -z "$near" ] || no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current recipient, rename it to handoff-$to.age, then compare --fingerprint with the recipient the agent reports"
+    [ -z "$near" ] || no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(qp "$near") does. If that file is the agent's current recipient, rename it to handoff-$to.age, then compare --fingerprint with the recipient the agent reports"
     # A 0.1.0 install: the RSA public key is beside it, the age recipient isn't.
     if [ -f "${dir%/}/handoff-$to.pem" ]; then
       no_key "found handoff-$to.pem but no $(qp "$keyfile"). Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$to.age beside handoff.sh"
@@ -581,17 +581,19 @@ bad_json() {
     $'\xef\xbb\xbf'*) echo "handoff.sh: it starts with a second byte-order mark (U+FEFF): save the file as UTF-8 without them" >&2 ;;
   esac
   case "$SECRET_JSON" in
-    *$'\xe2\x80\x9c'*|*$'\xe2\x80\x9d'*) echo "handoff.sh: it has typographic quotes (U+201C or U+201D), which JSON doesn't take for quotes: retype them as straight quotes (\"), which some editors and chat apps change" >&2 ;;
+    *$'\xe2\x80\x9c'*|*$'\xe2\x80\x9d'*) echo "handoff.sh: it has typographic quotes (U+201C or U+201D): JSON takes only straight quotes (\") around a name or a value, so retype any that are meant as those (some editors and chat apps change them); inside a value, they're part of it" >&2 ;;
   esac
   [ "$from_tty" = 0 ] || echo "handoff.sh: if a line was over about 4 KB (1 KB on macOS), the terminal cut it: for a long payload, use a FILE or a pipe" >&2
   exit 1
 }
 # A UTF-16 file (Windows PowerShell 5.1's > and Out-File write it): a
-# byte-order mark, or a NUL (read as \001) beside the first { or blank.
-# Said before the control-byte check, which would give only the JSON message.
+# byte-order mark, or NULs (read as \001) alternating with the first two
+# characters, the first a { or blank. Said before the control-byte check,
+# which would give only the JSON message. (One raw NUL beside the { alone is
+# a control byte, and gets that check's message.)
 utf16_lead=$'{ \t\r\n'
 case "$SECRET_JSON" in
-  $'\xff\xfe'*|$'\xfe\xff'*|["$utf16_lead"]$'\001'*|$'\001'["$utf16_lead"]*)
+  $'\xff\xfe'*|$'\xfe\xff'*|["$utf16_lead"]$'\001'?$'\001'*|$'\001'["$utf16_lead"]$'\001'?*)
     echo "handoff.sh: the payload is saved as UTF-16: save it as UTF-8 (handoff.sh reads UTF-8 only), aborting" >&2; exit 1 ;;
 esac
 # A UTF-8 byte-order mark, as some Windows editors save: dropped, as
@@ -666,20 +668,36 @@ case "$fields" in
   *) bad_json ;;
 esac
 # Fields consume.py doesn't know are ignored there (it counts them, no more),
-# so a misspelled one (usrename) never reaches the agent: named here, before
-# encrypting, where the user can fix it. Field names aren't the secret. jq -a
-# prints them as ASCII JSON strings, so no character in a name can break,
-# reorder or hide this line; at most 5 are named.
-unknown=$(printf '%s' "$SECRET_JSON" | jq -c -a -s --arg known "$KNOWN_FIELDS" \
-  '($known | split(" ")) as $k
-   | [.[0] | keys_unsorted[] | select(. != "svc") | select(. as $n | any($k[]; . == $n) | not)]
-   | if length == 0 then empty else [length, .[:5]] end' 2>/dev/null) || unknown=
+# so a misspelled one (usrename) never reaches the agent: counted here,
+# before encrypting, where the user can fix it. A name is shown only when
+# it's a likely misspelling, within two edits of a known field's (ignoring
+# case, at most 40 characters): any other name could be a value typed in a
+# name's place, a secret. jq -a prints a shown name as an ASCII JSON string,
+# so no character in it can break, reorder or hide this line; at most 5 are
+# shown. jq prints [count, [names]], nothing else from the payload.
+unknown=$(printf '%s' "$SECRET_JSON" | jq -c -a -s --arg known "$KNOWN_FIELDS" '
+  def lev($a; $b): ($a | explode) as $s | ($b | explode) as $t
+    | reduce range(0; $s | length) as $i ([range(0; ($t | length) + 1)];
+        . as $prev
+        | reduce range(0; $t | length) as $j ([$i + 1];
+            . + [[$prev[$j + 1] + 1, .[$j] + 1, $prev[$j] + (if $s[$i] == $t[$j] then 0 else 1 end)] | min]))
+    | .[-1];
+  ($known | split(" ")) as $k
+  | [.[0] | keys_unsorted[] | select(. != "svc") | select(. as $n | any($k[]; . == $n) | not)]
+  | if length == 0 then empty
+    else [.[] | select(length <= 40 and (ascii_downcase as $n | any($k[]; lev($n; .) <= 2)))][:5] as $shown
+      | [length, ($shown | length), $shown] end' 2>/dev/null) || unknown=
 if [ -n "$unknown" ]; then
-  u_count=${unknown#[}; u_count=${u_count%%,*}
-  u_names=${unknown#*,[}; u_names=${u_names%]]}; u_names=${u_names//\",\"/\", \"}
-  u_more=
-  [ "$u_count" -le 5 ] || u_more=" and $((u_count - 5)) more"
-  echo "handoff.sh: note: consume.py ignores $u_count field(s) it doesn't know: $u_names$u_more (it uses: ${KNOWN_FIELDS// /, }). If one is misspelled, fix it and run again: an ignored field never reaches the agent" >&2
+  # [count,shown,[names]]: the two counts are digits, so the first two commas
+  # end them; the names follow the second.
+  u_rest=${unknown#"["}
+  u_count=${u_rest%%,*}; u_rest=${u_rest#*,}
+  u_shown=${u_rest%%,*}; u_rest=${u_rest#*,}
+  u_names=${u_rest#"["}; u_names=${u_names%"]]"}; u_names=${u_names//\",\"/\", \"}
+  u_text="consume.py ignores $u_count field(s) it doesn't know"
+  [ -z "$u_names" ] || u_text="$u_text: $u_names"
+  [ "$u_shown" -ge "$u_count" ] || u_text="$u_text ($((u_count - u_shown)) not shown: only a name close to a known field's is shown, as any other could be a value typed in a name's place)"
+  echo "handoff.sh: note: $u_text. It uses: ${KNOWN_FIELDS// /, }. If one is misspelled, fix it and run again: an ignored field never reaches the agent" >&2
 fi
 
 # --- encrypt (no plaintext ever touches disk) -------------------------

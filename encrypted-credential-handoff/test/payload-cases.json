@@ -433,14 +433,26 @@
  },
  {
   "name": "unknownfieldbidi",
-  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"n\u202eote\":\"z\"}",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"pass\u202eword\":\"z\"}",
   "exit": 0,
-  "stderr_contains": "doesn't know: \"n\\u202eote\""
+  "stderr_contains": "doesn't know: \"pass\\u202eword\""
  },
  {
   "name": "unknownfieldsmany",
-  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"a\":\"1\",\"b\":\"2\",\"c\":\"3\",\"d\":\"4\",\"e\":\"5\",\"f\":\"6\"}",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"usernam\":\"1\",\"passwor\":\"2\",\"token_i\":\"3\",\"app_i\":\"4\",\"api_key_i\":\"5\",\"usrname\":\"6\"}",
   "exit": 0,
-  "stderr_contains": "ignores 6 field(s) it doesn't know: \"a\", \"b\", \"c\", \"d\", \"e\" and 1 more"
+  "stderr_contains": "ignores 6 field(s) it doesn't know: \"usernam\", \"passwor\", \"token_i\", \"app_i\", \"api_key_i\" (1 not shown"
+ },
+ {
+  "name": "unknownfieldsecret",
+  "payload": "{\"svc\":\"example\",\"username\":\"me\",\"mk-Zq9-Tr0ub4dor&3\":\"password\"}",
+  "exit": 0,
+  "stderr_contains": "ignores 1 field(s) it doesn't know (1 not shown: only a name close to a known field's is shown"
+ },
+ {
+  "name": "bidisvc",
+  "payload": "{\"s\u202evc\":\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object"
  }
 ]

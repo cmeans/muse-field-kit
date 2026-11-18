@@ -1846,6 +1846,11 @@ cp handoff-test.age "$S/hn/handoff_muse.age"
 expect_refusal "handoff.sh --to Muse with handoff_muse.age beside it" 1 "but handoff_muse.age does. If that file is the agent's current recipient, rename it to handoff-muse.age and run with --to muse (names are case-sensitive)" \
   bash "$S/hn/handoff.sh" --to Muse --fingerprint
 rm -f "$S/hn/handoff_muse.age"
+# --to naming the default gets the rename to the default name, as no --to does.
+cp handoff-test.age "$S/hn/handoff_Muse.age"
+expect_refusal "handoff.sh --to muse with handoff_Muse.age beside it" 1 "but handoff_Muse.age does. If that file is the agent's current recipient, rename it to handoff-muse.age, then compare --fingerprint" \
+  bash "$S/hn/handoff.sh" --to muse --fingerprint
+rm -f "$S/hn/handoff_Muse.age"
 # A look-alike that a UTF-8 locale folds to ASCII (U+212A KELVIN SIGN lowers
 # to k) isn't a near miss: it would show as handoff-Kim.age (issue #27 item 1).
 if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8\|en_us\.utf-\?8'; then
@@ -2091,6 +2096,67 @@ case "$out" in
 esac
 bash "$S/hd/handoff.sh" "$S/pty-long.json" </dev/null >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "the 5,000-byte payload as FILE was refused"; }
 echo "ok (refused, with the line-cap hint: a 5,000-byte line at the terminal; accepted as FILE)"
+# A paste over the read cap at the prompt: refused on size, and the rest of
+# the paste is read to the Ctrl-D and dropped, so the shell that runs next
+# reads only what was typed after it (a sentinel line), never payload text.
+python3 -I - "$BASH_BIN" "$S/hd/handoff.sh" >"$S/pty-drain" <<'PY'
+import os, pty, select, sys, time
+bash, script = sys.argv[1], sys.argv[2]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(bash, [bash, "-c", 'bash "$1"; echo "RC=$?"; IFS= read -r line; echo "AFTER=[$line]"', "_", script])
+paste = (b"x" * 99 + b"\n") * 600   # 60,000 bytes, over the cap, in short lines
+out, sent, end = b"", 0, time.time() + 30
+def pump(t):
+    global out
+    r, _, _ = select.select([fd], [], [], t)
+    if r:
+        try:
+            out += os.read(fd, 65536)
+        except OSError:
+            return False
+    return True
+while time.time() < end and b"Paste or type" not in out:
+    pump(0.2)
+time.sleep(0.3)
+while sent < len(paste) and time.time() < end:
+    _, w, _ = select.select([], [fd], [], 0.1)
+    if w:
+        sent += os.write(fd, paste[sent:sent + 1024])
+    pump(0)
+time.sleep(0.3)
+os.write(fd, b"\x04")
+while time.time() < end and b"RC=" not in out:
+    pump(0.2)
+time.sleep(0.3)
+os.write(fd, b"LEFTOVER-SENTINEL\n")
+while time.time() < end and b"AFTER=" not in out:
+    if not pump(0.2):
+        break
+try:
+    os.kill(pid, 9)
+except ProcessLookupError:
+    pass
+os.waitpid(pid, 0)
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+grep -q 'RC=1' "$S/pty-drain" || fail "a paste over the cap at the terminal: no exit 1: $(tail -c 300 "$S/pty-drain")"
+grep -q "the most handoff.sh sends is" "$S/pty-drain" || fail "a paste over the cap at the terminal: no size refusal: $(tail -c 300 "$S/pty-drain")"
+grep -q 'AFTER=\[LEFTOVER-SENTINEL\]' "$S/pty-drain" || fail "a paste over the cap at the terminal: the shell read leftover input: $(grep -a 'AFTER=' "$S/pty-drain" | cut -c1-80)"
+echo "ok (a paste over the cap at the terminal: refused, and none of it left for the shell)"
+# One raw NUL beside the { is a control byte, not UTF-16: the JSON message.
+printf '{\000"svc":"example","password":"mk-Zq9"}' >"$S/nul-lead.json"
+expect_refusal "handoff.sh a raw NUL right after {" 1 "must be a single JSON object" bash "$S/hd/handoff.sh" "$S/nul-lead.json"
+! grep -q "UTF-16" "$S/err" || fail "a raw NUL after { was called UTF-16"
+# A bidi override in --to or an unknown option is shown escaped (qp in C).
+if [ -n "${utf8_loc-}" ]; then
+  expect_refusal "handoff.sh --to with a bidi override" 2 "--to NAME takes only letters" \
+    env LC_ALL="$utf8_loc" bash "$S/hd/handoff.sh" --to "a"$'\xe2\x80\xae'"b" --fingerprint
+  ! LC_ALL=C grep -q $'\xe2\x80\xae' "$S/err" || fail "a bidi override in --to was printed raw"
+  expect_refusal "handoff.sh an unknown option with a bidi override" 2 "unknown option" \
+    env LC_ALL="$utf8_loc" bash "$S/hd/handoff.sh" "--x"$'\xe2\x80\xae'"y"
+  ! LC_ALL=C grep -q $'\xe2\x80\xae' "$S/err" || fail "a bidi override in an unknown option was printed raw"
+fi
 # The hint is for the terminal only: the same refusal from a pipe has none.
 expect_refusal "handoff.sh not JSON, piped" 1 "must be a single JSON object" bash "$S/hd/handoff.sh" <<<'not json'
 ! grep -q "the terminal cut it" "$S/err" || fail "a piped refusal gave the terminal's line-cap hint"
@@ -2106,14 +2172,18 @@ expect_refusal "handoff.sh a directory as FILE" 1 "is a directory, not a payload
 # The read is bounded (#65 F12): an endless FILE or pipe, or a large one,
 # ends at once with the size refusal, before the pattern work, whose time
 # grows with the square of the input (1 MB of spaces took 21 s unbounded).
+# (Read here, not from section 3b, so section 5b runs alone too.)
+cap5b=$(sed -n 's/^MAX_PAYLOAD=\([0-9]*\).*/\1/p' ../handoff.sh)
+[ -n "$cap5b" ] || fail "test setup: MAX_PAYLOAD not found in handoff.sh"
 if [ -e /dev/zero ]; then
   t0=$SECONDS
-  expect_refusal "handoff.sh /dev/zero as FILE" 1 "the most handoff.sh sends is $max_payload bytes" \
+  expect_refusal "handoff.sh /dev/zero as FILE" 1 "the most handoff.sh sends is $cap5b bytes" \
     run_to_n 20 bash "$S/hd/handoff.sh" /dev/zero
-  expect_refusal "handoff.sh /dev/zero piped" 1 "the most handoff.sh sends is $max_payload bytes" \
+  # shellcheck disable=SC2016  # $1 is the inner shell's argument
+  expect_refusal "handoff.sh /dev/zero piped" 1 "the most handoff.sh sends is $cap5b bytes" \
     run_to_n 20 bash -c 'bash "$1" </dev/zero' _ "$S/hd/handoff.sh"
   head -c 4000000 /dev/zero | LC_ALL=C tr '\000' ' ' >"$S/spaces.json"
-  expect_refusal "handoff.sh 4 MB of spaces" 1 "the most handoff.sh sends is $max_payload bytes" \
+  expect_refusal "handoff.sh 4 MB of spaces" 1 "the most handoff.sh sends is $cap5b bytes" \
     run_to_n 20 bash "$S/hd/handoff.sh" "$S/spaces.json"
   [ $((SECONDS - t0)) -lt 15 ] || fail "the bounded reads took $((SECONDS - t0)) s"
   rm -f "$S/spaces.json"
@@ -2121,7 +2191,10 @@ if [ -e /dev/zero ]; then
 fi
 # A payload at the cap with a byte-order mark and trailing line feeds: what's
 # dropped before the count fits in the read's margin, so it's accepted.
-{ printf '\xef\xbb\xbf'; printf '%s' "$big"; printf '\n\n\n'; } >"$S/max-bom.json"
+{ printf '\xef\xbb\xbf'
+  python3 -I -c 'import json, sys; n = int(sys.argv[1]); head = json.dumps({"svc": "example", "private_key": ""}, separators=(",", ":")); sys.stdout.write(head[:-2] + "y" * (n - len(head)) + head[-2:])' "$cap5b"
+  printf '\n\n\n'; } >"$S/max-bom.json"
+[ "$(( $(wc -c <"$S/max-bom.json") ))" = "$(( cap5b + 6 ))" ] || fail "test setup: the at-cap payload with a mark is $(( $(wc -c <"$S/max-bom.json") )) bytes"
 bash "$S/hd/handoff.sh" "$S/max-bom.json" </dev/null >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "a payload at the cap with a byte-order mark and line feeds was refused"; }
 echo "ok (accepted: a payload at the cap with a byte-order mark and trailing line feeds)"
 # No core file (#65 F14): age, run by handoff.sh, inherits a core limit of 0.

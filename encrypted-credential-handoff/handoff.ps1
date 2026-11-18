@@ -311,7 +311,8 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
           }
           # The case and something else differ, for a NAME given with -To: the
           # rename keeps the file's own NAME, which -To then names (handoff.sh).
-          if ($ToGiven) {
+          # With -To naming the default, the rename to the default name below.
+          if ($ToGiven -and $To -cne 'muse') {
             Stop-Key "no recipient file for '$To': $keyfile doesn't exist, but $near does. If that file is the agent's current recipient, rename it to handoff-$nm.age and run with -To $nm (names are case-sensitive), then compare -Fingerprint with the recipient the agent reports" $true
           }
         }
@@ -348,7 +349,9 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     # A copy saved on Windows or by an editor, or copied from an indented block,
     # can carry CRLF line endings, leading or trailing blanks or blank lines: drop
     # them before the checks.
-    $lines = @($text.Replace("`r", '').Split("`n") | ForEach-Object { $_.Trim([char[]]@(' ', "`t")) } | Where-Object { $_ -ne '' })
+    # (Length, not -ne '': a culture comparison takes a line of only a soft
+    # hyphen, U+00AD, for an empty one.)
+    $lines = @($text.Replace("`r", '').Split("`n") | ForEach-Object { $_.Trim([char[]]@(' ', "`t")) } | Where-Object { $_.Length -gt 0 })
     # An identity (private key) here means it left the agent's machine.
     foreach ($l in $lines) {
       if ($l.StartsWith('AGE-SECRET-KEY-', [StringComparison]::Ordinal) -or $l.StartsWith('AGE-PLUGIN-', [StringComparison]::Ordinal)) {
@@ -392,18 +395,21 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
   # refused, or '' if it's fine.
   function Test-AgeHeader([byte[]]$Raw) {
     $lines = [Text.Encoding]::GetEncoding(28591).GetString($Raw).Split("`n")
-    if ($lines[0] -ceq '-----BEGIN AGE ENCRYPTED FILE-----') { return 'armored (ASCII) age text, not the binary format' }
-    if ($lines[0] -cne 'age-encryption.org/v1') { return 'not a binary age file' }
+    # Every comparison ordinal, as consume.py's: -ceq compares by culture,
+    # which skips format characters such as U+00AD.
+    $ord = [StringComparison]::Ordinal
+    if ([string]::Equals($lines[0], '-----BEGIN AGE ENCRYPTED FILE-----', $ord)) { return 'armored (ASCII) age text, not the binary format' }
+    if (-not [string]::Equals($lines[0], 'age-encryption.org/v1', $ord)) { return 'not a binary age file' }
     $x = 0
     $inStanza = $false
     $done = $false
     for ($i = 1; $i -lt $lines.Length; $i++) {
       $l = $lines[$i]
-      if ($l -ceq '---' -or $l.StartsWith('--- ', [StringComparison]::Ordinal)) { $done = $true; break }
+      if ([string]::Equals($l, '---', $ord) -or $l.StartsWith('--- ', $ord)) { $done = $true; break }
       if ($l.StartsWith('-> ', [StringComparison]::Ordinal)) {
         $inStanza = $true
         $kind = $l.Substring(3).Split(' ')[0]
-        if ($kind -ceq 'X25519') { $x++ }
+        if ([string]::Equals($kind, 'X25519', $ord)) { $x++ }
         elseif (-not $kind.EndsWith('-grease', [StringComparison]::Ordinal)) { return 'a recipient kind other than X25519' }
         continue
       }
@@ -651,9 +657,12 @@ end {
   # for the prompt to run). It ends at Ctrl-Z (Ctrl-D off Windows).
   # At most READ_CAP bytes and one more from STREAM (disposed): an endless
   # file or pipe ends here, and nothing larger reaches the checks below.
-  # $null if the read failed.
+  # UTF-16 with a byte-order mark takes up to twice the bytes of the same
+  # text in UTF-8, so such a file may have twice the cap (and its mark); its
+  # size is checked again once decoded, as every payload's is. $null if the
+  # read failed.
   function Read-Capped([IO.Stream]$stream) {
-    $buf = New-Object byte[] ($READ_CAP + 1)
+    $buf = New-Object byte[] (2 * $READ_CAP + 3)
     $size = 0
     try {
       while ($size -lt $buf.Length) {
@@ -662,18 +671,22 @@ end {
         $size += $got
       }
     } catch { return $null } finally { $stream.Dispose() }
-    if ($size -gt $READ_CAP) { [Array]::Clear($buf, 0, $buf.Length); Stop-TooBig "over $READ_CAP" }
+    $limit = $READ_CAP
+    if ($size -ge 2 -and (($buf[0] -eq 0xFF -and $buf[1] -eq 0xFE) -or ($buf[0] -eq 0xFE -and $buf[1] -eq 0xFF))) { $limit = 2 * $READ_CAP + 2 }
+    if ($size -gt $limit) { [Array]::Clear($buf, 0, $buf.Length); Stop-TooBig "over $limit" }
     $b = New-Object byte[] $size
     [Array]::Copy($buf, $b, $size)
     [Array]::Clear($buf, 0, $buf.Length)
     return ,$b
   }
-  # A UTF-16 file without a byte-order mark: a NUL beside the first { or
-  # blank (strict UTF-8 would take the NULs). With a mark, it's read as UTF-16.
+  # A UTF-16 file without a byte-order mark: NULs alternating with the first
+  # two characters, the first a { or blank (strict UTF-8 would take the
+  # NULs). One raw NUL beside the { alone is a control character, refused
+  # with the JSON message. With a mark, it's read as UTF-16.
   function Test-Utf16NoBom([byte[]]$b) {
-    if ($b.Length -lt 2) { return $false }
+    if ($b.Length -lt 4) { return $false }
     $lead = @(0x7B, 0x20, 0x09, 0x0D, 0x0A)
-    return (($lead -contains $b[0] -and $b[1] -eq 0) -or ($b[0] -eq 0 -and $lead -contains $b[1]))
+    return (($lead -contains $b[0] -and $b[1] -eq 0 -and $b[3] -eq 0) -or ($b[0] -eq 0 -and $lead -contains $b[1] -and $b[2] -eq 0))
   }
   $utf16Msg = 'the payload is saved as UTF-16 without a byte-order mark: save it as UTF-8, aborting'
   $secret = $null
@@ -800,7 +813,10 @@ end {
       $key = Get-TokenText $k.Value
       $val = Get-TokenText $v.Value
       if ($null -eq $key -or $null -eq $val) { return $jsonMsg }
-      if ($key -ceq 'svc') { $svc = $val }
+      # Ordinal: PowerShell's -ceq compares by culture, which skips format
+      # characters, so "s<U+202E>vc" -ceq "svc" is true (jq and consume.py
+      # see another key).
+      if ([string]::Equals($key, 'svc', [StringComparison]::Ordinal)) { $svc = $val }
       $vals[$key] = $val
       $i = $i + $ws.Match($s, $i).Length
       if ($i -ge $n) { return $jsonMsg }
@@ -853,22 +869,52 @@ end {
       [Console]::Error.WriteLine('handoff.ps1: it starts with a second byte-order mark (U+FEFF): save the file as UTF-8 without them')
     }
     if ($secret.IndexOf([char]0x201C) -ge 0 -or $secret.IndexOf([char]0x201D) -ge 0) {
-      [Console]::Error.WriteLine('handoff.ps1: it has typographic quotes (U+201C or U+201D), which JSON doesn''t take for quotes: retype them as straight quotes ("), which some editors and chat apps change')
+      [Console]::Error.WriteLine('handoff.ps1: it has typographic quotes (U+201C or U+201D): JSON takes only straight quotes (") around a name or a value, so retype any that are meant as those (some editors and chat apps change them); inside a value, they''re part of it')
     }
     $secret = $null
     Exit-Handoff 1
   }
   if ($null -ne $refusal) { Stop-Run $refusal }
+  # The edit distance between two strings (handoff.sh's lev, in jq).
+  function Get-EditDistance([string]$a, [string]$b) {
+    $prev = New-Object int[] ($b.Length + 1)
+    for ($j = 0; $j -le $b.Length; $j++) { $prev[$j] = $j }
+    for ($i = 0; $i -lt $a.Length; $i++) {
+      $cur = New-Object int[] ($b.Length + 1)
+      $cur[0] = $i + 1
+      for ($j = 0; $j -lt $b.Length; $j++) {
+        $cost = 1
+        if ($a[$i] -ceq $b[$j]) { $cost = 0 }
+        $cur[$j + 1] = [Math]::Min([Math]::Min($prev[$j + 1] + 1, $cur[$j] + 1), $prev[$j] + $cost)
+      }
+      $prev = $cur
+    }
+    return $prev[$b.Length]
+  }
   # Fields consume.py doesn't know are ignored there, so a misspelled one
-  # never reaches the agent: named here, before encrypting (handoff.sh's note).
-  $knownSet = @($KNOWN_FIELDS.Split(' ')) + @('svc')
-  $unknown = @($script:PayloadKeys | Where-Object { $knownSet -cnotcontains $_ })
+  # never reaches the agent: counted here, before encrypting (handoff.sh's
+  # note). A name is shown only when it's within two edits of a known field's
+  # (ignoring ASCII case, at most 40 characters): any other could be a value
+  # typed in a name's place, a secret. At most 5 are shown.
+  $knownList = @($KNOWN_FIELDS.Split(' '))
+  # Ordinal, as in Test-Payload: -ccontains compares by culture, which skips
+  # format characters ("pass<U+202E>word" would pass for password).
+  $knownSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+  foreach ($f in ($knownList + @('svc'))) { [void]$knownSet.Add($f) }
+  $unknown = @($script:PayloadKeys | Where-Object { -not $knownSet.Contains($_) })
   $script:PayloadKeys = @()
   if ($unknown.Count -gt 0) {
-    $shown = (@($unknown | Select-Object -First 5 | ForEach-Object { Format-JsonAscii $_ })) -join ', '
-    $more = ''
-    if ($unknown.Count -gt 5) { $more = " and $($unknown.Count - 5) more" }
-    [Console]::Error.WriteLine("handoff.ps1: note: consume.py ignores $($unknown.Count) field(s) it doesn't know: $shown$more (it uses: $($KNOWN_FIELDS.Replace(' ', ', '))). If one is misspelled, fix it and run again: an ignored field never reaches the agent")
+    $close = @($unknown | Where-Object {
+      $n = $_
+      $chars = $n.ToCharArray()
+      for ($c = 0; $c -lt $chars.Length; $c++) { $v = [int]$chars[$c]; if ($v -ge 65 -and $v -le 90) { $chars[$c] = [char]($v + 32) } }
+      $low = New-Object string (,$chars)
+      $n.Length -le 40 -and @($knownList | Where-Object { (Get-EditDistance $low $_) -le 2 }).Count -gt 0
+    } | Select-Object -First 5)
+    $text = "consume.py ignores $($unknown.Count) field(s) it doesn't know"
+    if ($close.Count -gt 0) { $text += ': ' + ((@($close | ForEach-Object { Format-JsonAscii $_ })) -join ', ') }
+    if ($close.Count -lt $unknown.Count) { $text += " ($($unknown.Count - $close.Count) not shown: only a name close to a known field's is shown, as any other could be a value typed in a name's place)" }
+    [Console]::Error.WriteLine("handoff.ps1: note: $text. It uses: $($KNOWN_FIELDS.Replace(' ', ', ')). If one is misspelled, fix it and run again: an ignored field never reaches the agent")
   }
 
   $bytes = $null

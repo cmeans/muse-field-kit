@@ -285,5 +285,19 @@
   "to": "keyfileandrecipient",
   "exit": 1,
   "stderr_contains": "must hold exactly one age recipient line (age1...), as agent-setup.sh prints it. Keep only"
+ },
+ {
+  "name": "latin1line",
+  "file_bytes_b64": "YWdlMWxxNzdsZ2c5dXFmdmV6ZWF6bmhjaGdzc3g1OHlxMzQ3djI3dXIydTM0NmM5cng5bTk5NnFwZXJ4aHMKIyBub3RlOiBjYWbpCg==",
+  "to": "latin1line",
+  "exit": 1,
+  "stderr_contains": "must hold exactly one age recipient line (age1...), as agent-setup.sh prints it"
+ },
+ {
+  "name": "softhyphenline",
+  "file_bytes_b64": "YWdlMWxxNzdsZ2c5dXFmdmV6ZWF6bmhjaGdzc3g1OHlxMzQ3djI3dXIydTM0NmM5cng5bTk5NnFwZXJ4aHMKrQo=",
+  "to": "softhyphenline",
+  "exit": 1,
+  "stderr_contains": "must hold exactly one age recipient line (age1...), as agent-setup.sh prints it"
  }
 ]
