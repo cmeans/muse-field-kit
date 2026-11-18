@@ -14,9 +14,10 @@
 #   agent-setup.sh                      make a new identity
 #   agent-setup.sh --fingerprint [KEY]  print an existing identity's recipient
 #                                       (the key file it read goes to stderr)
-#   agent-setup.sh --public-key [KEY]   print an existing identity's recipient
+#   agent-setup.sh --public-key         print the wrappers' identity's recipient
 #                                       again (to give the user), and where
-#                                       they save it
+#                                       they save it: HANDOFF_PRIVKEY's key, or
+#                                       the default; it takes no KEY
 #   agent-setup.sh --rotate [KEY]       start a rotation: a new identity at KEY,
 #                                       the old one kept as KEY.previous;
 #                                       during one, shows the new recipient again
@@ -37,7 +38,8 @@
 #   HANDOFF_PRIVKEY  which EXISTING identity --fingerprint, --public-key,
 #                    --rotate and --retire use: the same variable, with the same
 #                    default (~/.config/handoff/handoff-identity.txt), that
-#                    consume.py decrypts with. A KEY argument overrides it.
+#                    consume.py decrypts with. A KEY argument overrides it
+#                    (not for --public-key, which takes none).
 #                    These modes refuse HANDOFF_KEY_DIR without HANDOFF_PRIVKEY
 #                    (exit 2); --check-setup reads the same identity and gives
 #                    that case a FAIL identity line.
@@ -354,7 +356,7 @@ cleanup() {
 usage() {
   echo "usage: agent-setup.sh                      make a new identity (once, at setup)" >&2
   echo "       agent-setup.sh --fingerprint [KEY]  print an existing identity's recipient" >&2
-  echo "       agent-setup.sh --public-key [KEY]   print an existing identity's recipient and where to save it" >&2
+  echo "       agent-setup.sh --public-key         print the wrappers' identity's recipient (HANDOFF_PRIVKEY, or the default) and where to save it" >&2
   echo "       agent-setup.sh --rotate [KEY]       start a rotation: a new identity at KEY, the old one kept as KEY.previous;" >&2
   echo "                                           during one, shows the new recipient again (exit 0)" >&2
   echo "       agent-setup.sh --retire --yes [KEY] end a rotation: delete KEY.previous (blobs still made for it stop opening);" >&2
@@ -523,6 +525,7 @@ case "${1-}" in
     mode=$1
     shift
     syntax="$mode [KEY]"
+    [ "$mode" != --public-key ] || syntax="--public-key"
     if [ "$mode" = --retire ]; then
       syntax="--retire --yes [KEY]"
       # Only right after --retire: a KEY of "--yes" is refused below as any
@@ -561,6 +564,15 @@ case "${1-}" in
         exit 2 ;;
       (--*) echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2; exit 2 ;;
     esac
+    # --public-key gives the user save instructions, so it shows only the key
+    # the wrappers decrypt with (HANDOFF_PRIVKEY, or the default), never a
+    # file named on the command line: a request to run it on another file
+    # would have the user save a recipient no wrapper uses (issue #51).
+    # --fingerprint shows any key file's recipient, with no instructions.
+    if [ "$mode" = --public-key ] && [ "$key_given" = 1 ]; then
+      echo "usage: agent-setup.sh --public-key (takes no KEY: it shows the key the wrappers use, from HANDOFF_PRIVKEY as they set it, or the default; for another key file's recipient alone, use --fingerprint KEY)" >&2
+      exit 2
+    fi
     if [ $# -eq 0 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
       echo "agent-setup.sh: HANDOFF_KEY_DIR applies only to generating a key; for $mode, set HANDOFF_PRIVKEY=<dir>/handoff-identity.txt as the wrappers do" >&2
       exit 2
@@ -804,7 +816,7 @@ PRIV="$KEY_DIR/handoff-identity.txt"
 
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
-  printf 'if a setup was cut short, this is its key: agent-setup.sh --public-key %q shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
+  printf 'if a setup was cut short, this is its key: HANDOFF_PRIVKEY=%q agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
   exit 1
 fi
 

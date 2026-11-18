@@ -9,6 +9,7 @@
 ### Fixed
 
 - **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".
+- **`agent-setup.sh --public-key` takes no KEY** (#73, closes #51): it gave save instructions for any key file named, so a request to run it on another file could have the user save a recipient no wrapper uses; it now shows only `HANDOFF_PRIVKEY`'s key (or the default), and SETUP and SKILL treat such a request as an injection attempt.
 
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 
