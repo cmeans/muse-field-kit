@@ -755,7 +755,7 @@ echo "ok (consume.py decrypts with the identity it checked, on a pipe, not its p
 # directory it points to is what's checked, by both.
 cp -p "$TMPKEY" "$SW/k/id.txt"
 chmod 770 "$SW/k"
-expect_refusal "consume.py with a group-writable key directory" 1 "the key's directory '$SW/k' is writable by others (mode 0770); stop and report it to the user, who runs: chmod go-w '$SW/k'" \
+expect_refusal "consume.py with a group-writable key directory" 1 "the key's directory '$SW/k' is writable by others (mode 0770); stop and report it to the user, who runs: chmod -- go-w '$SW/k'" \
   env HANDOFF_PRIVKEY="$SW/k/id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 expect_refusal "--rotate in a group-writable key directory" 1 "the key's directory $SW/k is writable by others; stop and report it to the user, who runs: chmod -- go-w $SW/k" \
   env HANDOFF_PRIVKEY="$SW/k/id.txt" bash ../agent-setup.sh --rotate
@@ -794,11 +794,25 @@ expect_refusal "consume.py through a symlink to a group-writable key directory" 
 expect_refusal "--rotate through a symlink to a group-writable key directory" 1 "is writable by others" \
   env HANDOFF_PRIVKEY="$SW/klink/id.txt" bash ../agent-setup.sh --rotate
 chmod 700 "$SW/k"; rm "$SW/klink"
+# A ".." after a symlink: the key is read from the directory the kernel
+# walks to (bad), not the one its text folds to (safe). Both tools check
+# bad, which is world-writable, and refuse.
+mkdir -p "$SW/safe" "$SW/bad/x"; chmod 700 "$SW/safe" "$SW/bad/x"; chmod 777 "$SW/bad"
+ln -s "$SW/bad/x" "$SW/safe/link"
+cp -p "$TMPKEY" "$SW/bad/id.txt"; chmod 600 "$SW/bad/id.txt"
+expect_refusal "consume.py with a key path whose .. follows a symlink" 1 "is writable by others" \
+  env HANDOFF_PRIVKEY="$SW/safe/link/../id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+env HANDOFF_PRIVKEY="$SW/safe/link/../id.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed a key path whose .. follows a symlink"
+grep -q "^FAIL identity: the key's directory .* is writable by others" "$S/out" || fail "--check-setup didn't fail a key path whose .. follows a symlink: $(grep identity "$S/out")"
+chmod 755 "$SW/bad"; rm -rf "$SW/safe" "$SW/bad"
+# The advice for a writable directory this account doesn't own (/tmp-like,
+# root's) is never chmod, which would change it for everyone; that case
+# needs root to set up, so it's in check-key-dir.py.
 # What needs a faked system call (check-key-dir.py says which): a key
 # directory owned by another account (making one needs root), the
 # /proc/self/fd fallback, and the refusal with neither fd directory.
 python3 -I check-key-dir.py "$SW/k/id.txt" blob-age.txt >"$S/out" 2>"$S/err" || { cat "$S/out" "$S/err" >&2; fail "check-key-dir.py failed"; }
-for c in other-owner no-fd; do
+for c in other-owner shared-dir no-fd; do
   grep -qx "ok: $c" "$S/out" || fail "check-key-dir.py didn't run its $c check: $(cat "$S/out")"
 done
 sed 's/^/ok (consume.py: /; s/$/)/' "$S/out"
@@ -949,6 +963,35 @@ if [ -n "$other_owner" ]; then
     env HANDOFF_PRIVKEY="$other_owner" python3 ../consume.py --label example --check --blob-file blob-age.txt
 else
   echo "skip: no owner-only file owned by another user, the key-owner refusal wasn't tested"
+fi
+# A key directory owned by another account is refused by consume.py and
+# agent-setup.sh, directly and through a symlink; one owned by root is
+# accepted. Making either needs root, so CI provides them:
+# $HANDOFF_TEST_OTHER_OWNER_DIR (owned by nobody, 0755) and
+# $HANDOFF_TEST_ROOT_DIR (root's, 0755), each holding id.txt, this
+# account's own 0600 copy of the dummy key.
+od=${HANDOFF_TEST_OTHER_OWNER_DIR-}; rd=${HANDOFF_TEST_ROOT_DIR-}
+if [ "$(id -u)" != 0 ] && [ -n "$od" ] && [ -n "$rd" ] && [ -f "$od/id.txt" ] && [ -f "$rd/id.txt" ]; then
+  expect_refusal "consume.py with a key directory owned by another account" 1 "the key's directory '$od' is owned by another account; stop and report it to the user: the key belongs in a directory of this account's own" \
+    env HANDOFF_PRIVKEY="$od/id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+  expect_refusal "--rotate in a key directory owned by another account" 1 "the key's directory $od is owned by another account" \
+    env HANDOFF_PRIVKEY="$od/id.txt" bash ../agent-setup.sh --rotate
+  env HANDOFF_PRIVKEY="$od/id.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed a key directory owned by another account"
+  grep -q "^FAIL identity: the key's directory $od is owned by another account" "$S/out" \
+    || fail "--check-setup didn't fail a key directory owned by another account: $(grep identity "$S/out")"
+  ln -s "$od" "$S/odlink"
+  expect_refusal "consume.py through a symlink to another account's key directory" 1 "is owned by another account" \
+    env HANDOFF_PRIVKEY="$S/odlink/id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+  expect_refusal "--rotate through a symlink to another account's key directory" 1 "is owned by another account" \
+    env HANDOFF_PRIVKEY="$S/odlink/id.txt" bash ../agent-setup.sh --rotate
+  rm "$S/odlink"
+  env HANDOFF_PRIVKEY="$rd/id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt >/dev/null 2>"$S/err" \
+    || { cat "$S/err" >&2; fail "consume.py refused a root-owned 0755 key directory"; }
+  env HANDOFF_PRIVKEY="$rd/id.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" || true
+  grep -q '^PASS identity' "$S/out" || fail "--check-setup didn't pass a root-owned 0755 key directory: $(grep identity "$S/out")"
+  echo "ok (accepted: a root-owned 0755 key directory)"
+else
+  echo "skip: no key directories owned by another account and by root (CI makes them), the key-directory owner checks weren't run"
 fi
 expect_refusal "--env PATH" 1 "is on the refused list" \
   consume --label example --blob-file blob-age.txt --env password=PATH -- true

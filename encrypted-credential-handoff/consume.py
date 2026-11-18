@@ -374,19 +374,27 @@ def check_key_dir(path: str) -> None:
     new files beside the key, and a key directory has no reason to be shared."""
     if os.name == "nt":
         return
-    directory = os.path.dirname(os.path.abspath(path))
+    # Absolute but not normalized: abspath would fold a ".." by its text,
+    # while the kernel follows it through the real directories (a symlink
+    # then ..), so the directory checked must be the one the open walks.
+    directory = os.path.dirname(os.path.join(os.getcwd(), path))
     try:
         dst = os.stat(directory)
     except OSError as e:
         raise fail(f"cannot read the key's directory {directory!r}: {e.strerror}") from None
+    move = ("stop and report it to the user: the key belongs in a directory of this "
+            "account's own (SETUP.md step 1)")
     if dst.st_uid not in (os.geteuid(), 0):
-        raise fail(f"the key's directory {directory!r} is owned by another account; "
-                   "stop and report it to the user: the key belongs in a directory of "
-                   "this account's own (SETUP.md step 1)")
+        raise fail(f"the key's directory {directory!r} is owned by another account; {move}")
     if dst.st_mode & 0o022:
+        # chmod is the fix only for this account's own directory: on a shared
+        # one (/tmp, owned by root) it would break the directory for everyone.
+        if dst.st_uid == os.geteuid():
+            fix = f"stop and report it to the user, who runs: chmod -- go-w {shell_quote(directory)}"
+        else:
+            fix = move
         raise fail(f"the key's directory {directory!r} is writable by others (mode "
-                   f"{stat.S_IMODE(dst.st_mode):04o}); stop and report it to the user, "
-                   f"who runs: chmod go-w {shell_quote(directory)}")
+                   f"{stat.S_IMODE(dst.st_mode):04o}); {fix}")
 
 
 def check_identity_stat(path: str, st: os.stat_result) -> None:

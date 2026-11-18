@@ -278,7 +278,7 @@ key_recipient() {  # FILE
 # reads the same on BSD and BusyBox; "$q/." makes find look at the directory
 # a symlink points to, not the link itself.
 key_dir_unsafe_msg() {  # DIR
-  local d=$1 q me other writable
+  local d=$1 q me other writable mine
   case "$d" in /*) q=$d ;; *) q=./$d ;; esac
   me=$(id -u)
   other=$(find "$q/." -prune ! -user 0 ! -user "$me" -print 2>/dev/null) || other=
@@ -288,7 +288,14 @@ key_dir_unsafe_msg() {  # DIR
   fi
   writable=$(find "$q/." -prune \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || writable=
   [ -n "$writable" ] || return 1
-  printf "the key's directory %s is writable by others; stop and report it to the user, who runs: chmod -- go-w %s" "$(qp "$d")" "$(qp "$d")"
+  # chmod is the fix only for this account's own directory: on a shared one
+  # (/tmp, owned by root) it would break the directory for everyone.
+  mine=$(find "$q/." -prune -user "$me" -print 2>/dev/null) || mine=
+  if [ -n "$mine" ]; then
+    printf "the key's directory %s is writable by others; stop and report it to the user, who runs: chmod -- go-w %s" "$(qp "$d")" "$(qp "$d")"
+  else
+    printf "the key's directory %s is writable by others; stop and report it to the user: the key belongs in a directory of this account's own (SETUP.md step 1)" "$(qp "$d")"
+  fi
 }
 key_dir_safe() {  # DIR
   local m
