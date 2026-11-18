@@ -2315,6 +2315,11 @@ expect_refusal "consume.py --rewrap with HANDOFF_PRIVKEY at .Previous" 1 "names 
   env HANDOFF_PRIVKEY="$KEY.Previous" python3 ../consume.py --label example --rewrap --blob-file blob-age.txt
 (cd "$(dirname -- "$KEY")" && expect_refusal "consume.py with HANDOFF_PRIVKEY=.previous" 1 "a wrapper sets it to the current key (SETUP.md step 7)" \
   env HANDOFF_PRIVKEY=.previous python3 "$OLDPWD/../consume.py" --label example --check --blob-file "$OLDPWD/blob-age.txt")
+# The same name with a directory in front: still no name suggested (a/ isn't one).
+expect_refusal "--rotate dir/.previous" 1 "--rotate takes the current key; nothing changed" \
+  bash ../agent-setup.sh --rotate "$(dirname -- "$KEY")/.previous"
+expect_refusal "consume.py with HANDOFF_PRIVKEY=dir/.previous" 1 "a wrapper sets it to the current key (SETUP.md step 7)" \
+  env HANDOFF_PRIVKEY="$(dirname -- "$KEY")/.previous" python3 ../consume.py --label example --check --blob-file blob-age.txt
 # --check-setup fails such a HANDOFF_PRIVKEY, as consume.py refuses it.
 env HANDOFF_PRIVKEY="$KEY.previous" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed a HANDOFF_PRIVKEY at .previous"
 grep -qxF "FAIL identity: HANDOFF_PRIVKEY ($KEY.previous) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key, $KEY" "$S/out" \
@@ -2332,6 +2337,18 @@ expect_refusal "--rotate with a .previous.previous" 1 "previous.previous exists,
 enc_other '{"svc":"example","password":"mk-Zq9"}' > "$R/neither-pp.txt"
 expect_refusal "a blob for neither key, with a .previous.previous" 1 "and with the previous key ('$KEY.previous'), and '$KEY.previous.previous' exists (SETUP.md, Rotation: A .previous.previous file)" \
   rk python3 ../consume.py --label example --check --blob-file "$R/neither-pp.txt"
+# The same with no .previous (what a --retire after that --rotate left): not
+# "no rotation to retire", which would read as done with the old key on disk.
+mv "$KEY.previous" "$R/held-pp.txt"
+expect_refusal "--retire --yes with a .previous.previous and no .previous" 1 "previous.previous exists, most likely left by an earlier --rotate" \
+  rk bash ../agent-setup.sh --retire --yes
+expect_refusal "a blob for no key, with a .previous.previous and no .previous" 1 "decryption failed with the key at '$KEY', and '$KEY.previous.previous' exists" \
+  rk python3 ../consume.py --label example --check --blob-file "$R/neither-pp.txt"
+rk bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed with a .previous.previous"
+grep -qxF "FAIL identity: $KEY.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)" "$S/out" \
+  || fail "--check-setup didn't fail a .previous.previous: $(grep identity "$S/out")"
+echo "ok (refused: --check-setup with a .previous.previous)"
+mv "$R/held-pp.txt" "$KEY.previous"
 rm "$KEY.previous.previous"; ln -s "$R/nowhere" "$KEY.previous.previous"
 expect_refusal "--retire --yes with a dangling .previous.previous link" 1 "previous.previous exists" \
   rk bash ../agent-setup.sh --retire --yes

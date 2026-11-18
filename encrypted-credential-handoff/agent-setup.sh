@@ -496,6 +496,8 @@ password: 20 bytes"
       cs_out FAIL identity "HANDOFF_PRIVKEY ($k) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$(suggest_current "$k")"
     elif [ ! -e "$k" ] && [ ! -L "$k" ]; then
       cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
+    elif [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then
+      cs_out FAIL identity "$k.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)"
     elif recipient_of "$k" >/dev/null 2>"$newd/kerr"; then
       cs_out PASS identity "the key at $k passes the identity checks (owner-only, one plain age identity)"
     else
@@ -706,6 +708,16 @@ case "$mode" in
       esac
       exit 1
     fi
+    # Most likely left by a --rotate given KEY.previous, which releases up to
+    # 0.2.0 allowed (issue #46): it may hold the rotation's real old key, and
+    # this run would delete another. Checked before anything else about the
+    # rotation, since a retire after that --rotate leaves it with no
+    # KEY.previous, and "no rotation to retire" would read as done with the
+    # old key still on disk. Nothing here can tell which key the user needs.
+    if [ -e "$prev.previous" ] || [ -L "$prev.previous" ]; then
+      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was deleted. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
+      exit 1
+    fi
     if [ ! -e "$prev" ]; then
       echo "agent-setup.sh: no $(qp "$prev"): no rotation to retire" >&2; exit 1
     fi
@@ -716,14 +728,6 @@ case "$mode" in
     prev_rcpt=$(recipient_of "$prev") || exit 1
     if [ "$prev_rcpt" = "$rcpt" ]; then
       echo "agent-setup.sh: $(qp "$prev") holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
-      exit 1
-    fi
-    # Most likely left by a --rotate given KEY.previous, which releases up to
-    # 0.2.0 allowed (issue #46): it may hold the rotation's real old key, and
-    # this run would delete another. Nothing here can tell which key the user
-    # needs.
-    if [ -e "$prev.previous" ] || [ -L "$prev.previous" ]; then
-      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was deleted. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
       exit 1
     fi
     # A killed setup or --rotate can leave a temporary file that is a hard

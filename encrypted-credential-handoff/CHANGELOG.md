@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- **A rotation's old key is refused as the current one (#46).** Given `<key path>.previous` as its KEY, `agent-setup.sh --rotate` used to keep the rotation's old key as `.previous.previous`, where `consume.py` never looks, and write a new key over `.previous`. That stranded every blob still made for the old key. `--retire` on such a KEY deleted the wrong key, and in a compromise response the leaked key could survive the retire with nothing reported. Now `--rotate` and `--retire` refuse a KEY, or a `HANDOFF_PRIVKEY`, whose name ends in `.previous` (in any case), before reading anything. `consume.py` refuses such a `HANDOFF_PRIVKEY` too, and `--check-setup` fails it. For an install an earlier `--rotate` already left that way, `--rotate` and `--retire` change nothing while a `.previous.previous` exists, and `consume.py` names the file when neither key opens a blob. SETUP's new "A .previous.previous file" says what the agent does then.
+- **A `.previous` key is refused as the current one** (closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".
 
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 
