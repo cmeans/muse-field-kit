@@ -95,6 +95,18 @@ jobs:
           sudo install -o root -g root -m 600 \
             encrypted-credential-handoff/test/test-dummy-identity.txt "$RUNNER_TEMP/root-owned-key.txt"
           echo "HANDOFF_TEST_OTHER_OWNER_KEY=$RUNNER_TEMP/root-owned-key.txt" >> "$GITHUB_ENV"
+      - name: Key directories owned by another account and by root, for the key-directory checks
+        # Each holds the runner's own 0600 copy of the dummy key: one in a
+        # directory owned by nobody (refused), one in a root-owned 0755
+        # directory (accepted).
+        run: |
+          for d in other-owner-dir:nobody root-dir:root; do
+            dir="$RUNNER_TEMP/${d%%:*}"
+            sudo install -d -o "${d#*:}" -m 755 "$dir"
+            sudo install -o "$(id -u)" -g "$(id -g)" -m 600 encrypted-credential-handoff/test/test-dummy-identity.txt "$dir/id.txt"
+          done
+          echo "HANDOFF_TEST_OTHER_OWNER_DIR=$RUNNER_TEMP/other-owner-dir" >> "$GITHUB_ENV"
+          echo "HANDOFF_TEST_ROOT_DIR=$RUNNER_TEMP/root-dir" >> "$GITHUB_ENV"
       - name: Install age from apt
         run: |
           sudo apt-get update -qq
@@ -422,6 +434,15 @@ jobs:
           sudo install -o root -g wheel -m 600 \
             encrypted-credential-handoff/test/test-dummy-identity.txt "$RUNNER_TEMP/root-owned-key.txt"
           echo "HANDOFF_TEST_OTHER_OWNER_KEY=$RUNNER_TEMP/root-owned-key.txt" >> "$GITHUB_ENV"
+      - name: Key directories owned by another account and by root, for the key-directory checks
+        run: |
+          for d in other-owner-dir:nobody root-dir:root; do
+            dir="$RUNNER_TEMP/${d%%:*}"
+            sudo install -d -o "${d#*:}" -m 755 "$dir"
+            sudo install -o "$(id -u)" -g "$(id -g)" -m 600 encrypted-credential-handoff/test/test-dummy-identity.txt "$dir/id.txt"
+          done
+          echo "HANDOFF_TEST_OTHER_OWNER_DIR=$RUNNER_TEMP/other-owner-dir" >> "$GITHUB_ENV"
+          echo "HANDOFF_TEST_ROOT_DIR=$RUNNER_TEMP/root-dir" >> "$GITHUB_ENV"
       - name: Interop and refusal tests
         # A skip line fails the step. "n/a on this OS" lines (no /proc, no
         # /dev/shm, no setsid on macOS) are allowed and printed.

@@ -269,6 +269,42 @@ key_recipient() {  # FILE
 # symlink, the hard link and rename would act on the link, not the key file
 # (leaving the new key off the volume the link points to, and the old key on
 # it after --retire). Refuse, and have the path name the file itself.
+# The key's directory (through a symlink, as the key is read) must be owned
+# by this user or root and writable by no group or other: anyone else who can
+# write there can rename another file over the key, or add one beside it.
+# No sticky exception (it stops renames, not new files). consume.py refuses
+# the same directories. Prints the refusal (exit 0) when the directory fails;
+# returns 1 when it's fine. find's -perm -MODE and -user are POSIX, so this
+# reads the same on BSD and BusyBox; "$q/." makes find look at the directory
+# a symlink points to, not the link itself.
+key_dir_unsafe_msg() {  # DIR
+  local d=$1 q me other writable mine
+  case "$d" in /*) q=$d ;; *) q=./$d ;; esac
+  me=$(id -u)
+  other=$(find "$q/." -prune ! -user 0 ! -user "$me" -print 2>/dev/null) || other=
+  if [ -n "$other" ]; then
+    printf "the key's directory %s is owned by another account; stop and report it to the user: the key belongs in a directory of this account's own (SETUP.md step 1)" "$(qp "$d")"
+    return 0
+  fi
+  writable=$(find "$q/." -prune \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || writable=
+  [ -n "$writable" ] || return 1
+  # chmod is the fix only for this account's own directory: on a shared one
+  # (/tmp, owned by root) it would break the directory for everyone.
+  mine=$(find "$q/." -prune -user "$me" -print 2>/dev/null) || mine=
+  if [ -n "$mine" ]; then
+    printf "the key's directory %s is writable by others; stop and report it to the user, who runs: chmod -- go-w %s" "$(qp "$d")" "$(qp "$d")"
+  else
+    printf "the key's directory %s is writable by others; stop and report it to the user: the key belongs in a directory of this account's own (SETUP.md step 1)" "$(qp "$d")"
+  fi
+}
+key_dir_safe() {  # DIR
+  local m
+  if m=$(key_dir_unsafe_msg "$1"); then
+    echo "agent-setup.sh: $m" >&2
+    exit 1
+  fi
+}
+
 no_symlinks() {
   local p
   for p in "$key" "$prev"; do
@@ -498,6 +534,9 @@ password: 20 bytes"
       cs_out FAIL identity "HANDOFF_PRIVKEY ($k) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$kc"
     elif [ ! -e "$k" ] && [ ! -L "$k" ]; then
       cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
+    elif kmsg=$(key_dir_unsafe_msg "$(dirname -- "$k")"); then
+      # consume.py refuses such a directory: every wrapper would fail.
+      cs_out FAIL identity "$kmsg"
     elif [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then
       cs_out FAIL identity "$k.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)"
     elif recipient_of "$k" >/dev/null 2>"$newd/kerr"; then
@@ -605,6 +644,7 @@ case "$mode" in
     no_symlinks
     [ -f "$key" ] || { echo "no key file at $(qp "$key")" >&2; exit 1; }
     dir=$(dirname -- "$key")
+    key_dir_safe "$dir"
     # The lock first, then the state: a run that read the key before another
     # finished would otherwise take that run's new key for its own old one.
     trap cleanup EXIT
@@ -725,6 +765,7 @@ case "$mode" in
     fi
     [ -f "$prev" ] || { echo "agent-setup.sh: $(qp "$prev") is not a regular file; report it to the user" >&2; exit 1; }
     trap cleanup EXIT
+    key_dir_safe "$(dirname -- "$key")"
     lock_dir "$(dirname -- "$key")"
     key_recipient "$key"
     prev_rcpt=$(recipient_of "$prev") || exit 1
@@ -812,6 +853,7 @@ fi
 # HANDOFF_KEY_DIR at an existing directory by mistake, silently tightening
 # its permissions would be a nasty surprise. Say so when that happens.
 if [ -d "$KEY_DIR" ]; then
+  key_dir_safe "$KEY_DIR"
   echo "note: key directory $(qp "$KEY_DIR") already exists; its permissions were left unchanged (expected 0700)" >&2
 else
   mkdir -p -- "$KEY_DIR"
