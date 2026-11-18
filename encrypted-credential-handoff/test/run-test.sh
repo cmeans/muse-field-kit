@@ -2354,6 +2354,12 @@ expect_refusal "--retire --yes with a dangling .previous.previous link" 1 "previ
   rk bash ../agent-setup.sh --retire --yes
 expect_refusal "--rotate with a dangling .previous.previous link" 1 "previous.previous exists" \
   rk bash ../agent-setup.sh --rotate
+expect_refusal "a blob for neither key, with a dangling .previous.previous link" 1 "and '$KEY.previous.previous' exists (SETUP.md, Rotation: A .previous.previous file)" \
+  rk python3 ../consume.py --label example --check --blob-file "$R/neither-pp.txt"
+rk bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed with a dangling .previous.previous link"
+grep -qxF "FAIL identity: $KEY.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)" "$S/out" \
+  || fail "--check-setup didn't fail a dangling .previous.previous link: $(grep identity "$S/out")"
+echo "ok (refused: --check-setup with a dangling .previous.previous link)"
 rm "$KEY.previous.previous" "$R/neither-pp.txt"
 [ "$(keys_now)" = "$before_prev" ] || fail "the .previous.previous checks changed the key directory"
 # --retire without --yes keeps the old key and names it with its recipient.

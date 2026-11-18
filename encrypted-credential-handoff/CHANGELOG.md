@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- **A `.previous` key is refused as the current one** (closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".
+- **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".
 
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 

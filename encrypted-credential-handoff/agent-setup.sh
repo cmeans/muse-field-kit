@@ -378,7 +378,7 @@ cs_out() {  # STATUS NAME DETAIL
 }
 check_setup() {
   local p v rc blob rcpt re have_age=0 have_keygen=0 have_py=0 here consume
-  local payload rt="" hdr="" b64="" want k kmsg
+  local payload rt="" hdr="" b64="" want k kmsg kc
   set +e
   # The traps first, so no signal can fall between the folder and its cleanup
   # (newd starts empty, and cleanup removes it only if set).
@@ -493,7 +493,9 @@ password: 20 bytes"
       cs_out FAIL identity "${kmsg:-cannot work out where the key is}"
     elif is_previous_name "$k"; then
       # consume.py refuses it (issue #46): every wrapper with it would fail.
-      cs_out FAIL identity "HANDOFF_PRIVKEY ($k) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$(suggest_current "$k")"
+      kc=${k%.*}
+      case "$kc" in ''|*/) kc= ;; *) kc=", $kc" ;; esac
+      cs_out FAIL identity "HANDOFF_PRIVKEY ($k) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$kc"
     elif [ ! -e "$k" ] && [ ! -L "$k" ]; then
       cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
     elif [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then
