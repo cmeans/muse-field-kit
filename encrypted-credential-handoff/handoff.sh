@@ -583,10 +583,10 @@ bad_json() {
   case "$SECRET_JSON" in
     *$'\xe2\x80\x9c'*|*$'\xe2\x80\x9d'*) echo "handoff.sh: it has typographic quotes (U+201C or U+201D): JSON takes only straight quotes (\") around a name or a value, so retype any that are meant as those (some editors and chat apps change them); inside a value, they're part of it" >&2 ;;
   esac
-  # A line the terminal cut arrives at its cap, 4095 bytes on Linux (1024 is
-  # macOS's MAX_CANON): only a line that long can have been cut. (awk reads
-  # the payload on a pipe, as jq does.)
-  if [ "$from_tty" = 1 ] && printf '%s\n' "$SECRET_JSON" | LC_ALL=C awk 'length >= 1023 { f = 1 } END { exit !f }'; then
+  # A line the terminal cut arrives at about its cap, 4095 bytes on Linux
+  # (1024 is macOS's MAX_CANON): only a line about that long can have been
+  # cut. (awk reads the payload on a pipe, as jq does.)
+  if [ "$from_tty" = 1 ] && printf '%s\n' "$SECRET_JSON" | LC_ALL=C awk 'length >= 1000 { f = 1 } END { exit !f }'; then
     echo "handoff.sh: a line was 1 KB or longer, and the terminal cuts a line at about 4 KB (1 KB on macOS): for a long payload, use a FILE or a pipe" >&2
   fi
   exit 1

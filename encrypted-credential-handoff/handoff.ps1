@@ -706,6 +706,12 @@ end {
     [Array]::Clear($bytes, 0, $bytes.Length)
   } elseif ($piped.Count -gt 0 -or $MyInvocation.ExpectingInput) {
     $secret = [string]::Join("`n", $piped.ToArray())
+    # Windows PowerShell 5.1 hands a file's bytes redirected to its stdin to
+    # the script as pipeline text, decoded a byte per character: a UTF-16 file
+    # with no mark shows as the same alternating NULs.
+    $head = New-Object System.Collections.Generic.List[byte]
+    for ($h = 0; $h -lt [Math]::Min(4, $secret.Length); $h++) { $v = [int]$secret[$h]; if ($v -gt 255) { break }; $head.Add([byte]$v) }
+    if ($head.Count -eq 4 -and (Test-Utf16NoBom $head.ToArray())) { $secret = $null; Stop-Run $utf16Msg }
   } elseif ([Console]::IsInputRedirected) {
     $bytes = Read-Capped ([Console]::OpenStandardInput())
     if ($null -eq $bytes) { Stop-Run 'cannot read stdin' }

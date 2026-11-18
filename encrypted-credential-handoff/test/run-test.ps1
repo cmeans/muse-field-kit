@@ -528,6 +528,10 @@ $r = Invoke-Handoff -Script $hk -ArgText "-File $(Q $nulLead)"
 Assert-Refusal 'a raw NUL right after {' 1 $jsonMsg $r
 Assert-True (-not $r.Err.Contains('UTF-16')) 'a raw NUL after { was called UTF-16'
 Remove-Item -LiteralPath $nulLead
+# UTF-16 bytes arriving as pipeline text, a byte per character (how Windows
+# PowerShell 5.1 hands a script a file redirected to its stdin): the same
+# UTF-16 message as for the bytes.
+Assert-Refusal 'UTF-16 without a mark, as pipeline text' 1 'saved as UTF-16' (Invoke-Handoff -Call "(-join @([char]0x7B, [char]0, [char]0x22, [char]0, [char]0x73, [char]0, [char]0x76, [char]0, [char]0x63, [char]0, [char]0x22, [char]0)) | & $(Q $hk)")
 # A payload with only known fields gets no note.
 $r = Invoke-Handoff -Script $hk -Pipe $PayFile
 [void](Assert-Blob 'a payload with only known fields' $r)

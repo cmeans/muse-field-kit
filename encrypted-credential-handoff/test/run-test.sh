@@ -2067,7 +2067,15 @@ while time.time() < end:
         os.write(fd, data + b"\n")
         time.sleep(0.2)
         os.write(fd, b"\x04")
-        sent = True
+        sent, eof_at, eofs = True, time.time(), 1
+    # A line over macOS's MAX_CANON loses its line end, so the first Ctrl-D
+    # only ends that partial line: the second one, on an empty line, is EOF.
+    if sent and eofs < 4 and time.time() - eof_at > 2:
+        try:
+            os.write(fd, b"\x04")
+        except OSError:
+            pass
+        eof_at, eofs = time.time(), eofs + 1
 else:
     os.kill(pid, 9)
 _, st = os.waitpid(pid, 0)
