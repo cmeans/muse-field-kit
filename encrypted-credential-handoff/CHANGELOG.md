@@ -5,6 +5,7 @@
 ### Changed
 
 - **The test suite checks the bytes `handoff.sh` encrypts** (#55, closes #47): each accepted payload case is decrypted and compared with its input, not only opened.
+- **Hardening: `consume.py` hands `age` the identity it checked, on a pipe, not its path** (#70), and `consume.py` and `agent-setup.sh` refuse a key directory owned by an account other than this one or root, or that a group or other can write to; `--check-setup` reports one.
 
 ### Fixed
 

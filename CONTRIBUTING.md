@@ -48,7 +48,11 @@ For `encrypted-credential-handoff` (run from the repository root):
 ./encrypted-credential-handoff/test/run-test.sh        # interop and refusal tests; ends ALL INTEROP CHECKS PASSED
 shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*.sh
 pipx run ruff==0.15.7 check encrypted-credential-handoff/
+# every script executable in git, as CI checks first (prints nothing when right):
+git ls-files -s encrypted-credential-handoff | awk '$1 != "100755" && $4 ~ /(\.sh|\.py)$/ { print $4 }'
 ```
+
+The suite runs each script through `bash` or `python3`, so a new script committed without its execute bit passes it and fails only in CI: `chmod 755` it and `git add` it again.
 
 The suite needs only what the folder needs: `bash`, `python3` 3.7 or later, the folder's crypto tool (`age`, with `age-keygen`), and `jq`. `test/run-test.ps1` checks the Windows script, `handoff.ps1`, under PowerShell 7 (on any OS) or Windows PowerShell 5.1. CI also parses the scripts under bash 3.2 (macOS's `/bin/bash`) and fails on any skipped check.
 
