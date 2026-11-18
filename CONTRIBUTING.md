@@ -57,7 +57,7 @@ The suite needs only what the folder needs: `bash`, `python3` 3.7 or later, the 
 - Scripts: `bash` that parses under bash 3.2; Python from the standard library only, no third-party packages on the user's or the agent's side.
 - Messages never print a secret or anything derived from one, and errors say what to do next.
 - Docs and messages use American English spelling (behavior, color, license).
-- Each folder's `CHANGELOG.md` gets an entry for every change to that folder.
+- Each folder's `CHANGELOG.md` gets an entry for every change to that folder, one line per change: `- **Short title** (#PR): what changed, for the user.` The reasons and edge cases go in the PR and the docs. A release adds two or three sentences on how it was reviewed and what wasn't run.
 
 ## Contact
 
