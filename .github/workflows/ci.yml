@@ -28,9 +28,9 @@ concurrency:
 jobs:
   # NOTE: pr-labels.yml and pr-labels-ci.yml find this workflow by its name
   # ("CI") and file (ci.yml). If either is renamed, update them too.
-  # This job's name ("encrypted-credential-handoff") is a required check in
-  # main's ruleset: if it is renamed, update the ruleset, or every PR waits
-  # on a check that never comes.
+  # main's ruleset requires "ci-ok" (the last job, which needs all the
+  # others) and QA Gate. If ci-ok is renamed, update the ruleset, or every PR
+  # waits on a check that never comes.
   encrypted-credential-handoff:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -593,3 +593,53 @@ jobs:
           find "$RUNNER_TEMP/windows-interop" -type f | sort | head -80
           python3 -I encrypted-credential-handoff/test/check-interop.py \
             "$RUNNER_TEMP/windows-interop/ps5" "$RUNNER_TEMP/windows-interop/ps7"
+
+  # The one CI check main's ruleset requires (with QA Gate): it passes only
+  # when every job it needs passed. Each kit's jobs cover the platforms that
+  # kit supports, so a Linux-only kit adds Linux jobs and the ruleset never
+  # changes. Add every new job to `needs` below; a job missing from it isn't
+  # gated. `if: always()` makes it run, and fail, when a job it needs failed
+  # or was canceled: a job skipped because another failed reports "skipped",
+  # which a required check would count as passing.
+  # A job that is skipped on purpose (an `if:` on a path) needs an exception
+  # here, by name; today none is, so anything but success fails.
+  ci-ok:
+    if: always()
+    needs:
+      - encrypted-credential-handoff
+      - assets
+      - linux-age-versions
+      - macos
+      - windows
+      - windows-interop
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Every job in this file is gated here
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          # The job names: two-space keys under `jobs:` (this file's layout).
+          jobs=$(awk '/^jobs:/ { in_jobs = 1; next } in_jobs && /^[^ #]/ { exit }
+            in_jobs && /^  [A-Za-z0-9_-]+:[ ]*$/ { sub(/^  /, ""); sub(/:[ ]*$/, ""); print }' \
+            .github/workflows/ci.yml | grep -vx ci-ok | sort)
+          gated=$(printf '%s' "$NEEDS" | jq -r 'keys[]' | sort)
+          [ -n "$jobs" ] || { echo "::error::found no jobs in ci.yml"; exit 1; }
+          missing=$(comm -23 <(printf '%s\n' "$jobs") <(printf '%s\n' "$gated"))
+          if [ -n "$missing" ]; then
+            echo "::error::ci-ok doesn't need these jobs, so they aren't gated: $(printf '%s' "$missing" | tr '\n' ' ')"
+            exit 1
+          fi
+      - name: Every job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad=$(printf '%s' "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')
+          if [ -n "$bad" ]; then
+            echo "::error::not every CI job passed: $bad"
+            exit 1
+          fi
