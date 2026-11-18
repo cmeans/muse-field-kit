@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **The test suite checks the bytes `handoff.sh` encrypts** (#55, closes #47): each accepted payload case is decrypted and compared with its input, not only opened.
+
 ### Fixed
 
 - **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".

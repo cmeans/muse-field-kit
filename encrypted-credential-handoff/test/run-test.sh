@@ -461,6 +461,9 @@ import os
 print(len(os.environ["SERVICE_PRIVATE_KEY"]))
 ')
 [ "$out" = "$(( max_payload - 34 ))" ] || fail "the maximum payload did not round-trip ($out)"
+# Its bytes too, not only the field's length (issue #47).
+base64 -d <"$S/blob-max" | "$AGE" -d -i "$TMPKEY" | cmp -s - <(printf '%s' "$big") \
+  || fail "the maximum payload's blob doesn't hold its bytes"
 # The same blob saved wrapped at 76 columns (as base64 tools wrap): the line
 # breaks don't count toward the cap, from a file as from --blob.
 fold -w 76 "$S/blob-max" >"$S/blob-max-wrapped"
@@ -1600,9 +1603,10 @@ print(os.environ["SERVICE_PASSWORD"])
   rm -f "$ut/handoff-$c_to.age"
 done
 # The payload shapes, one table shared with run-test.ps1 (payload-cases.json):
-# {name, payload or payload_base64 (bytes that aren't text), exit,
-# stderr_contains}. Each runs on stdin and as FILE; an accepted one's blob
-# must open with consume.py --check.
+# {name, payload or payload_base64 (bytes that aren't text, or raw UTF-8 that
+# a console could re-encode), exit, stderr_contains}. Each runs on stdin and
+# as FILE; an accepted one's blob must open with consume.py --check and
+# decrypt to the input's bytes (less a leading BOM and trailing LFs).
 npc=$(jq length payload-cases.json)
 [ "$npc" -gt 0 ] || fail "payload-cases.json is empty"
 for i in $(seq 0 $(( npc - 1 ))); do
@@ -1626,10 +1630,24 @@ for i in $(seq 0 $(( npc - 1 ))); do
       grep -qF -- "$c_msg" "$S/err" || fail "payload case $c_name ($how): stderr lacks \"$c_msg\""
       [ "$(wc -l <"$S/out")" -eq 1 ] || fail "payload case $c_name ($how): stdout is not one line"
       no_dummy_in "$S/out" "$S/err"
-      consume --label example --check --blob-file "$S/out" >"$S/cout" 2>"$S/cerr" \
+      consume --label example --check --blob-file "$S/out" >/dev/null 2>"$S/cerr" \
         || { cat "$S/cerr" >&2; fail "payload case $c_name ($how): consume.py --check refused the blob"; }
+      # What handoff.sh encrypted, byte for byte: the input with a leading
+      # UTF-8 byte-order mark dropped and its trailing line feeds dropped
+      # ($(...) drops them), and nothing else changed (issue #47). Opening
+      # the blob alone would pass a payload rewritten to other valid JSON.
+      base64 -d <"$S/out" | "$AGE" -d -i "$TMPKEY" >"$S/pc-got" \
+        || fail "payload case $c_name ($how): age couldn't open the blob"
+      python3 -I -c 'import sys
+b = open(sys.argv[1], "rb").read()
+if b.startswith(b"\xef\xbb\xbf"):
+    b = b[3:]
+open(sys.argv[2], "wb").write(b.rstrip(b"\n"))' "$S/pc-in" "$S/pc-want"
+      cmp -s "$S/pc-got" "$S/pc-want" \
+        || fail "payload case $c_name ($how): the decrypted bytes differ from the input ($(( $(wc -c <"$S/pc-got") )) bytes, wanted $(( $(wc -c <"$S/pc-want") )))"
+      rm -f "$S/pc-got" "$S/pc-want"
     done
-    echo "ok (accepted: payload $c_name, and consume.py opens it)"
+    echo "ok (accepted: payload $c_name, and its blob holds the input's bytes)"
   else
     expect_refusal "payload case $c_name" "$c_exit" "$c_msg" bash "$S/hd/handoff.sh" <"$S/pc-in"
     expect_refusal "payload case $c_name (FILE)" "$c_exit" "$c_msg" bash "$S/hd/handoff.sh" "$S/pc-in" </dev/null
