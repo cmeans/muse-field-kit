@@ -454,5 +454,11 @@
   "payload": "{\"s\u202evc\":\"example\",\"password\":\"mk-Zq9\"}",
   "exit": 1,
   "stderr_contains": "input must be a single JSON object"
+ },
+ {
+  "name": "unknownfieldastral",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"passw\ud835\udc28\ud835\udc2bd\":\"z\"}",
+  "exit": 0,
+  "stderr_contains": "doesn't know: \"passw\\ud835\\udc28\\ud835\\udc2bd\""
  }
 ]

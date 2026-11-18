@@ -330,7 +330,7 @@ Only then remove the Mark of the Web with `Unblock-File .\handoff.ps1`, and run 
 
 **What the checksum proves, plainly:** `SHA256SUMS` comes from the same release page as the script, so it catches a damaged download and a copy swapped on the way (a chat attachment, a mirror), not a compromise of the GitHub account or repository. The attestation ties the file to the release workflow's run. Neither replaces the recipient comparison (invariant 6).
 
-Save the agent's recipient as `handoff-<name>.age` in the same directory as the script (`handoff-muse.age` for the default name): one line, `age1…`, as the agent gives it, without the `recipient: ` that `--fingerprint` prints before it, or any quotes. The script reads it from there and nowhere else, and it must be a plain file: a symlink there is refused, since whoever can repoint a link changes the recipient without touching the file you checked.
+Save the agent's recipient as `handoff-<name>.age` in the same directory as the script (`handoff-muse.age` for the default name): one line, `age1…`, as the agent gives it, without the `recipient: ` that `--fingerprint` prints before it, or any quotes. The script reads it from there and nowhere else, and it must be a plain file: a symlink there is refused, since whoever can repoint a link changes the recipient without touching the file you checked. (Only the file itself is checked: the directory it's in is the one in the path you run the script by, which may itself be a link, as SETUP step 3 says.)
 
 ### Check your setup
 

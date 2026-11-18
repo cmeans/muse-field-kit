@@ -859,6 +859,17 @@ end {
     [void]$sb.Append('"')
     return $sb.ToString()
   }
+  # The cap (MAX_PAYLOAD, above) keeps the blob within consume.py's limit:
+  # checked first, on the bytes age would get, before the JSON check and the
+  # note, as in handoff.sh.
+  $bytes = $null
+  try { $bytes = $strict.GetBytes($secret) } catch { Stop-Run $jsonMsg }   # a lone surrogate
+  if ($bytes.Length -gt $MAX_PAYLOAD) {
+    $n = $bytes.Length
+    [Array]::Clear($bytes, 0, $bytes.Length)
+    $secret = $null
+    Stop-TooBig $n
+  }
   $script:PayloadKeys = @()
   $refusal = Test-Payload $secret
   if ($refusal -ceq $jsonMsg) {
@@ -872,11 +883,23 @@ end {
       [Console]::Error.WriteLine('handoff.ps1: it has typographic quotes (U+201C or U+201D): JSON takes only straight quotes (") around a name or a value, so retype any that are meant as those (some editors and chat apps change them); inside a value, they''re part of it')
     }
     $secret = $null
+    [Array]::Clear($bytes, 0, $bytes.Length)
     Exit-Handoff 1
   }
-  if ($null -ne $refusal) { Stop-Run $refusal }
-  # The edit distance between two strings (handoff.sh's lev, in jq).
-  function Get-EditDistance([string]$a, [string]$b) {
+  if ($null -ne $refusal) { [Array]::Clear($bytes, 0, $bytes.Length); Stop-Run $refusal }
+  # A string's code points (Test-Payload has refused a lone surrogate), so the
+  # edit distance below counts characters as handoff.sh's jq explode does,
+  # not UTF-16 units.
+  function Get-CodePoints([string]$s) {
+    $cp = New-Object System.Collections.Generic.List[int]
+    for ($i = 0; $i -lt $s.Length; $i++) {
+      $cp.Add([char]::ConvertToUtf32($s, $i))
+      if ([char]::IsHighSurrogate($s[$i])) { $i++ }
+    }
+    return ,$cp.ToArray()
+  }
+  # The edit distance between two code-point arrays (handoff.sh's lev, in jq).
+  function Get-EditDistance([int[]]$a, [int[]]$b) {
     $prev = New-Object int[] ($b.Length + 1)
     for ($j = 0; $j -le $b.Length; $j++) { $prev[$j] = $j }
     for ($i = 0; $i -lt $a.Length; $i++) {
@@ -884,7 +907,7 @@ end {
       $cur[0] = $i + 1
       for ($j = 0; $j -lt $b.Length; $j++) {
         $cost = 1
-        if ($a[$i] -ceq $b[$j]) { $cost = 0 }
+        if ($a[$i] -eq $b[$j]) { $cost = 0 }
         $cur[$j + 1] = [Math]::Min([Math]::Min($prev[$j + 1] + 1, $cur[$j] + 1), $prev[$j] + $cost)
       }
       $prev = $cur
@@ -894,9 +917,13 @@ end {
   # Fields consume.py doesn't know are ignored there, so a misspelled one
   # never reaches the agent: counted here, before encrypting (handoff.sh's
   # note). A name is shown only when it's within two edits of a known field's
-  # (ignoring ASCII case, at most 40 characters): any other could be a value
-  # typed in a name's place, a secret. At most 5 are shown.
+  # (ignoring ASCII case; counted in characters): any other could be a value
+  # typed in a name's place, a secret. At most 5 are shown. (A name longer
+  # than the longest known field plus 2 can't be within two edits, so the
+  # distance isn't computed for it: that only saves time.)
   $knownList = @($KNOWN_FIELDS.Split(' '))
+  $knownCps = @($knownList | ForEach-Object { ,(Get-CodePoints $_) })
+  $longest = ($knownList | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum + 2
   # Ordinal, as in Test-Payload: -ccontains compares by culture, which skips
   # format characters ("pass<U+202E>word" would pass for password).
   $knownSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -908,8 +935,8 @@ end {
       $n = $_
       $chars = $n.ToCharArray()
       for ($c = 0; $c -lt $chars.Length; $c++) { $v = [int]$chars[$c]; if ($v -ge 65 -and $v -le 90) { $chars[$c] = [char]($v + 32) } }
-      $low = New-Object string (,$chars)
-      $n.Length -le 40 -and @($knownList | Where-Object { (Get-EditDistance $low $_) -le 2 }).Count -gt 0
+      $low = Get-CodePoints (New-Object string (,$chars))
+      $low.Length -le $longest -and @($knownCps | Where-Object { (Get-EditDistance $low $_) -le 2 }).Count -gt 0
     } | Select-Object -First 5)
     $text = "consume.py ignores $($unknown.Count) field(s) it doesn't know"
     if ($close.Count -gt 0) { $text += ': ' + ((@($close | ForEach-Object { Format-JsonAscii $_ })) -join ', ') }
@@ -917,18 +944,7 @@ end {
     [Console]::Error.WriteLine("handoff.ps1: note: $text. It uses: $($KNOWN_FIELDS.Replace(' ', ', ')). If one is misspelled, fix it and run again: an ignored field never reaches the agent")
   }
 
-  $bytes = $null
-  try { $bytes = $strict.GetBytes($secret) } catch { Stop-Run $jsonMsg }   # a lone surrogate
   $secret = $null
-  # The cap (MAX_PAYLOAD, above) keeps the blob within consume.py's limit.
-  if ($bytes.Length -gt $MAX_PAYLOAD) {
-    $n = $bytes.Length
-    [Array]::Clear($bytes, 0, $bytes.Length)
-    [Console]::Error.WriteLine("handoff.ps1: payload is $n bytes; the most handoff.ps1 sends is $MAX_PAYLOAD bytes.")
-    [Console]::Error.WriteLine('Shorten the JSON. (Larger payloads need a larger limit on both sides;')
-    [Console]::Error.WriteLine('see README.md.)')
-    Exit-Handoff 1
-  }
 
   # --- encrypt (no plaintext ever touches disk) -------------------------
   # age writes the binary format; base64 makes it one line.

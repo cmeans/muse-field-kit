@@ -583,7 +583,12 @@ bad_json() {
   case "$SECRET_JSON" in
     *$'\xe2\x80\x9c'*|*$'\xe2\x80\x9d'*) echo "handoff.sh: it has typographic quotes (U+201C or U+201D): JSON takes only straight quotes (\") around a name or a value, so retype any that are meant as those (some editors and chat apps change them); inside a value, they're part of it" >&2 ;;
   esac
-  [ "$from_tty" = 0 ] || echo "handoff.sh: if a line was over about 4 KB (1 KB on macOS), the terminal cut it: for a long payload, use a FILE or a pipe" >&2
+  # A line the terminal cut arrives at its cap, 4095 bytes on Linux (1024 is
+  # macOS's MAX_CANON): only a line that long can have been cut. (awk reads
+  # the payload on a pipe, as jq does.)
+  if [ "$from_tty" = 1 ] && printf '%s\n' "$SECRET_JSON" | LC_ALL=C awk 'length >= 1023 { f = 1 } END { exit !f }'; then
+    echo "handoff.sh: a line was 1 KB or longer, and the terminal cuts a line at about 4 KB (1 KB on macOS): for a long payload, use a FILE or a pipe" >&2
+  fi
   exit 1
 }
 # A UTF-16 file (Windows PowerShell 5.1's > and Out-File write it): a
@@ -671,8 +676,10 @@ esac
 # so a misspelled one (usrename) never reaches the agent: counted here,
 # before encrypting, where the user can fix it. A name is shown only when
 # it's a likely misspelling, within two edits of a known field's (ignoring
-# case, at most 40 characters): any other name could be a value typed in a
-# name's place, a secret. jq -a prints a shown name as an ASCII JSON string,
+# ASCII case; counted in characters): any other name could be a value typed
+# in a name's place, a secret. (A name longer than the longest known field
+# plus 2 can't be within two edits, so the distance isn't computed for it:
+# that only saves time, on a payload of many long names.) jq -a prints a shown name as an ASCII JSON string,
 # so no character in it can break, reorder or hide this line; at most 5 are
 # shown. jq prints [count, [names]], nothing else from the payload.
 unknown=$(printf '%s' "$SECRET_JSON" | jq -c -a -s --arg known "$KNOWN_FIELDS" '
@@ -683,9 +690,10 @@ unknown=$(printf '%s' "$SECRET_JSON" | jq -c -a -s --arg known "$KNOWN_FIELDS" '
             . + [[$prev[$j + 1] + 1, .[$j] + 1, $prev[$j] + (if $s[$i] == $t[$j] then 0 else 1 end)] | min]))
     | .[-1];
   ($known | split(" ")) as $k
+  | (($k | map(length) | max) + 2) as $longest
   | [.[0] | keys_unsorted[] | select(. != "svc") | select(. as $n | any($k[]; . == $n) | not)]
   | if length == 0 then empty
-    else [.[] | select(length <= 40 and (ascii_downcase as $n | any($k[]; lev($n; .) <= 2)))][:5] as $shown
+    else [.[] | select(length <= $longest and (ascii_downcase as $n | any($k[]; lev($n; .) <= 2)))][:5] as $shown
       | [length, ($shown | length), $shown] end' 2>/dev/null) || unknown=
 if [ -n "$unknown" ]; then
   # [count,shown,[names]]: the two counts are digits, so the first two commas

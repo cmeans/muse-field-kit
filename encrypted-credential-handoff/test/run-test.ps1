@@ -250,6 +250,12 @@ foreach ($pair in @(@('MAX_PAYLOAD', '(?m)^MAX_PAYLOAD=(\d+)', '(?m)^[ ]*\$MAX_P
   if (-not $a.Success -or -not $b2.Success) { Fail "test setup: $($pair[0]) not found in handoff.sh or handoff.ps1" }
   if ($a.Groups[1].Value -ne $b2.Groups[1].Value) { Fail "$($pair[0]): handoff.ps1 has $($b2.Groups[1].Value), handoff.sh $($a.Groups[1].Value)" }
 }
+# The read cap's margin over MAX_PAYLOAD.
+$shCap = [regex]::Match($sh, '(?m)^READ_CAP=\$\(\(MAX_PAYLOAD \+ (\d+)\)\)')
+$psCap = [regex]::Match($ps, '(?m)^[ ]*\$READ_CAP = \$MAX_PAYLOAD \+ (\d+)')
+if (-not $shCap.Success -or -not $psCap.Success) { Fail 'test setup: READ_CAP not found in handoff.sh or handoff.ps1' }
+if ($shCap.Groups[1].Value -ne $psCap.Groups[1].Value) { Fail "READ_CAP's margin: handoff.ps1 has $($psCap.Groups[1].Value), handoff.sh $($shCap.Groups[1].Value)" }
+$ReadCap = [int]([regex]::Match($sh, '(?m)^MAX_PAYLOAD=(\d+)').Groups[1].Value) + [int]$shCap.Groups[1].Value
 $shKnown = [regex]::Match($sh, "(?m)^KNOWN_FIELDS='([a-z_ ]+)'$")
 $psKnown = [regex]::Match($ps, "(?m)^[ ]*\`$KNOWN_FIELDS = '([a-z_ ]+)'$")
 if (-not $shKnown.Success -or -not $psKnown.Success) { Fail 'test setup: KNOWN_FIELDS not found in handoff.sh or handoff.ps1' }
@@ -522,6 +528,10 @@ $r = Invoke-Handoff -Script $hk -ArgText "-File $(Q $nulLead)"
 Assert-Refusal 'a raw NUL right after {' 1 $jsonMsg $r
 Assert-True (-not $r.Err.Contains('UTF-16')) 'a raw NUL after { was called UTF-16'
 Remove-Item -LiteralPath $nulLead
+# A payload with only known fields gets no note.
+$r = Invoke-Handoff -Script $hk -Pipe $PayFile
+[void](Assert-Blob 'a payload with only known fields' $r)
+Assert-True (-not $r.Err.Contains('note:')) "a payload with only known fields got a note: $($r.Err)"
 # The read is bounded (#65 F12): a large file, stdin's bytes or a pipeline
 # ends at the cap with the size refusal, before the JSON check.
 $spaces = Join-Path $S 'spaces.json'
@@ -544,7 +554,7 @@ $u16 = Join-Path $S 'u16bom.json'
 # MAX_PAYLOAD is still read whole: the cap for UTF-16 is twice the bytes.
 $long = '{"svc":"example","password":"mk-Zq9' + ('a' * 30000) + '"}'
 [IO.File]::WriteAllText($u16, $long, (New-Object System.Text.UnicodeEncoding $false, $true))
-Assert-True ((Get-Item -LiteralPath $u16).Length -gt 52792) 'test setup: the long UTF-16 payload is not over the read cap in bytes'
+Assert-True ((Get-Item -LiteralPath $u16).Length -gt $ReadCap) 'test setup: the long UTF-16 payload is not over the read cap in bytes'
 [void](Assert-Blob 'a 30,000-character UTF-16 payload with a byte-order mark (-File)' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $u16)"))
 [void](Assert-Blob 'a 30,000-character UTF-16 payload with a byte-order mark (stdin)' (Invoke-Handoff -Script $hk -Stdin ([IO.File]::ReadAllBytes($u16))))
 # And past twice the cap, it's refused on size.

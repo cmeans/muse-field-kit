@@ -2091,7 +2091,7 @@ python3 -I -c 'print("{\"svc\":\"example\",\"password\":\"" + "a" * 4970 + "\"}"
 out=$(pty_type "$S/pty-long.json" "$BASH_BIN" "$S/hd/handoff.sh")
 [ "${out%%$'\n'*}" = 1 ] || fail "a 5,000-byte line at the terminal: exit ${out%%$'\n'*}, expected 1: ${out:0:300}"
 case "$out" in
-  *"the terminal cut it: for a long payload, use a FILE or a pipe"*) ;;
+  *"the terminal cuts a line at about 4 KB (1 KB on macOS): for a long payload, use a FILE or a pipe"*) ;;
   *) fail "a 5,000-byte line at the terminal: no hint about the terminal's line cap: ${out:0:300}" ;;
 esac
 bash "$S/hd/handoff.sh" "$S/pty-long.json" </dev/null >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "the 5,000-byte payload as FILE was refused"; }
@@ -2157,21 +2157,35 @@ if [ -n "${utf8_loc-}" ]; then
     env LC_ALL="$utf8_loc" bash "$S/hd/handoff.sh" "--x"$'\xe2\x80\xae'"y"
   ! LC_ALL=C grep -q $'\xe2\x80\xae' "$S/err" || fail "a bidi override in an unknown option was printed raw"
 fi
-# The hint is for the terminal only: the same refusal from a pipe has none.
+# The hint is for a long line at the terminal only: the same refusal from a
+# pipe has none, and nor does a short line typed at the prompt.
 expect_refusal "handoff.sh not JSON, piped" 1 "must be a single JSON object" bash "$S/hd/handoff.sh" <<<'not json'
-! grep -q "the terminal cut it" "$S/err" || fail "a piped refusal gave the terminal's line-cap hint"
-# A UTF-16 file with a byte-order mark: handoff.sh reads UTF-8 only, and says
-# so (handoff.ps1 reads one, so this isn't in the shared table; issue #44).
-python3 -I -c 'import sys; sys.stdout.buffer.write("{\"svc\":\"example\",\"password\":\"mk-Zq9\"}".encode("utf-16"))' >"$S/u16bom.json"
-expect_refusal "handoff.sh UTF-16 payload with a byte-order mark" 1 "the payload is saved as UTF-16: save it as UTF-8" \
-  bash "$S/hd/handoff.sh" "$S/u16bom.json"
+! grep -q "the terminal cuts a line" "$S/err" || fail "a piped refusal gave the terminal's line-cap hint"
+printf '{"svc":"x" "password":"p"}' >"$S/pty-short.json"
+out=$(pty_type "$S/pty-short.json" "$BASH_BIN" "$S/hd/handoff.sh")
+case "$out" in *"must be a single JSON object"*) ;; *) fail "a short bad line at the terminal: no JSON refusal: $out" ;; esac
+case "$out" in *"the terminal cuts a line"*) fail "a short bad line at the terminal gave the line-cap hint" ;; esac
+echo "ok (no line-cap hint: a piped refusal, a short line at the terminal)"
+# A payload with only known fields gets no note.
+bash "$S/hd/handoff.sh" <<<'{"svc":"example","username":"u","password":"mk-Zq9"}' >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "a known-fields payload was refused"; }
+! grep -q "note:" "$S/err" || fail "a payload with only known fields got a note: $(cat "$S/err")"
+echo "ok (no note: a payload with only known fields)"
+# A UTF-16 file with a byte-order mark, little- and big-endian: handoff.sh
+# reads UTF-8 only, and says so (handoff.ps1 reads one, so this isn't in the
+# shared table; issue #44).
+for enc in utf-16-le utf-16-be; do
+  python3 -I -c 'import sys; e = sys.argv[1]; sys.stdout.buffer.write("﻿{\"svc\":\"example\",\"password\":\"mk-Zq9\"}".encode(e))' "$enc" >"$S/u16bom.json"
+  expect_refusal "handoff.sh UTF-16 payload with a byte-order mark ($enc)" 1 "the payload is saved as UTF-16: save it as UTF-8" \
+    bash "$S/hd/handoff.sh" "$S/u16bom.json"
+done
 # A directory as FILE gets its own message, not tr's or head's (#65 F18).
 expect_refusal "handoff.sh a directory as FILE" 1 "is a directory, not a payload file" \
   bash "$S/hd/handoff.sh" "$S"
 ! grep -q -e 'tr:' -e 'head:' "$S/err" || fail "a directory as FILE leaked a tool's error: $(cat "$S/err")"
 # The read is bounded (#65 F12): an endless FILE or pipe, or a large one,
 # ends at once with the size refusal, before the pattern work, whose time
-# grows with the square of the input (1 MB of spaces took 21 s unbounded).
+# grows with the square of the input (unbounded, 1 MB of spaces took 21 s on
+# one machine and over 2 minutes under bash 5.3 on another).
 # (Read here, not from section 3b, so section 5b runs alone too.)
 cap5b=$(sed -n 's/^MAX_PAYLOAD=\([0-9]*\).*/\1/p' ../handoff.sh)
 [ -n "$cap5b" ] || fail "test setup: MAX_PAYLOAD not found in handoff.sh"
