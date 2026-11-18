@@ -2964,12 +2964,22 @@ expect_refusal "first setup while another holds the lock" 1 "another setup, --ro
 # key: a rerun refuses to overwrite the key, and names both, with the rmdir;
 # --check-setup names them too (an INFO line).
 cp "$TMPKEY" "$S/locked-setup/handoff-identity.txt"; chmod 600 "$S/locked-setup/handoff-identity.txt"
-expect_refusal "a rerun after a setup killed at the lock" 1 "exists: a setup, --rotate or --retire is running, or one was killed; also 1 temporary key file(s) or directory(ies) a killed run left (--rotate and --retire remove them). If none is running, report it to the user, who removes the lock with: rmdir '$(cd "$S/locked-setup" && pwd -P)/.handoff-lock'" \
+expect_refusal "a rerun after a setup killed at the lock" 1 "exists: a setup, --rotate or --retire is running, or one was killed; also 1 temporary key directory(ies) a killed run left (the next --rotate removes them). If none is running, report it to the user, who removes the lock with: rmdir '$(cd "$S/locked-setup" && pwd -P)/.handoff-lock'" \
   env HANDOFF_KEY_DIR="$S/locked-setup" bash ../agent-setup.sh
 grep -qF "refusing to overwrite existing key" "$S/err" || fail "the rerun didn't refuse to overwrite: $(cat "$S/err")"
 env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 grep -q '^INFO leftovers: .*\.handoff-lock exists' "$S/out" || fail "--check-setup didn't name a killed run's lock: $(cat "$S/out")"
-rmdir "$S/locked-setup/.handoff-lock" "$S/locked-setup/.handoff-tmp.AbCdEf"
+# Without the lock, each kind is named with what removes it, and that is
+# true: --rotate removes the directory, and leaves the file for the user.
+rmdir "$S/locked-setup/.handoff-lock"
+printf 'leftover\n' >"$S/locked-setup/.handoff-setup.Leftov"
+env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qxF "INFO leftovers: $S/locked-setup holds 1 temporary key directory(ies) a killed run left (the next --rotate removes them), and 1 temporary key file(s) a killed setup left (report them to the user, who removes them)" "$S/out" \
+  || fail "--check-setup's leftovers line is wrong: $(grep leftovers "$S/out")"
+env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --rotate >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--rotate in a directory with leftovers failed"; }
+[ ! -e "$S/locked-setup/.handoff-tmp.AbCdEf" ] || fail "--rotate didn't remove the temporary directory the leftovers line says it removes"
+[ -f "$S/locked-setup/.handoff-setup.Leftov" ] || fail "--rotate removed a .handoff-setup file (the leftovers line says the user does)"
+rm "$S/locked-setup/.handoff-setup.Leftov"
 env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 ! grep -q '^INFO leftovers' "$S/out" || fail "--check-setup named leftovers where there are none: $(cat "$S/out")"
 # A caller's SHELLOPTS=noglob doesn't stop the sweep (issue #43 item 12).

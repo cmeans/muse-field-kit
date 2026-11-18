@@ -411,11 +411,20 @@ lock_dir() {  # DIR
 # the lock's rmdir, for a refusal that stops before the lock would; nothing
 # printed when there's neither. Only by the names this script makes.
 leftover_note() {  # DIR
-  local d="$1" abs f n=0 tmps=
-  for f in "$d"/.handoff-tmp.?????? "$d"/.handoff-setup.??????; do
-    if [ -e "$f" ] && [ ! -L "$f" ]; then n=$((n + 1)); fi
+  local d="$1" abs f nd=0 nf=0 tmps=
+  for f in "$d"/.handoff-tmp.??????; do
+    if [ -d "$f" ] && [ ! -L "$f" ]; then nd=$((nd + 1)); fi
   done
-  [ "$n" -eq 0 ] || tmps="$n temporary key file(s) or directory(ies) a killed run left (--rotate and --retire remove them)"
+  for f in "$d"/.handoff-setup.??????; do
+    if [ -f "$f" ] && [ ! -L "$f" ]; then nf=$((nf + 1)); fi
+  done
+  # Who removes what: --rotate sweeps the directories; once a key exists,
+  # nothing here removes a .handoff-setup file (--retire only one that is a
+  # hard link to the previous key), so the user is told.
+  [ "$nd" -eq 0 ] || tmps="$nd temporary key directory(ies) a killed run left (the next --rotate removes them)"
+  if [ "$nf" -gt 0 ]; then
+    tmps="${tmps:+$tmps, and }$nf temporary key file(s) a killed setup left (report them to the user, who removes them)"
+  fi
   if [ -d "$d/.handoff-lock" ] && [ ! -L "$d/.handoff-lock" ]; then
     abs=$(cd -- "$d" 2>/dev/null && pwd -P) || abs=$d
     echo "note: $(qp "$d/.handoff-lock") exists: a setup, --rotate or --retire is running, or one was killed${tmps:+; also $tmps}. If none is running, report it to the user, who removes the lock with: rmdir $(sq "$abs/.handoff-lock")"
