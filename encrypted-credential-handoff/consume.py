@@ -88,8 +88,8 @@ passes no caller arguments at all (SETUP.md step 7), since a caller's
 own --env or -- would otherwise pick where the credential goes. An empty
 credential value is refused.
 A target must be a plain variable name that reads as a credential's (it
-ends in USER, PASSWORD, TOKEN, KEY, SECRET, ID and the like: CREDENTIAL_WORDS
-below), never one that changes what the command runs or where it connects
+ends in USER, PASSWORD, TOKEN, KEY, SECRET, ID and the like, after a _ or
+as the whole name: CREDENTIAL_WORDS below), never one that changes what the command runs or where it connects
 (PATH, LD_*, PYTHON*, GIT_*, BASH_ENV, the proxy and CA-bundle variables, ...;
 a partial list, in any case),
 and two fields can't share one target, the default mappings included.
@@ -139,6 +139,7 @@ DEFAULT_PRIVKEY = "~/.config/handoff/handoff-identity.txt"
 PRIVKEY_ENV = "HANDOFF_PRIVKEY"
 BLOB_ENV = "HANDOFF_BLOB"
 LABEL_ENV = "HANDOFF_LABEL"  # set in the command's environment: the nesting marker
+KEY_DIR_ENV = "HANDOFF_KEY_DIR"  # agent-setup.sh's, for making a key; refused here alone
 RSA_BLOB_BYTES_010 = 256  # a 0.1.0 (RSA-2048) blob decodes to exactly this: only for the hint
 MAX_KEY_FILE = 16384    # bytes; an age identity file is about 190
 # An age secret key: bech32, upper case, "AGE-SECRET-KEY-" + "1" + 52 data
@@ -177,8 +178,10 @@ DEFAULT_ENV_MAP = {
 # label is the control.
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # The allowlist (issue #43 item 13): the name ends in a credential word, as a
-# whole word (after "_", or the whole name). The long words may also end a
-# name without the "_" (PGPASSWORD, PGUSER). So no list of every runtime's
+# whole word (after "_", or the whole name). The words in
+# CREDENTIAL_WORDS_UNSEPARATED may also end a name without the "_"
+# (PGPASSWORD, PGUSER); the short ones may not, so OLDPWD, SSH_AGENT_PID and
+# PROXY_BYPASS stay refused. So no list of every runtime's
 # variables is needed: NODE_TLS_REJECT_UNAUTHORIZED, AWS_CA_BUNDLE, SHELL,
 # TMPDIR, GODEBUG and LUA_CPATH aren't credential names, so they're refused,
 # and so is a name for a file (GOOGLE_APPLICATION_CREDENTIALS, *_KEY_FILE),
@@ -190,22 +193,27 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 CREDENTIAL_WORDS = (
     "USER", "USERNAME", "LOGIN", "EMAIL", "ACCOUNT", "ID",
     "PASS", "PASSWORD", "PASSWD", "PASSPHRASE", "PWD",
-    "TOKEN", "PAT", "KEY", "SECRET",
+    "TOKEN", "PAT", "KEY", "SECRET", "AUTH",
+    "APIKEY", "ACCESSKEY", "SECRETKEY",
+)
+CREDENTIAL_WORDS_UNSEPARATED = (
+    "USER", "USERNAME", "PASSWORD", "PASSWD", "PASSPHRASE", "TOKEN", "SECRET",
 )
 CREDENTIAL_NAME_RE = re.compile(
     r"(?:[A-Z0-9_]*_)?(?:" + "|".join(CREDENTIAL_WORDS) + r")"
-    r"|[A-Z0-9_]*(?:USER|USERNAME|PASSWORD|PASSWD|PASSPHRASE|TOKEN|SECRET)")
+    r"|[A-Z0-9_]*(?:" + "|".join(CREDENTIAL_WORDS_UNSEPARATED) + r")")
 # The refused list, checked first, and the only check that catches a
 # credential-shaped name a tool reads for something else (GIT_*_TOKEN,
 # PIP_PASSWORD, NPM_CONFIG_*_TOKEN, by prefix). Compared case-insensitively
 # (curl and others read http_proxy as well as HTTP_PROXY). Two kinds:
 # variables that change what code runs, and ones that change where the
 # command connects or whom it trusts, which would let the payload's writer
-# choose where the credential goes. USER, USERNAME and PWD are the shell's
-# own: who runs (getpass.getuser() reads USERNAME too, and Windows names the
-# user with it), and where.
+# choose where the credential goes.
+# USER, USERNAME and PWD end in credential words but are the shell's own: who
+# runs (getpass.getuser() reads USERNAME too, and Windows names the user with
+# it), and where. Refused before the list, with a message of their own.
+SHELL_OWN_NAMES = {"USER", "USERNAME", "PWD"}
 REFUSED_ENV_NAMES = {n.upper() for n in (
-    "USER", "USERNAME", "PWD",
     # what runs, and how it starts
     "PATH", "HOME", "IFS", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "PS4",
     "PROMPT_COMMAND", "NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB",
@@ -254,7 +262,7 @@ def privkey_path() -> str:
     # HANDOFF_KEY_DIR is agent-setup.sh's, for making a key: here the default
     # key would be the wrong one (or missing, with no hint). Refused as
     # agent-setup.sh refuses it (issue #44 item 2); its value isn't shown.
-    if os.environ.get("HANDOFF_KEY_DIR"):
+    if os.environ.get(KEY_DIR_ENV):
         raise fail("HANDOFF_KEY_DIR is set but HANDOFF_PRIVKEY isn't: HANDOFF_KEY_DIR applies "
                    "only to agent-setup.sh making a key. Set HANDOFF_PRIVKEY="
                    "<dir>/handoff-identity.txt as the wrappers do (SETUP.md step 7)")
@@ -903,6 +911,12 @@ def check_env_name(name: str) -> None:
         raise fail(f"--env target {name!r} is not a valid variable name")
     upper = name.upper()
     # The refused list first: its message says what such a name does.
+    if upper in SHELL_OWN_NAMES:
+        raise fail(
+            f"--env target {name!r} is the shell's own (who runs, or where): it isn't "
+            "a credential's variable; refusing (a tool's username goes in a name of "
+            "its own, such as APP_USER)"
+        )
     if upper in REFUSED_ENV_NAMES or upper.startswith(REFUSED_ENV_PREFIXES):
         raise fail(
             f"--env target {name!r} is on the refused list: it changes what the "
@@ -912,7 +926,7 @@ def check_env_name(name: str) -> None:
         raise fail(
             f"--env target {name!r} isn't a credential variable's name: it must end in "
             "one of " + ", ".join(CREDENTIAL_WORDS) + " (after a _, or the whole name; "
-            "USER, USERNAME, PASSWORD, PASSWD, PASSPHRASE, TOKEN and SECRET without one too). "
+            + ", ".join(CREDENTIAL_WORDS_UNSEPARATED) + " without one too). "
             "Refusing: a name a program reads for anything else could change what it "
             "runs or whom it trusts (SETUP.md step 7)"
         )
@@ -1203,26 +1217,17 @@ def main() -> int:
         # Nothing from the payload: which key file opened it.
         print(f"consume.py: label {label!r} decrypted with the previous key; "
               "rewrap it once Rotation step 3 is done (SETUP.md)", file=sys.stderr)
-    # Built from bytes where the platform has them (POSIX): each value goes to
-    # the command as its UTF-8 bytes, the bytes the user encrypted, whatever
-    # this process's locale. With str values, os.execvpe encodes them in the
-    # locale's encoding, so a non-UTF-8 locale gave a traceback or another
-    # password's bytes (issue #75). Inherited variables pass through as the
-    # bytes they were.
-    if os.supports_bytes_environ:
-        env = dict(os.environb)
-        key = os.fsencode
-
-        def val(v: str) -> bytes:
-            return v.encode("utf-8")  # check_payload checked it encodes
-    else:
-        env = dict(os.environ)
-
-        def key(k: str) -> str:
-            return k
-
-        def val(v: str) -> str:
-            return v
+    # Built from bytes: each value goes to the command as its UTF-8 bytes, the
+    # bytes the user encrypted, whatever this process's locale. With str
+    # values, os.execvpe encodes them in the locale's encoding, so a non-UTF-8
+    # locale gave a traceback or another password's bytes (issue #75).
+    # Inherited variables pass through as the bytes they were. Every platform
+    # this side runs on (Linux, macOS: SETUP.md step 1) has a bytes environment.
+    if not os.supports_bytes_environ:
+        raise fail("run mode needs Linux or macOS (SETUP.md step 1): this "
+                   "platform has no bytes environment")
+    env = dict(os.environb)
+    key = os.fsencode  # a variable's name, as the OS encodes names
     # The command needs the credentials, not the blob or the key's path.
     env.pop(key(BLOB_ENV), None)
     env.pop(key(PRIVKEY_ENV), None)
@@ -1235,10 +1240,12 @@ def main() -> int:
     for target in set(env_map.values()) | set(DEFAULT_ENV_MAP.values()):
         env.pop(key(target), None)
     for field, value in creds.items():
-        env[key(env_map[field])] = val(value)
+        # check_payload checked each value encodes as UTF-8.
+        env[key(env_map[field])] = value.encode("utf-8")
     # The nesting marker: a consume.py the command starts refuses to run.
-    # The label as it came in argv (fsencode gives those bytes back).
-    env[key(LABEL_ENV)] = key(label)
+    # The label's value as it came in argv: os.fsencode undoes Python's
+    # decoding of argv, giving those bytes back.
+    env[key(LABEL_ENV)] = os.fsencode(label)
     # Deliberately no logging of env or creds here — that is the whole point.
     # exec, not a subprocess: the command takes over this process, so a
     # signal meant for the helper (an MCP client stopping its server sends

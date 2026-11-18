@@ -1076,23 +1076,33 @@ n=0
 for v in NODE_TLS_REJECT_UNAUTHORIZED AWS_CA_BUNDLE SHELL TMPDIR AWS_ENDPOINT_URL AWS_ENDPOINT_URL_S3 \
          CARGO_HTTP_CAINFO GODEBUG GOFLAGS LUA_CPATH LUA_PATH CORECLR_PROFILER_PATH PHPRC LOCPATH \
          OLDPWD SSH_AGENT_PID PROXY_BYPASS GOOGLE_APPLICATION_CREDENTIALS TLS_KEY_FILE SOME_VAR \
-         node_tls_reject_unauthorized; do
+         node_tls_reject_unauthorized SSHPASS; do
   expect_refusal "--env $v" 1 "isn't a credential variable's name" \
     consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
   n=$((n + 1))
 done
-# The shell's own USER, USERNAME and PWD end in a credential word: the
-# refused list has them.
-for v in USER USERNAME PWD pwd; do
-  expect_refusal "--env $v" 1 "is on the refused list" \
-    consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
-  n=$((n + 1))
-done
 echo "ok (refused: $n --env targets that aren't credential names)"
+# The shell's own USER, USERNAME and PWD end in a credential word: refused
+# as the shell's, with a message of their own.
+for v in USER USERNAME PWD pwd; do
+  expect_refusal "--env $v" 1 "is the shell's own (who runs, or where)" \
+    consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
+done
+# The refusal lists the words as the check uses them: every word, and the
+# ones with no _ needed, read from consume.py's own tuples.
+consume --label example --blob-file blob-age.txt --env password=SOME_VAR -- true >/dev/null 2>"$S/err" || true
+words=$(python3 -I -c 'import importlib.util as u, sys; s = u.spec_from_file_location("c", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m); print(", ".join(m.CREDENTIAL_WORDS) + "|" + ", ".join(m.CREDENTIAL_WORDS_UNSEPARATED))' ../consume.py)
+grep -qF "one of ${words%%|*} (after a _, or the whole name; ${words#*|} without one too)" "$S/err" \
+  || fail "the allowlist refusal's word lists don't match consume.py's tuples: $(cat "$S/err")"
+# SETUP.md names the same no-_ words, as `A`, `B` and `C`.
+# shellcheck disable=SC2016  # the backticks are sed's replacement text
+setup_words=$(printf '%s' "${words#*|}" | sed 's/\([A-Z][A-Z]*\)/`\1`/g; s/\(.*\), /\1 and /')
+grep -qF "CREDENTIAL_WORDS_UNSEPARATED\`, $setup_words, may also end a name" ../SETUP.md \
+  || fail "SETUP.md's no-_ word list doesn't match consume.py's CREDENTIAL_WORDS_UNSEPARATED ($setup_words)"
 # Credential names are accepted, with the value under that name.
 for v in PGPASSWORD PGUSER MYSQL_PWD GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
          OPENAI_API_KEY JIRA_EMAIL SNOWFLAKE_ACCOUNT AZURE_DEVOPS_PAT APP_PASS NAS_LOGIN db_password \
-         KEY SECRET; do
+         KEY SECRET REDISCLI_AUTH SHODAN_APIKEY MINIO_SECRETKEY MINIO_ACCESSKEY; do
   consume --label example --blob-file blob-age.txt --env "password=$v" -- sh -c "[ \"\${$v}\" = \"\$1\" ]" sh "$P" \
     >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--env password=$v was refused, or the value didn't arrive under it"; }
 done
@@ -1423,6 +1433,7 @@ done
 # (#66 F15), and so is one with blank lines or indent before it.
 expect_refusal "armored text joined onto one line" 1 "armored" \
   consume --label test --check --blob "$(tr '\n' ' ' < vectors/armored-raw.txt)"
+# (A regression guard: the first-line check this replaced caught it too.)
 expect_refusal "armored text after a blank, indented line" 1 "armored" \
   consume --label test --check --blob "$(printf '\n   \n  '; cat vectors/armored-raw.txt)"
 # A blob saved with the handoff script's framing lines gets a hint to keep
@@ -2321,6 +2332,34 @@ exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "
     cmp -s blob-age.txt "$ST/term.txt" && fail "a TERM after the rename: the file wasn't replaced"
   fi
 done
+# A signal handler run as the block returns (a signal pending then) doesn't
+# leave TERM, HUP and INT blocked (#9 item 10): pthread_sigmask's block call
+# raises KeyboardInterrupt once, after blocking, and the mask is read after.
+if python3 -I -c 'import signal, sys; sys.exit(0 if hasattr(signal, "pthread_sigmask") else 1)'; then
+  cp blob-age.txt "$ST/mask.txt"
+  got=$(rk python3 -I -c '
+import signal, sys
+real = signal.pthread_sigmask
+def block_then_interrupt(how, sigs):
+    r = real(how, sigs)
+    if how == signal.SIG_BLOCK and set(sigs):
+        signal.pthread_sigmask = real
+        raise KeyboardInterrupt
+    return r
+signal.pthread_sigmask = block_then_interrupt
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+try:
+    exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+except SystemExit as e:
+    if isinstance(e.code, str):
+        print(e.code, file=sys.stderr)  # as the interpreter would at exit
+print(sorted(int(s) for s in real(signal.SIG_BLOCK, [])))
+' "$ST/mask.txt" 2>"$R/err")
+  [ "$got" = "[]" ] || fail "a handler run as --rewrap's signal block returned left signals blocked: $got ($(cat "$R/err"))"
+  grep -qF "interrupted; '$ST/mask.txt' is unchanged" "$R/err" || fail "a handler run at the signal block: $(cat "$R/err")"
+  cmp -s blob-age.txt "$ST/mask.txt" || fail "a handler run at the signal block changed the blob file"
+  echo "ok (--rewrap restores its signal mask when a handler runs at the block)"
+fi
 # An INT before any write (during the decrypt): one line, nothing written.
 cp blob-age.txt "$ST/int.txt"
 rc=0; rk python3 -I -c '
