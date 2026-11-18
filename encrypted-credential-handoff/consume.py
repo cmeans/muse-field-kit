@@ -16,7 +16,8 @@ argument, file, or environment variable — never on stdin, which belongs
 to the command (a stdio MCP server's stdin is its transport).
 This helper decrypts IN MEMORY with `age` and the agent's age identity
 (default ~/.config/handoff/handoff-identity.txt, override with
-$HANDOFF_PRIVKEY), verifies the payload's purpose binding, and either:
+$HANDOFF_PRIVKEY; $HANDOFF_KEY_DIR without it is refused, since that one is
+agent-setup.sh's, for making a key), verifies the payload's purpose binding, and either:
 
   run mode    replaces itself (exec) with a command, the credential values
               injected into its environment; the command's stdin, stdout
@@ -182,6 +183,10 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # TMPDIR, GODEBUG and LUA_CPATH aren't credential names, so they're refused,
 # and so is a name for a file (GOOGLE_APPLICATION_CREDENTIALS, *_KEY_FILE),
 # whose value would choose what the command trusts. Compared upper-cased.
+# It checks a name's shape, not what a program does with it: an ACCOUNT or ID
+# name can still choose an endpoint or a stored identity (SNOWFLAKE_ACCOUNT,
+# CLOUDSDK_CORE_ACCOUNT), so the mapping recorded for the label stays the
+# control.
 CREDENTIAL_WORDS = (
     "USER", "USERNAME", "LOGIN", "EMAIL", "ACCOUNT", "ID",
     "PASS", "PASSWORD", "PASSWD", "PASSPHRASE", "PWD",
@@ -190,14 +195,17 @@ CREDENTIAL_WORDS = (
 CREDENTIAL_NAME_RE = re.compile(
     r"(?:[A-Z0-9_]*_)?(?:" + "|".join(CREDENTIAL_WORDS) + r")"
     r"|[A-Z0-9_]*(?:USER|USERNAME|PASSWORD|PASSWD|PASSPHRASE|TOKEN|SECRET)")
-# The refused list, checked first (and the only check that catches a
-# credential-shaped name that isn't one: HANDOFF_PRIVKEY, GIT_*_TOKEN). Compared case-insensitively (curl and others read http_proxy as well as
-# HTTP_PROXY). Two kinds: variables that change what code runs, and ones that
-# change where the command connects or whom it trusts, which would let the
-# payload's writer choose where the credential goes. USER and PWD are the
-# shell's own (who runs, and where).
+# The refused list, checked first, and the only check that catches a
+# credential-shaped name a tool reads for something else (GIT_*_TOKEN,
+# PIP_PASSWORD, NPM_CONFIG_*_TOKEN, by prefix). Compared case-insensitively
+# (curl and others read http_proxy as well as HTTP_PROXY). Two kinds:
+# variables that change what code runs, and ones that change where the
+# command connects or whom it trusts, which would let the payload's writer
+# choose where the credential goes. USER, USERNAME and PWD are the shell's
+# own: who runs (getpass.getuser() reads USERNAME too, and Windows names the
+# user with it), and where.
 REFUSED_ENV_NAMES = {n.upper() for n in (
-    "USER", "PWD",
+    "USER", "USERNAME", "PWD",
     # what runs, and how it starts
     "PATH", "HOME", "IFS", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "PS4",
     "PROMPT_COMMAND", "NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB",
@@ -904,7 +912,7 @@ def check_env_name(name: str) -> None:
         raise fail(
             f"--env target {name!r} isn't a credential variable's name: it must end in "
             "one of " + ", ".join(CREDENTIAL_WORDS) + " (after a _, or the whole name; "
-            "USERNAME, PASSWORD, PASSWD, PASSPHRASE, TOKEN and SECRET without one too). "
+            "USER, USERNAME, PASSWORD, PASSWD, PASSPHRASE, TOKEN and SECRET without one too). "
             "Refusing: a name a program reads for anything else could change what it "
             "runs or whom it trusts (SETUP.md step 7)"
         )

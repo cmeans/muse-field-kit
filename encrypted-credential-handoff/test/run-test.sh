@@ -1081,8 +1081,9 @@ for v in NODE_TLS_REJECT_UNAUTHORIZED AWS_CA_BUNDLE SHELL TMPDIR AWS_ENDPOINT_UR
     consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
   n=$((n + 1))
 done
-# The shell's own USER and PWD end in a credential word: the refused list has them.
-for v in USER PWD pwd; do
+# The shell's own USER, USERNAME and PWD end in a credential word: the
+# refused list has them.
+for v in USER USERNAME PWD pwd; do
   expect_refusal "--env $v" 1 "is on the refused list" \
     consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
   n=$((n + 1))
@@ -1117,6 +1118,18 @@ for pw in 'pässwörd' 'pässwörd-日本'; do
   [ "$got" = "$(printf '%s' "$pw" | od -An -tx1 | tr -d ' \n')" ] || fail "run mode with an ASCII filesystem encoding passed other bytes than the UTF-8 encrypted ($got)"
 done
 echo "ok (run mode passes UTF-8 bytes whatever the locale's encoding)"
+# The other half of #75, where a Latin-1 locale is installed: a password
+# latin-1 can encode came through as latin-1 bytes, with no error. (Nothing
+# is printed where there's none: CI fails on a skip line, and the ASCII case
+# above covers the code path.)
+if [ "$(LC_ALL=en_US.ISO-8859-1 python3 -I -c 'import sys; print(sys.getfilesystemencoding())' 2>/dev/null)" = iso8859-1 ]; then
+  b=$(enc '{"svc":"loc","password":"pässwörd"}')
+  got=$(LC_ALL=en_US.ISO-8859-1 python3 -I ../consume.py --label loc --blob "$b" \
+    -- python3 -I -c 'import os, sys; sys.stdout.write(os.environb[b"SERVICE_PASSWORD"].hex())' 2>"$S/err") \
+    || { cat "$S/err" >&2; fail "run mode under a Latin-1 locale failed"; }
+  [ "$got" = "$(printf '%s' 'pässwörd' | od -An -tx1 | tr -d ' \n')" ] || fail "run mode under a Latin-1 locale passed latin-1 bytes ($got)"
+  echo "ok (run mode passes UTF-8 bytes under a Latin-1 locale)"
+fi
 expect_refusal "command not found" 127 "cannot run" \
   consume --label example --blob-file blob-age.txt -- "$S/no-such-command"
 printf '#!/bin/sh\n' > "$S/not-executable"; chmod 644 "$S/not-executable"
@@ -1419,6 +1432,9 @@ expect_refusal "a blob with the framing lines" 1 "still has the '--- paste every
   consume --label example --check --blob-file "$S/blob-framed.txt"
 { cat blob-age.txt; echo "--- end ---"; } >"$S/blob-framed.txt"
 expect_refusal "a blob with the end line" 1 "give only the line between them" \
+  consume --label example --check --blob-file "$S/blob-framed.txt"
+{ echo "--- paste everything below into chat with muse (recipient file ./handoff-muse.age) ---"; cat blob-age.txt; } >"$S/blob-framed.txt"
+expect_refusal "a blob with the paste line" 1 "give only the line between them" \
   consume --label example --check --blob-file "$S/blob-framed.txt"
 # A 0.1.0-shaped blob (256 bytes of RSA ciphertext) is not an age blob.
 head -c 256 /dev/urandom | base64 | tr -d '\n' >"$S/blob-256.txt"
