@@ -127,19 +127,28 @@ expand_home() {  # PATH WHAT
   esac
 }
 
-# A path in a message, quoted as the shell would (printf %q): a name with a
-# newline or other control character can't pass for a line of output.
-qp() { printf '%q' "$1"; }
-# Whether a string has a control character, or a UTF-8 character that breaks
-# or reorders a line where it's shown (U+0085, U+2028, U+2029, and the bidi
-# embeddings, overrides and isolates). Checked in C, by bytes.
+# Whether a string has a control character, or a UTF-8 character that breaks,
+# reorders or hides part of a line where it's shown: U+0085, U+2028, U+2029,
+# the bidi marks, embeddings, overrides and isolates (U+061C, U+200E-F,
+# U+202A-E, U+2066-9), and the invisible ones (U+00AD, U+200B-D, U+2060-4,
+# U+FEFF). Checked in C, by bytes; cs_out folds the same list.
 has_ctl() {
   ( LC_ALL=C
     [[ "$1" =~ [[:cntrl:]] ]] && exit 0
     case "$1" in
-      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*|*$'\xe2\x81'[$'\xa6'-$'\xa9']*) exit 0 ;;
+      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xc2\xad'*|*$'\xd8\x9c'*) exit 0 ;;
+      *$'\xe2\x80'[$'\x8b'-$'\x8f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*) exit 0 ;;
+      *$'\xe2\x81'[$'\xa0'-$'\xa4']*|*$'\xe2\x81'[$'\xa6'-$'\xa9']*|*$'\xef\xbb\xbf'*) exit 0 ;;
     esac
     exit 1 )
+}
+# A path in a message, quoted as the shell would (printf %q): a name with a
+# newline or other control character can't pass for a line of output. One
+# has_ctl flags is quoted in C, so every such byte is escaped (in a UTF-8
+# locale, %q leaves a bidi override as it is).
+qp() {
+  if has_ctl "$1"; then ( LC_ALL=C; printf '%q' "$1" ); return; fi
+  printf '%q' "$1"
 }
 # A path single-quoted for a POSIX shell, for a command the user copies (and
 # may run as root, or under sh). The one exception: a path has_ctl flags gets
@@ -519,8 +528,13 @@ cs_out() {  # STATUS NAME DETAIL
        x=$3
        x=${x//[[:cntrl:]]/ }
        x=${x//$'\xc2'[$'\x80'-$'\x9f']/ }
+       x=${x//$'\xc2\xad'/ }
+       x=${x//$'\xd8\x9c'/ }
+       x=${x//$'\xe2\x80'[$'\x8b'-$'\x8f']/ }
        x=${x//$'\xe2\x80'[$'\xa8'-$'\xae']/ }
+       x=${x//$'\xe2\x81'[$'\xa0'-$'\xa4']/ }
        x=${x//$'\xe2\x81'[$'\xa6'-$'\xa9']/ }
+       x=${x//$'\xef\xbb\xbf'/ }
        printf '%s' "$x" )
   printf '%s %s: %s\n' "$1" "$2" "$d"
   [ "$1" != FAIL ] || cs_failed=1
@@ -705,7 +719,9 @@ password: $pwn bytes"
         cs_out INFO identity "no key at $k yet, and no setup makes that name (setup names its key handoff-identity.txt): check HANDOFF_PRIVKEY"
       elif [ "$lockd" = yes ]; then
         cs_out INFO identity "no key at $k yet; setup there is held up by the .handoff-lock the leftovers line below names"
-      elif [ -n "${HOME-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
+      elif [ -n "${HOME-}" ] && [ -z "${HANDOFF_KEY_DIR-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
+        # (With HANDOFF_KEY_DIR set, plain setup would make its key there: the
+        # next branch names the directory.)
         cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"; who=setup
       else
         cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(qp "$kd") agent-setup.sh makes it"; who=setup

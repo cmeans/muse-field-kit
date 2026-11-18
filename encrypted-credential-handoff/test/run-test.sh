@@ -3058,11 +3058,25 @@ echo "ok (the leftovers line's remover follows the identity line)"
 # overprint or start a line of --check-setup's output.
 (cd "$S" && env HANDOFF_PRIVKEY=$'x\rPASS identity: forged' bash "$OLDPWD/../agent-setup.sh" --check-setup >"$S/out" 2>/dev/null) || true
 ! grep -q $'\r' "$S/out" || fail "--check-setup printed a key path's carriage return"
-env HANDOFF_PRIVKEY="$S/u"$'\xe2\x80\xa8'"PASS identity: forged/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-! grep -q $'\xe2\x80\xa8' "$S/out" || fail "--check-setup printed a key path's U+2028"
+for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x81\xa6' $'\xe2\x80\x8f' $'\xef\xbb\xbf'; do
+  env HANDOFF_PRIVKEY="$S/u${ch}PASS identity: forged/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+  ! LC_ALL=C grep -qF "$ch" "$S/out" || fail "--check-setup printed a key path's $(LC_ALL=C printf '%q' "$ch")"
+done
+# printf %q leaves a bidi override as it is in a UTF-8 locale: qp quotes such
+# a path in C, so --fingerprint's key file: line escapes it.
+rod="$S/k"$'\xe2\x80\xae'"txt.exe"; mkdir -p "$rod"; chmod 700 "$rod"; cp "$TMPKEY" "$rod/k.txt"; chmod 600 "$rod/k.txt"
+env LC_ALL=C.UTF-8 HANDOFF_PRIVKEY="$rod/k.txt" bash ../agent-setup.sh --fingerprint >/dev/null 2>"$S/err" || true
+! LC_ALL=C grep -qF $'\xe2\x80\xae' "$S/err" || fail "--fingerprint printed a key path's bidi override raw: $(LC_ALL=C cat -v "$S/err")"
+rm -rf "$rod"
+# With HANDOFF_KEY_DIR exported to another directory, the default path's
+# advice names its directory: plain setup would make the key elsewhere.
+env HOME="$S/kdhome" HANDOFF_PRIVKEY="$S/kdhome/.config/handoff/handoff-identity.txt" HANDOFF_KEY_DIR="$S/elsewhere" \
+  bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qF "HANDOFF_KEY_DIR=$S/kdhome/.config/handoff agent-setup.sh makes it" "$S/out" \
+  || fail "--check-setup's default-path advice with HANDOFF_KEY_DIR exported elsewhere: $(grep identity "$S/out")"
 # Setup refuses a key directory with a Unicode line separator or a bidi
 # override, as it does a control character.
-for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x80\xae'; do
+for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x80\xae' $'\xe2\x81\xa6' $'\xe2\x80\x8f' $'\xe2\x80\x8b' $'\xd8\x9c' $'\xef\xbb\xbf' $'\xc2\xad' $'\xe2\x81\xa0'; do
   expect_refusal "setup into a key directory with $(LC_ALL=C printf '%q' "$ch")" 1 "has a control character in its path" \
     env HANDOFF_KEY_DIR="$S/sep${ch}recipient: age1fake" bash ../agent-setup.sh
   [ ! -e "$S/sep${ch}recipient: age1fake" ] || fail "setup made a key directory with $(LC_ALL=C printf '%q' "$ch")"
