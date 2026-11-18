@@ -461,6 +461,9 @@ import os
 print(len(os.environ["SERVICE_PRIVATE_KEY"]))
 ')
 [ "$out" = "$(( max_payload - 34 ))" ] || fail "the maximum payload did not round-trip ($out)"
+# Its bytes too, not only the field's length (issue #47).
+base64 -d <"$S/blob-max" | "$AGE" -d -i "$TMPKEY" | cmp -s - <(printf '%s' "$big") \
+  || fail "the maximum payload's blob doesn't hold its bytes"
 # The same blob saved wrapped at 76 columns (as base64 tools wrap): the line
 # breaks don't count toward the cap, from a file as from --blob.
 fold -w 76 "$S/blob-max" >"$S/blob-max-wrapped"
@@ -1600,9 +1603,10 @@ print(os.environ["SERVICE_PASSWORD"])
   rm -f "$ut/handoff-$c_to.age"
 done
 # The payload shapes, one table shared with run-test.ps1 (payload-cases.json):
-# {name, payload or payload_base64 (bytes that aren't text), exit,
-# stderr_contains}. Each runs on stdin and as FILE; an accepted one's blob
-# must open with consume.py --check.
+# {name, payload or payload_base64 (bytes that aren't text, or raw UTF-8 that
+# a console could re-encode), exit, stderr_contains}. Each runs on stdin and
+# as FILE; an accepted one's blob must open with consume.py --check and
+# decrypt to the input's bytes (less a leading BOM and trailing LFs).
 npc=$(jq length payload-cases.json)
 [ "$npc" -gt 0 ] || fail "payload-cases.json is empty"
 for i in $(seq 0 $(( npc - 1 ))); do
@@ -1626,10 +1630,24 @@ for i in $(seq 0 $(( npc - 1 ))); do
       grep -qF -- "$c_msg" "$S/err" || fail "payload case $c_name ($how): stderr lacks \"$c_msg\""
       [ "$(wc -l <"$S/out")" -eq 1 ] || fail "payload case $c_name ($how): stdout is not one line"
       no_dummy_in "$S/out" "$S/err"
-      consume --label example --check --blob-file "$S/out" >"$S/cout" 2>"$S/cerr" \
+      consume --label example --check --blob-file "$S/out" >/dev/null 2>"$S/cerr" \
         || { cat "$S/cerr" >&2; fail "payload case $c_name ($how): consume.py --check refused the blob"; }
+      # What handoff.sh encrypted, byte for byte: the input with a leading
+      # UTF-8 byte-order mark dropped and its trailing line feeds dropped
+      # ($(...) drops them), and nothing else changed (issue #47). Opening
+      # the blob alone would pass a payload rewritten to other valid JSON.
+      base64 -d <"$S/out" | "$AGE" -d -i "$TMPKEY" >"$S/pc-got" \
+        || fail "payload case $c_name ($how): age couldn't open the blob"
+      python3 -I -c 'import sys
+b = open(sys.argv[1], "rb").read()
+if b.startswith(b"\xef\xbb\xbf"):
+    b = b[3:]
+open(sys.argv[2], "wb").write(b.rstrip(b"\n"))' "$S/pc-in" "$S/pc-want"
+      cmp -s "$S/pc-got" "$S/pc-want" \
+        || fail "payload case $c_name ($how): the decrypted bytes differ from the input ($(( $(wc -c <"$S/pc-got") )) bytes, wanted $(( $(wc -c <"$S/pc-want") )))"
+      rm -f "$S/pc-got" "$S/pc-want"
     done
-    echo "ok (accepted: payload $c_name, and consume.py opens it)"
+    echo "ok (accepted: payload $c_name, and its blob holds the input's bytes)"
   else
     expect_refusal "payload case $c_name" "$c_exit" "$c_msg" bash "$S/hd/handoff.sh" <"$S/pc-in"
     expect_refusal "payload case $c_name (FILE)" "$c_exit" "$c_msg" bash "$S/hd/handoff.sh" "$S/pc-in" </dev/null
@@ -2244,7 +2262,7 @@ mv "$KEY.previous" "$R/held.txt"
 expect_refusal "--rewrap with no rotation under way" 1 "no rotation under way at '$KEY'" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt"
 mv "$R/held.txt" "$KEY.previous"
-expect_refusal "--rewrap pointed at the previous key" 1 "no rotation under way at '$KEY.previous'" \
+expect_refusal "--rewrap pointed at the previous key" 1 "names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key, '$KEY'" \
   env HANDOFF_PRIVKEY="$KEY.previous" python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt"
 # A blob neither key opens: stop and report, never another HANDOFF_PRIVKEY.
 enc_other '{"svc":"example","password":"mk-Zq9"}' > "$ST/neither.txt"
@@ -2290,6 +2308,78 @@ expect_refusal "--retire --yes through a symlink" 1 "is a symlink" \
   env HANDOFF_PRIVKEY="$R/link.txt" bash ../agent-setup.sh --retire --yes
 [ -e "$KEY.previous" ] || fail "a refused --retire deleted the previous key"
 rm "$R/link.txt"
+# A rotation's old key as KEY (issue #46): --rotate on it would keep the old
+# key as .previous.previous and put a new key at .previous; --retire would
+# delete the wrong key. Refused as a KEY and from HANDOFF_PRIVKEY, in any
+# case, before anything is read; nothing on disk changes.
+keys_now() { for f in "$KEY" "$KEY.previous"; do "$AGE_KEYGEN" -y "$f"; done; ls -A "$(dirname -- "$KEY")"; }
+before_prev=$(keys_now)
+expect_refusal "--rotate KEY.previous" 1 "is a rotation's old key (its name ends in .previous); --rotate takes the current key, $KEY; nothing changed" \
+  bash ../agent-setup.sh --rotate "$KEY.previous"
+expect_refusal "--rotate with HANDOFF_PRIVKEY at .previous" 1 "HANDOFF_PRIVKEY ($KEY.previous) names a rotation's old key (its name ends in .previous); set it to the current key, $KEY, as the wrappers do" \
+  env HANDOFF_PRIVKEY="$KEY.previous" bash ../agent-setup.sh --rotate
+expect_refusal "--retire --yes KEY.previous" 1 "is a rotation's old key (its name ends in .previous); --retire takes the current key" \
+  bash ../agent-setup.sh --retire --yes "$KEY.previous"
+expect_refusal "--retire --yes with HANDOFF_PRIVKEY at .previous" 1 "HANDOFF_PRIVKEY ($KEY.previous) names a rotation's old key" \
+  env HANDOFF_PRIVKEY="$KEY.previous" bash ../agent-setup.sh --retire --yes
+expect_refusal "--rotate KEY.PREVIOUS" 1 "is a rotation's old key" \
+  bash ../agent-setup.sh --rotate "$KEY.PREVIOUS"
+# A key file named just ".previous": no empty name suggested as the current key.
+(cd "$(dirname -- "$KEY")" && expect_refusal "--rotate .previous" 1 "--rotate takes the current key; nothing changed" \
+  bash "$OLDPWD/../agent-setup.sh" --rotate .previous)
+expect_refusal "consume.py with HANDOFF_PRIVKEY at .previous" 1 "names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key, '$KEY'" \
+  env HANDOFF_PRIVKEY="$KEY.previous" python3 ../consume.py --label example --check --blob-file blob-age.txt
+expect_refusal "consume.py --rewrap with HANDOFF_PRIVKEY at .Previous" 1 "names a rotation's old key" \
+  env HANDOFF_PRIVKEY="$KEY.Previous" python3 ../consume.py --label example --rewrap --blob-file blob-age.txt
+(cd "$(dirname -- "$KEY")" && expect_refusal "consume.py with HANDOFF_PRIVKEY=.previous" 1 "a wrapper sets it to the current key (SETUP.md step 7)" \
+  env HANDOFF_PRIVKEY=.previous python3 "$OLDPWD/../consume.py" --label example --check --blob-file "$OLDPWD/blob-age.txt")
+# The same name with a directory in front: still no name suggested (a/ isn't one).
+expect_refusal "--rotate dir/.previous" 1 "--rotate takes the current key; nothing changed" \
+  bash ../agent-setup.sh --rotate "$(dirname -- "$KEY")/.previous"
+expect_refusal "consume.py with HANDOFF_PRIVKEY=dir/.previous" 1 "a wrapper sets it to the current key (SETUP.md step 7)" \
+  env HANDOFF_PRIVKEY="$(dirname -- "$KEY")/.previous" python3 ../consume.py --label example --check --blob-file blob-age.txt
+# --check-setup fails such a HANDOFF_PRIVKEY, as consume.py refuses it.
+env HANDOFF_PRIVKEY="$KEY.previous" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed a HANDOFF_PRIVKEY at .previous"
+grep -qxF "FAIL identity: HANDOFF_PRIVKEY ($KEY.previous) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key, $KEY" "$S/out" \
+  || fail "--check-setup didn't fail the .previous HANDOFF_PRIVKEY: $(grep identity "$S/out")"
+echo "ok (refused: --check-setup with HANDOFF_PRIVKEY at .previous)"
+[ "$(keys_now)" = "$before_prev" ] || fail "a refused .previous KEY changed the key directory"
+# What a --rotate on KEY.previous left (releases up to 0.2.0): --rotate and
+# --retire change nothing, and consume.py's neither-key failure names it.
+cp -p "$KEY.previous" "$KEY.previous.previous"
+expect_refusal "--retire --yes with a .previous.previous" 1 "previous.previous exists, most likely left by an earlier --rotate given $KEY.previous as its KEY" \
+  rk bash ../agent-setup.sh --retire --yes
+[ -e "$KEY.previous" ] && [ -e "$KEY.previous.previous" ] || fail "a refused --retire with a .previous.previous deleted a key"
+expect_refusal "--rotate with a .previous.previous" 1 "previous.previous exists, most likely left by an earlier --rotate given $KEY.previous as its KEY: the keys aren't where a rotation keeps them, and nothing was rotated" \
+  rk bash ../agent-setup.sh --rotate
+enc_other '{"svc":"example","password":"mk-Zq9"}' > "$R/neither-pp.txt"
+expect_refusal "a blob for neither key, with a .previous.previous" 1 "and with the previous key ('$KEY.previous'), and '$KEY.previous.previous' exists (SETUP.md, Rotation: A .previous.previous file)" \
+  rk python3 ../consume.py --label example --check --blob-file "$R/neither-pp.txt"
+# The same with no .previous (what a --retire after that --rotate left): not
+# "no rotation to retire", which would read as done with the old key on disk.
+mv "$KEY.previous" "$R/held-pp.txt"
+expect_refusal "--retire --yes with a .previous.previous and no .previous" 1 "previous.previous exists, most likely left by an earlier --rotate" \
+  rk bash ../agent-setup.sh --retire --yes
+expect_refusal "a blob for no key, with a .previous.previous and no .previous" 1 "decryption failed with the key at '$KEY', and '$KEY.previous.previous' exists" \
+  rk python3 ../consume.py --label example --check --blob-file "$R/neither-pp.txt"
+rk bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed with a .previous.previous"
+grep -qxF "FAIL identity: $KEY.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)" "$S/out" \
+  || fail "--check-setup didn't fail a .previous.previous: $(grep identity "$S/out")"
+echo "ok (refused: --check-setup with a .previous.previous)"
+mv "$R/held-pp.txt" "$KEY.previous"
+rm "$KEY.previous.previous"; ln -s "$R/nowhere" "$KEY.previous.previous"
+expect_refusal "--retire --yes with a dangling .previous.previous link" 1 "previous.previous exists" \
+  rk bash ../agent-setup.sh --retire --yes
+expect_refusal "--rotate with a dangling .previous.previous link" 1 "previous.previous exists" \
+  rk bash ../agent-setup.sh --rotate
+expect_refusal "a blob for neither key, with a dangling .previous.previous link" 1 "and '$KEY.previous.previous' exists (SETUP.md, Rotation: A .previous.previous file)" \
+  rk python3 ../consume.py --label example --check --blob-file "$R/neither-pp.txt"
+rk bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed with a dangling .previous.previous link"
+grep -qxF "FAIL identity: $KEY.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)" "$S/out" \
+  || fail "--check-setup didn't fail a dangling .previous.previous link: $(grep identity "$S/out")"
+echo "ok (refused: --check-setup with a dangling .previous.previous link)"
+rm "$KEY.previous.previous" "$R/neither-pp.txt"
+[ "$(keys_now)" = "$before_prev" ] || fail "the .previous.previous checks changed the key directory"
 # --retire without --yes keeps the old key and names it with its recipient.
 expect_refusal "--retire without --yes" 1 "only once SETUP.md Rotation step 5's last pass is recorded" \
   rk bash ../agent-setup.sh --retire

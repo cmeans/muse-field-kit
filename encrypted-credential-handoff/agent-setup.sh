@@ -279,6 +279,31 @@ no_symlinks() {
   done
 }
 
+# --rotate and --retire take the current key, never a rotation's old one: on
+# KEY.previous, --rotate would keep the old key as KEY.previous.previous,
+# where consume.py never looks, and put a new key at KEY.previous; --retire
+# would delete the wrong key (issue #46). Matched without case, as macOS's
+# default volume names the same file either way.
+is_previous_name() {  # PATH
+  case "$1" in *.[Pp][Rr][Ee][Vv][Ii][Oo][Uu][Ss]) return 0 ;; esac
+  return 1
+}
+# ", <the name without .previous>" when that is a file name, else nothing
+# (a key file named just ".previous" has no current key to suggest).
+suggest_current() {  # PATH
+  local c=${1%.*}
+  case "$c" in ''|*/) ;; *) printf ', %s' "$(qp "$c")" ;; esac
+}
+not_previous() {
+  is_previous_name "$key" || return 0
+  if [ "$key_given" = 1 ]; then
+    echo "agent-setup.sh: $(qp "$key") is a rotation's old key (its name ends in .previous); $mode takes the current key$(suggest_current "$key"); nothing changed" >&2
+  else
+    echo "agent-setup.sh: HANDOFF_PRIVKEY ($(qp "$key")) names a rotation's old key (its name ends in .previous); set it to the current key$(suggest_current "$key"), as the wrappers do; nothing changed" >&2
+  fi
+  exit 1
+}
+
 # Make a new identity at FILE, which must not exist (age-keygen makes it
 # itself and refuses to replace anything, a planted link included). Its own
 # text, "Public key: …" on success, is not shown; on failure it is, since the
@@ -353,7 +378,7 @@ cs_out() {  # STATUS NAME DETAIL
 }
 check_setup() {
   local p v rc blob rcpt re have_age=0 have_keygen=0 have_py=0 here consume
-  local payload rt="" hdr="" b64="" want k kmsg
+  local payload rt="" hdr="" b64="" want k kmsg kc
   set +e
   # The traps first, so no signal can fall between the folder and its cleanup
   # (newd starts empty, and cleanup removes it only if set).
@@ -466,8 +491,15 @@ password: 20 bytes"
     if [ -z "$k" ]; then
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null); kmsg=${kmsg#agent-setup.sh: }
       cs_out FAIL identity "${kmsg:-cannot work out where the key is}"
+    elif is_previous_name "$k"; then
+      # consume.py refuses it (issue #46): every wrapper with it would fail.
+      kc=${k%.*}
+      case "$kc" in ''|*/) kc= ;; *) kc=", $kc" ;; esac
+      cs_out FAIL identity "HANDOFF_PRIVKEY ($k) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$kc"
     elif [ ! -e "$k" ] && [ ! -L "$k" ]; then
       cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
+    elif [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then
+      cs_out FAIL identity "$k.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)"
     elif recipient_of "$k" >/dev/null 2>"$newd/kerr"; then
       cs_out PASS identity "the key at $k passes the identity checks (owner-only, one plain age identity)"
     else
@@ -569,6 +601,7 @@ case "$mode" in
     # Which state a rotation is in is read from the keys' recipients, not
     # their inodes, so a copied .previous (a backup restore) reads the same.
     prev="$key.previous"
+    not_previous
     no_symlinks
     [ -f "$key" ] || { echo "no key file at $(qp "$key")" >&2; exit 1; }
     dir=$(dirname -- "$key")
@@ -580,6 +613,12 @@ case "$mode" in
     trap 'echo "agent-setup.sh: interrupted; run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1' INT TERM HUP
     lock_dir "$dir"
     key_recipient "$key"
+    if [ -e "$prev.previous" ] || [ -L "$prev.previous" ]; then
+      # See --retire: the keys aren't where a rotation keeps them, and
+      # rotating again would only move them further (issue #46).
+      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was rotated. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
+      exit 1
+    fi
     for f in "$dir"/.handoff-new.*; do
       # A temporary key a killed --rotate left (the lock says none is running).
       [ -e "$f" ] || [ -L "$f" ] || continue
@@ -657,6 +696,7 @@ case "$mode" in
     # finished, and asks for --yes, since nothing here can tell whether a
     # label's stored blob still needs the old key (issue #4).
     prev="$key.previous"
+    not_previous
     no_symlinks
     # The key first, as the other modes check it: a mistyped KEY (-y for
     # --yes) is "no key file", not "no rotation to retire", which would read
@@ -668,6 +708,16 @@ case "$mode" in
         :1:-[Yy]|:1:-[Yy][Ee]|:1:-[Yy][Ee][Ss]|:1:[Yy]|:1:[Yy][Ee]|:1:[Yy][Ee][Ss]) echo "no key file at $(qp "$key") (the confirmation is spelled --yes)" >&2 ;;
         *) echo "no key file at $(qp "$key")" >&2 ;;
       esac
+      exit 1
+    fi
+    # Most likely left by a --rotate given KEY.previous, which releases up to
+    # 0.2.0 allowed (issue #46): it may hold the rotation's real old key, and
+    # this run would delete another. Checked before anything else about the
+    # rotation, since a retire after that --rotate leaves it with no
+    # KEY.previous, and "no rotation to retire" would read as done with the
+    # old key still on disk. Nothing here can tell which key the user needs.
+    if [ -e "$prev.previous" ] || [ -L "$prev.previous" ]; then
+      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was deleted. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
       exit 1
     fi
     if [ ! -e "$prev" ]; then
