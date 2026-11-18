@@ -100,8 +100,9 @@ at all is refused, so a typo'd payload can't silently launch a tool with
 no credentials.
 
 `age` runs with an environment built from scratch (PATH only) and reads
-its identity from the key path alone: never `-p`, never `-j`, never a
-passphrase or a plugin. A blob is opened only if its header names exactly one
+its identity only from the bytes this helper checked, on a pipe of its
+own (`-i /dev/fd/N`), never from the key's path: never `-p`, never `-j`,
+never a passphrase or a plugin. A blob is opened only if its header names exactly one
 X25519 recipient.
 
 The injected values live in the command's environment for the life of
@@ -365,9 +366,12 @@ def read_identity(path: str) -> bytes:
 
 
 def check_key_dir(path: str) -> None:
-    """The key's directory must be writable by its owner alone (or carry the
-    sticky bit): anyone else who can write there can rename another file
-    over the key, or add one beside it (agent-setup.sh makes it 0700)."""
+    """The key's directory (followed through a symlink, as the key is read
+    through it) must be owned by this user or root and writable by no group
+    or other: anyone else who can write there can rename another file over
+    the key, or add one beside it (agent-setup.sh makes it 0700). No sticky
+    exception, unlike a blob's directory: the sticky bit stops renames, not
+    new files beside the key, and a key directory has no reason to be shared."""
     if os.name == "nt":
         return
     directory = os.path.dirname(os.path.abspath(path))
@@ -375,7 +379,11 @@ def check_key_dir(path: str) -> None:
         dst = os.stat(directory)
     except OSError as e:
         raise fail(f"cannot read the key's directory {directory!r}: {e.strerror}") from None
-    if dst.st_mode & 0o022 and not dst.st_mode & stat.S_ISVTX:
+    if dst.st_uid not in (os.geteuid(), 0):
+        raise fail(f"the key's directory {directory!r} is owned by another account; "
+                   "stop and report it to the user: the key belongs in a directory of "
+                   "this account's own (SETUP.md step 1)")
+    if dst.st_mode & 0o022:
         raise fail(f"the key's directory {directory!r} is writable by others (mode "
                    f"{stat.S_IMODE(dst.st_mode):04o}); stop and report it to the user, "
                    f"who runs: chmod go-w {shell_quote(directory)}")
@@ -484,10 +492,23 @@ def age_decrypt(raw: bytes, identity: bytes) -> "bytes | None":
     r, w = os.pipe()
     writer = threading.Thread(target=write_all_close, args=(w, identity), daemon=True)
     try:
-        writer.start()
+        # The name age opens for the inherited fd: /dev/fd/N, or Linux's
+        # /proc/self/fd/N where /dev/fd is missing (a chroot, a minimal
+        # container). Neither: a clear refusal, not a "wrong key" one.
+        fd_path = next((p % r for p in ("/dev/fd/%d", "/proc/self/fd/%d")
+                        if os.path.exists(p % r)), None)
+        if fd_path is None:
+            os.close(w)
+            raise fail("neither /dev/fd nor /proc/self/fd is available, so the identity "
+                       "can't be handed to age on a pipe; stop and report it to the user")
+        try:
+            writer.start()
+        except RuntimeError:
+            os.close(w)
+            raise fail("cannot start a thread to hand the identity to age") from None
         try:
             proc = subprocess.run(
-                ["age", "-d", "-i", "/dev/fd/%d" % r],
+                ["age", "-d", "-i", fd_path],
                 input=raw, capture_output=True, env=age_env(), pass_fds=(r,),
             )
         except FileNotFoundError:
@@ -496,7 +517,8 @@ def age_decrypt(raw: bytes, identity: bytes) -> "bytes | None":
             raise age_cannot_run("age", e) from None
     finally:
         os.close(r)
-        writer.join()
+        if writer.ident is not None:
+            writer.join()
     if proc.returncode != 0:
         return None
     return proc.stdout

@@ -269,17 +269,26 @@ key_recipient() {  # FILE
 # symlink, the hard link and rename would act on the link, not the key file
 # (leaving the new key off the volume the link points to, and the old key on
 # it after --retire). Refuse, and have the path name the file itself.
-# The key's directory must be writable by its owner alone (or carry the
-# sticky bit): anyone else who can write there can rename another file over
-# the key, or add one beside it. consume.py refuses such a directory too.
-# Prints the refusal and returns 1 when it's writable by others. find's
-# -perm -MODE (all bits) is POSIX, so this reads the same on BSD and BusyBox.
+# The key's directory (through a symlink, as the key is read) must be owned
+# by this user or root and writable by no group or other: anyone else who can
+# write there can rename another file over the key, or add one beside it.
+# No sticky exception (it stops renames, not new files). consume.py refuses
+# the same directories. Prints the refusal (exit 0) when the directory fails;
+# returns 1 when it's fine. find's -perm -MODE and -user are POSIX, so this
+# reads the same on BSD and BusyBox; "$q/." makes find look at the directory
+# a symlink points to, not the link itself.
 key_dir_unsafe_msg() {  # DIR
-  local d=$1 q bad
+  local d=$1 q me other writable
   case "$d" in /*) q=$d ;; *) q=./$d ;; esac
-  bad=$(find "$q" -prune \( -perm -0020 -o -perm -0002 \) ! -perm -1000 -print 2>/dev/null) || bad=
-  [ -n "$bad" ] || return 1
-  printf "the key's directory %s is writable by others; stop and report it to the user, who runs: chmod go-w %s" "$(qp "$d")" "$(qp "$d")"
+  me=$(id -u)
+  other=$(find "$q/." -prune ! -user 0 ! -user "$me" -print 2>/dev/null) || other=
+  if [ -n "$other" ]; then
+    printf "the key's directory %s is owned by another account; stop and report it to the user: the key belongs in a directory of this account's own (SETUP.md step 1)" "$(qp "$d")"
+    return 0
+  fi
+  writable=$(find "$q/." -prune \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || writable=
+  [ -n "$writable" ] || return 1
+  printf "the key's directory %s is writable by others; stop and report it to the user, who runs: chmod -- go-w %s" "$(qp "$d")" "$(qp "$d")"
 }
 key_dir_safe() {  # DIR
   local m
