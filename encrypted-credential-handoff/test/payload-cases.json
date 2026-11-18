@@ -1,0 +1,398 @@
+[
+ {
+  "name": "dateescape",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\/Date(0)\\/mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "isodate",
+  "payload": "{\"svc\":\"example\",\"password\":\"2024-01-01T00:00:00Z-mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "casekeys",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"Password\":\"mk-Zq9-2\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "svclastwins",
+  "payload": "{\"svc\":\"\",\"password\":\"mk-Zq9\",\"svc\":\"example\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "escapedkey",
+  "payload": "{\"\\u0073vc\":\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "surrogatepair",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\ud83d\\ude00mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "escapes",
+  "payload": "{\"svc\":\"example\",\"password\":\"a\\\"b\\\\c\\/d\\b\\f\\n\\r\\tmk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "whitespace",
+  "payload": " \t\r\n{ \"svc\" : \"example\" ,\r\n \"password\":\"mk-Zq9\" } \n",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "bom",
+  "payload": "\ufeff{\"svc\":\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "surrogatepairupper",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\uD83D\\uDE00mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "escapedbackslashu",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\\\ud800mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "emptyunknown",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"note\":\"\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "knownpair",
+  "payload": "{\"svc\":\"example\",\"token_id\":\"t-1\",\"token_secret\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "nullastwins",
+  "payload": "{\"svc\":\"example\",\"password\":\"a\\u0000b\",\"password\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "emptylastwins",
+  "payload": "{\"svc\":\"example\",\"password\":\"\",\"password\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "notjson",
+  "payload": "mk-Zq9 not json",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "toparray",
+  "payload": "[{\"svc\":\"example\",\"password\":\"mk-Zq9\"}]",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "barestring",
+  "payload": "\"mk-Zq9\"",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "twovalues",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\"}{\"svc\":\"example\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "twovaluesspace",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\"} {\"svc\":\"example\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "trailinggarbage",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\"} x",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "emptyobject",
+  "payload": "{}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "nosvc",
+  "payload": "{\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "emptysvc",
+  "payload": "{\"svc\":\"\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "svclastempty",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"svc\":\"\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "numbersvc",
+  "payload": "{\"svc\":5,\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "numbervalue",
+  "payload": "{\"svc\":\"example\",\"password\":5}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "nullvalue",
+  "payload": "{\"svc\":\"example\",\"password\":null}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "truevalue",
+  "payload": "{\"svc\":\"example\",\"password\":true}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "objectvalue",
+  "payload": "{\"svc\":\"example\",\"password\":{\"v\":\"mk-Zq9\"}}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "arrayvalue",
+  "payload": "{\"svc\":\"example\",\"password\":[\"mk-Zq9\"]}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "singlequoted",
+  "payload": "{'svc':'example','password':'mk-Zq9'}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "trailingcomma",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "badescape",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\\x\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "shortunicode",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\\u12\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "rawtab",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\tx\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "comment",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\" /* c */}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "unquotedkey",
+  "payload": "{svc:\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "latin1",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay1acTktcORzcyJ9",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "badbyte",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay1acTn/In0=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "rawnul",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay0AWnE5In0=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "rawnulbetween",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwAInBhc3N3b3JkIjoibWstWnE5In0=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "utf16lenobom",
+  "payload_base64": "ewAiAHMAdgBjACIAOgAiAGUAeABhAG0AcABsAGUAIgAsACIAcABhAHMAcwB3AG8AcgBkACIAOgAiAG0AawAtAFoAcQA5ACIAfQA=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "rawctl",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay0BWnE5In0=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "rawsurrogate",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay1acTntoIAifQ==",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "lonehigh",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\\ud800\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "lonelow",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\udc00mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "lonehighsvc",
+  "payload": "{\"svc\":\"\\ud800\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "highbeforeascii",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\\ud800\\u0041\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "twohigh",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\\ud800\\ud800\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "highthenpair",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\ud800\\ud83d\\ude00mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "pairthenlow",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\ud83d\\ude00\\udc00mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "splitpair",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\\ud800\",\"p2\":\"\\udc00\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "escapedbackslashlone",
+  "payload": "{\"svc\":\"example\",\"password\":\"\\\\\\ud800mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "lonekey",
+  "payload": "{\"svc\":\"example\",\"\\udfff\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
+  "name": "nulvalue",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk\\u0000Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "a value contains a NUL character (\\u0000), aborting"
+ },
+ {
+  "name": "nulunknown",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"note\":\"a\\u0000b\"}",
+  "exit": 1,
+  "stderr_contains": "a value contains a NUL character (\\u0000), aborting"
+ },
+ {
+  "name": "nulsvc",
+  "payload": "{\"svc\":\"example\\u0000\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "a value contains a NUL character (\\u0000), aborting"
+ },
+ {
+  "name": "emptyknown",
+  "payload": "{\"svc\":\"example\",\"username\":\"\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "a credential field is empty, aborting"
+ },
+ {
+  "name": "emptyknownonly",
+  "payload": "{\"svc\":\"example\",\"installation_id\":\"\"}",
+  "exit": 1,
+  "stderr_contains": "a credential field is empty, aborting"
+ },
+ {
+  "name": "emptylast",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"password\":\"\"}",
+  "exit": 1,
+  "stderr_contains": "a credential field is empty, aborting"
+ },
+ {
+  "name": "noknown",
+  "payload": "{\"svc\":\"example\",\"note\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "no known credential field (one of: username, password, api_key_id, api_key_secret, token_id, token_secret, private_key, app_id, installation_id), aborting"
+ },
+ {
+  "name": "svconly",
+  "payload": "{\"svc\":\"example\"}",
+  "exit": 1,
+  "stderr_contains": "no known credential field (one of: username, password, api_key_id, api_key_secret, token_id, token_secret, private_key, app_id, installation_id), aborting"
+ },
+ {
+  "name": "knowncase",
+  "payload": "{\"svc\":\"example\",\"Password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "no known credential field (one of: username, password, api_key_id, api_key_secret, token_id, token_secret, private_key, app_id, installation_id), aborting"
+ },
+ {
+  "name": "empty",
+  "payload": "",
+  "exit": 1,
+  "stderr_contains": "empty, aborting"
+ },
+ {
+  "name": "blanks",
+  "payload": "  \n\t \n",
+  "exit": 1,
+  "stderr_contains": "empty, aborting"
+ }
+]

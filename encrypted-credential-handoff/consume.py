@@ -14,9 +14,9 @@ Fetches nothing itself: the caller (a per-service wrapper) fetches the
 base64 blob from wherever ciphertexts are stored and supplies it by
 argument, file, or environment variable — never on stdin, which belongs
 to the command (a stdio MCP server's stdin is its transport).
-This helper decrypts IN MEMORY with the private key (default
-~/.config/handoff/handoff-priv.pem, override with $HANDOFF_PRIVKEY),
-verifies the payload's purpose binding, and either:
+This helper decrypts IN MEMORY with `age` and the agent's age identity
+(default ~/.config/handoff/handoff-identity.txt, override with
+$HANDOFF_PRIVKEY), verifies the payload's purpose binding, and either:
 
   run mode    replaces itself (exec) with a command, the credential values
               injected into its environment; the command's stdin, stdout
@@ -32,7 +32,7 @@ verifies the payload's purpose binding, and either:
               blob that's already for the current key. Its stderr line names
               the key file the old blob was for.
 
-During a rotation the old key stays beside the current one as
+During a rotation the old identity stays beside the current one as
 <key path>.previous (agent-setup.sh --rotate makes it, --retire deletes
 it). A blob the current key can't open is tried with the previous key;
 in run mode, that prints a note to rewrap the label.
@@ -50,7 +50,14 @@ what SETUP.md's hard rules record for it.
     username / password          -> SERVICE_USERNAME / SERVICE_PASSWORD
     api_key_id / api_key_secret  -> SERVICE_API_KEY_ID / SERVICE_API_KEY_SECRET
     token_id / token_secret      -> SERVICE_TOKEN_ID / SERVICE_TOKEN_SECRET
+    private_key                  -> SERVICE_PRIVATE_KEY (a PEM, kept byte for byte)
+    app_id / installation_id     -> SERVICE_APP_ID / SERVICE_INSTALLATION_ID
     svc                          -> purpose binding; never injected
+
+Every field stands alone: none needs another, and a payload may carry any
+of them (private_key, app_id and installation_id together are a GitHub
+App's). Which fields a label's command needs is that label's record in
+SETUP.md, not this helper's check.
 
 Per-service variable names differ; map them per invocation instead of
 editing this file:  --env username=APP_USER --env password=APP_PASS
@@ -92,6 +99,11 @@ fields is noted by COUNT only; a payload with no known credential field
 at all is refused, so a typo'd payload can't silently launch a tool with
 no credentials.
 
+`age` runs with an environment built from scratch (PATH only) and reads
+its identity from the key path alone: never `-p`, never `-j`, never a
+passphrase or a plugin. A blob is opened only if its header names exactly one
+X25519 recipient.
+
 The injected values live in the command's environment for the life of
 the command and are inherited by its children — and the target command
 must not log its own environment or resolved config, and must never be
@@ -118,27 +130,27 @@ import subprocess
 import sys
 import tempfile
 
-DEFAULT_PRIVKEY = "~/.config/handoff/handoff-priv.pem"
+DEFAULT_PRIVKEY = "~/.config/handoff/handoff-identity.txt"
 PRIVKEY_ENV = "HANDOFF_PRIVKEY"
 BLOB_ENV = "HANDOFF_BLOB"
 LABEL_ENV = "HANDOFF_LABEL"  # set in the command's environment: the nesting marker
-CIPHERTEXT_BYTES = 256  # RSA-2048: every reference blob decodes to exactly this
-MAX_KEY_FILE = 16384    # bytes; an RSA-2048 PEM key is about 1.7 KB
-# An RSA-2048 public key (e = 65537, as agent-setup.sh generates) in DER
-# SubjectPublicKeyInfo form: 294 bytes, a fixed 33-byte header (the
-# rsaEncryption identifier, then a 257-byte modulus field whose leading 00
-# means the top bit is set, so exactly 2048 bits), and the exponent 65537.
-# Together they reject every other key type, size and exponent: the length
-# and head every other type and size, the tail any other exponent of the
-# same length.
-RSA2048_SPKI_LEN = 294
-RSA2048_SPKI_HEAD = bytes.fromhex(
-    "30820122300d06092a864886f70d0101010500"  # SPKI, rsaEncryption
-    "0382010f003082010a0282010100"           # key bits, modulus field
-)
-RSA2048_SPKI_TAIL = bytes.fromhex("0203010001")  # exponent 65537
-MAX_REASON = 300        # characters of openssl's error text shown
-MAX_BLOB_FILE = 8192    # characters; a reference blob is 344
+RSA_BLOB_BYTES_010 = 256  # a 0.1.0 (RSA-2048) blob decodes to exactly this: only for the hint
+MAX_KEY_FILE = 16384    # bytes; an age identity file is about 190
+# An age secret key: bech32, upper case, "AGE-SECRET-KEY-" + "1" + 52 data
+# characters + a 6-character checksum.
+AGE_SECRET_RE = re.compile(r"AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}")
+AGE_RECIPIENT_RE = re.compile(r"age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}")
+AGE_MAGIC = b"age-encryption.org/v1\n"
+AGE_ARMOR_BEGIN = b"-----BEGIN AGE ENCRYPTED FILE-----"
+# Characters of base64, whitespace dropped. Measured 2026-11-17: every store
+# tested, and the chat path, carried a 64,000-character blob (a reference blob
+# is about 370).
+MAX_BLOB_FILE = 65536
+MAX_BLOB_BYTES = MAX_BLOB_FILE // 4 * 3  # the most that many characters decode to
+# What a blob file may hold as it is read, line breaks and blanks included: a
+# blob at the cap saved wrapped (76 columns, as base64 tools wrap) is about
+# 860 characters longer. Still a bound; decode_blob checks the cap itself.
+MAX_BLOB_FILE_RAW = 2 * MAX_BLOB_FILE
 
 DEFAULT_ENV_MAP = {
     "username": "SERVICE_USERNAME",
@@ -147,6 +159,9 @@ DEFAULT_ENV_MAP = {
     "api_key_secret": "SERVICE_API_KEY_SECRET",
     "token_id": "SERVICE_TOKEN_ID",
     "token_secret": "SERVICE_TOKEN_SECRET",
+    "private_key": "SERVICE_PRIVATE_KEY",
+    "app_id": "SERVICE_APP_ID",
+    "installation_id": "SERVICE_INSTALLATION_ID",
 }
 
 # --env target names: a plain identifier, and never one of the well-known
@@ -209,159 +224,250 @@ def privkey_path() -> str:
     return expand_home(DEFAULT_PRIVKEY, "the default key path")
 
 
-def openssl_env() -> dict:
-    """The environment for this helper's own openssl calls.
+def age_env() -> dict:
+    """The environment for this helper's own age and age-keygen calls.
 
-    Without OPENSSL_* variables, in any case: a stray or planted
-    OPENSSL_CONF or OPENSSL_MODULES can't load a provider into the process
-    that reads the private key. This guards against a config, not a caller
-    who controls the environment (LD_PRELOAD would still pass), and which
-    openssl runs is still the PATH's choice: both are the wrapper's job, with
-    its env -i and PATH= line (SETUP.md step 7).
+    Built from scratch, PATH only: age reads AGE_PASSPHRASE,
+    AGE_PASSPHRASE_FD, AGE_PASSPHRASE_WORK_FACTOR,
+    AGE_PASSPHRASE_MAX_WORK_FACTOR and AGEDEBUG (age 1.3.2), and none of them
+    may reach it. Which age runs is still the PATH's choice, which is the
+    wrapper's job, with its env -i and PATH= line (SETUP.md step 7).
     """
-    return {k: v for k, v in os.environ.items() if not k.upper().startswith("OPENSSL_")}
+    return {"PATH": os.environ.get("PATH", os.defpath)}
 
 
-def openssl_reason(stderr: str) -> str:
-    """': <reason>' from openssl's stderr, or '' if it said nothing.
-
-    The first line that isn't one of openssl's hex-prefixed internal error
-    lines ("00B1...:error:...:store_result.c:157:") is usually the readable
-    one; otherwise the last line.
-    """
-    lines = [ln for ln in stderr.strip().splitlines() if ln.strip()]
-    if not lines:
-        return ""
-    readable = [ln for ln in lines if not re.match(r"^[0-9A-Fa-f]+:error:", ln)]
-    reason = readable[0] if readable else lines[-1]
-    if len(reason) > MAX_REASON:
-        reason = reason[:MAX_REASON] + "..."
-    return ": " + reason
+def age_missing(tool: str) -> "SystemExit":
+    path = age_env()["PATH"]
+    if len(path) > 300:
+        path = path[:300] + "..."
+    return fail(f"{tool} not found on this PATH (in a wrapper, its PATH= line); "
+                f"install age: README.md, Installing age (PATH was {path!r})")
 
 
-def check_openssl() -> None:
-    # The same gate as handoff.sh and agent-setup.sh, and the same hint as
-    # agent-setup.sh (handoff.sh's leaves out wrappers):
-    # LibreSSL's pkeyutl OAEP behavior is
-    # unverified for this protocol.
+def age_cannot_run(tool: str, e: OSError) -> "SystemExit":
+    path = age_env()["PATH"]
+    if len(path) > 300:
+        path = path[:300] + "..."
+    return fail(f"cannot run {tool}: {e.strerror} (PATH was {path!r})")
+
+
+def check_age() -> str:
+    """Return `age --version`'s first line, or refuse if age can't run."""
     try:
         out = subprocess.run(
-            ["openssl", "version"], capture_output=True, text=True, errors="replace",
-            env=openssl_env(),
+            ["age", "--version"], capture_output=True, env=age_env(),
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
-        raise fail("openssl not found") from None
-    version = out.stdout.strip()
-    if out.returncode != 0:
-        # openssl's own reason (a broken OPENSSL_CONF, a missing provider):
-        # its stderr names configuration problems, never secrets.
-        raise fail("openssl version failed" + openssl_reason(out.stderr))
-    if not (version.startswith("OpenSSL 3.") or version.startswith("OpenSSL 4.")):
-        raise fail(
-            f"requires OpenSSL 3 or 4; found: {version or 'no version output'}. "
-            "Put one first in the PATH this runs with (in a wrapper, its PATH= line)"
-            + ("; on macOS, Homebrew's openssl@3" if sys.platform == "darwin" else "")
-        )
+        raise age_missing("age") from None
+    except OSError as e:
+        raise age_cannot_run("age", e) from None
+    lines = out.stdout.decode("utf-8", "replace").strip().splitlines()
+    if out.returncode != 0 or not lines:
+        raise fail("age --version failed; install a working age: README.md, Installing age")
+    return "".join(ch for ch in lines[0] if ch.isprintable())[:40]
+
+
+def check_age_header(raw: bytes) -> None:
+    """Refuse anything but a binary age file for exactly one X25519 recipient.
+
+    Parses the text header up to its "---" MAC line before any decryption,
+    so a header that asks `age` for a passphrase, a plugin or an SSH key
+    never reaches it. A stanza is accepted only if its type is X25519 or
+    ends in "-grease". Messages never include stanza contents.
+    """
+    if raw.startswith(AGE_ARMOR_BEGIN):
+        raise fail(armored_message())
+    if not raw.startswith(AGE_MAGIC):
+        hint = ""
+        if len(raw) == RSA_BLOB_BYTES_010:
+            hint = " (0.2.0 uses age: a 0.1.0 install sets up again)"
+        raise fail("not an age blob" + hint)
+    x25519 = 0
+    in_stanza = False
+    done = False
+    for line in raw[len(AGE_MAGIC):MAX_BLOB_BYTES].split(b"\n"):
+        if line == b"---" or line.startswith(b"--- "):
+            done = True
+            break
+        if line.startswith(b"-> "):
+            in_stanza = True
+            kind = line[3:].split(b" ", 1)[0]
+            if kind == b"X25519":
+                x25519 += 1
+            elif not kind.endswith(b"-grease"):
+                raise fail("age blob of a kind this helper doesn't open: "
+                           "only X25519 recipients are supported")
+        elif not in_stanza:
+            raise fail("not an age blob: the header is malformed")
+    if not done:
+        raise fail("not an age blob: the header has no end line")
+    if x25519 != 1:
+        raise fail("age blob needs exactly one X25519 recipient")
+
+
+def armored_message() -> str:
+    return ("the blob is armored (ASCII-armored age text); "
+            "give the binary age format, base64 on one line")
 
 
 def decode_blob(blob_b64: str) -> bytes:
+    # An armored file pasted as it is, before the base64 decode sees it.
+    for line in blob_b64.splitlines():
+        if line.strip():
+            if line.strip().encode("ascii", "replace") == AGE_ARMOR_BEGIN:
+                raise fail(armored_message())
+            break
     # Tolerate line wrapping from a paste: strip ALL whitespace.
     compact = "".join(blob_b64.split())
     if not compact:
         raise fail("the blob is empty")
-    several = ("it looks like several blobs concatenated (an appending redirect?); "
-               "give one")
+    if len(compact) > MAX_BLOB_FILE:
+        raise fail(f"the blob is over {MAX_BLOB_FILE} characters; not a blob")
     try:
-        cipher = base64.b64decode(compact, validate=True)
+        raw = base64.b64decode(compact, validate=True)
     except Exception:
         # Padding inside the text: one blob's "==" followed by another's.
-        if re.fullmatch(r"(?:[A-Za-z0-9+/]{342}==){2,}", compact):
-            raise fail("input is not valid base64: " + several)
+        if re.search(r"={1,2}[A-Za-z0-9+/]", compact):
+            raise fail("input is not valid base64: it looks like several blobs "
+                       "concatenated (an appending redirect?); give one")
         raise fail("input is not valid base64")
-    if len(cipher) != CIPHERTEXT_BYTES:
-        raise fail(
-            f"the blob decodes to {len(cipher)} bytes, not {CIPHERTEXT_BYTES}: "
-            "truncated, padded, or not a blob for an RSA-2048 key"
-        )
-    return cipher
+    check_age_header(raw)
+    return raw
 
 
-def check_key(privkey: str) -> bytes:
-    """Refuse a key file that isn't an owner-only, unencrypted RSA-2048 key.
+def read_identity(path: str) -> bytes:
+    """The identity file's bytes, after the file checks.
 
-    Returns its public half (SPKI, DER), which identifies the key whatever
-    the file's encoding.
+    A regular file (a symbolic link is refused, and the open doesn't follow
+    one), owner-only, owned by this user, and small. The checks run before
+    the open, so a file this user can't read is refused for what it is, and
+    again on the open file, so they describe what is read.
     """
-    if not os.path.isfile(privkey):
-        raise fail(f"cannot read private key at {privkey}")
-    st = os.stat(privkey)
+    try:
+        lst = os.lstat(path)
+    except OSError:
+        raise fail(f"cannot read private key at {path!r}") from None
+    if stat.S_ISLNK(lst.st_mode):
+        raise fail(f"private key at {path!r} is a symbolic link; "
+                   "give the identity file itself. Refusing.")
+    check_identity_stat(path, lst)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0))
+    except OSError:
+        raise fail(f"cannot read private key at {path!r}") from None
+    with os.fdopen(fd, "rb") as f:
+        check_identity_stat(path, os.fstat(f.fileno()))
+        return f.read(MAX_KEY_FILE + 1)
+
+
+def check_identity_stat(path: str, st: os.stat_result) -> None:
+    if not stat.S_ISREG(st.st_mode):
+        raise fail(f"cannot read private key at {path!r}")
     mode = stat.S_IMODE(st.st_mode)
     if mode & 0o077:
         raise fail(
-            f"private key at {privkey} is mode {mode:03o}; "
+            f"private key at {path!r} is mode {mode:03o}; "
             "it must be owner-only (0600). Refusing."
         )
     if st.st_uid != os.geteuid():
-        raise fail(f"private key at {privkey} is not owned by this user. Refusing.")
+        raise fail(f"private key at {path!r} is not owned by this user. Refusing.")
     if st.st_size > MAX_KEY_FILE:
-        # openssl's decoder slows down badly on large non-key input: a wrong
-        # HANDOFF_PRIVKEY pointing at a big file would hang the start.
         raise fail(
-            f"private key at {privkey} is {st.st_size} bytes, over {MAX_KEY_FILE}; "
-            "not an RSA-2048 key file"
+            f"private key at {path!r} is {st.st_size} bytes, over {MAX_KEY_FILE}; "
+            "not an age identity file"
         )
-    # Load the key on its own first, so a key that can't be read (a public
-    # key, a damaged or passphrase-protected file) isn't reported as a bad
-    # blob. openssl's stderr names key problems, never secrets.
-    try:
-        loaded = subprocess.run(
-            # -passin pass:, as in the decrypt below: an encrypted key fails
-            # here instead of prompting, and never reads a passphrase from
-            # stdin (the command's transport) or a terminal. The public half
-            # comes back as DER, to check the key type below.
-            ["openssl", "pkey", "-in", privkey, "-passin", "pass:",
-             "-pubout", "-outform", "DER"],
-            capture_output=True, env=openssl_env(), stdin=subprocess.DEVNULL,
-        )
-    except FileNotFoundError:
-        raise fail("openssl not found") from None
-    if loaded.returncode != 0:
-        raise fail(
-            f"cannot load the private key at {privkey}"
-            + openssl_reason(loaded.stderr.decode("utf-8", "replace"))
-            + " (it must be an unencrypted RSA-2048 private key)"
-        )
-    spki = loaded.stdout
-    if (
-        len(spki) != RSA2048_SPKI_LEN
-        or not spki.startswith(RSA2048_SPKI_HEAD)
-        or not spki.endswith(RSA2048_SPKI_TAIL)
-    ):
-        raise fail(
-            f"the private key at {privkey} is not an RSA-2048 key; "
-            "this protocol uses RSA-2048 keys with e = 65537 (as agent-setup.sh makes)"
-        )
-    return spki
 
 
-def pkeyutl(op: str, privkey: str, data: bytes) -> "subprocess.CompletedProcess":
-    """openssl pkeyutl -decrypt or -encrypt with the reference suite."""
+def check_key(privkey: str) -> str:
+    """Refuse a key file that isn't an owner-only age identity.
+
+    Exactly one AGE-SECRET-KEY-1 line (comment and blank lines aside), no
+    plugin or post-quantum identity, and nothing else. Returns the identity's
+    recipient (`age-keygen -y`), which names the key whatever the file's
+    comments say. Nothing in a message comes from the file's contents.
+    """
+    data = read_identity(privkey)
     try:
-        return subprocess.run(
-            [
-                "openssl", "pkeyutl", op,
-                # -encrypt with a private key file uses its public half.
-                "-inkey", privkey, "-passin", "pass:",
-                "-pkeyopt", "rsa_padding_mode:oaep",
-                "-pkeyopt", "rsa_oaep_md:sha256",
-                "-pkeyopt", "rsa_mgf1_md:sha256",
-            ],
-            input=data,
-            capture_output=True,
-            env=openssl_env(),
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if text is not None and any(
+            f"-----BEGIN {kind}-----" in text
+            for kind in ("RSA PRIVATE KEY", "PRIVATE KEY", "ENCRYPTED PRIVATE KEY")):
+        raise fail(f"the key at {privkey!r} is an RSA key from 0.1.0; 0.2.0 uses age: "
+                   "a 0.1.0 install sets up again (README.md)")
+    not_identity = f"the file at {privkey!r} is not an age identity file"
+    if text is None:
+        raise fail(not_identity)
+    secrets = 0
+    recipient = False
+    for line in text.splitlines():
+        line = line.rstrip("\r")
+        if not line.strip() or line.startswith("#"):
+            continue
+        if line.startswith("AGE-PLUGIN-"):
+            raise fail(f"the identity at {privkey!r} holds a plugin identity; "
+                       "only a plain age identity is supported")
+        if line.startswith("AGE-SECRET-KEY-PQ-1"):
+            raise fail(f"the identity at {privkey!r} is a post-quantum identity; "
+                       "only a plain age identity is supported")
+        if AGE_SECRET_RE.fullmatch(line):
+            secrets += 1
+        elif AGE_RECIPIENT_RE.fullmatch(line):
+            recipient = True
+        else:
+            raise fail(not_identity)
+    if secrets == 0:
+        raise fail(not_identity + (
+            "; that is a recipient (public), not an identity" if recipient else ""))
+    if secrets > 1:
+        raise fail(f"the identity at {privkey!r} holds {secrets} secret keys; "
+                   "it must hold exactly one")
+    if recipient:
+        raise fail(not_identity)
+    # The bytes just checked go to age-keygen on its stdin, so what it reads
+    # is what was checked.
+    try:
+        proc = subprocess.run(
+            ["age-keygen", "-y"], input=data, capture_output=True, env=age_env(),
         )
     except FileNotFoundError:
-        raise fail("openssl not found") from None
+        raise age_missing("age-keygen") from None
+    except OSError as e:
+        raise age_cannot_run("age-keygen", e) from None
+    out = proc.stdout.decode("utf-8", "replace").strip()
+    if proc.returncode != 0 or not AGE_RECIPIENT_RE.fullmatch(out):
+        # age-keygen's own text is not shown.
+        raise fail(f"cannot load the age identity at {privkey!r}")
+    return out
+
+
+def identity_arg(path: str) -> str:
+    # `age -i -` reads an identity from stdin: a path that is "-" or starts
+    # with one is passed as an absolute path.
+    return path if os.path.isabs(path) else os.path.abspath(path)
+
+
+def age_decrypt(raw: bytes, identity: str) -> "bytes | None":
+    """age -d -i IDENTITY on raw: the plaintext, or None if age said no.
+
+    The blob goes in through a pipe of age's own (never the caller's stdin),
+    and age's stderr is not shown: what it says depends on the blob.
+    """
+    try:
+        proc = subprocess.run(
+            ["age", "-d", "-i", identity_arg(identity)],
+            input=raw, capture_output=True, env=age_env(),
+        )
+    except FileNotFoundError:
+        raise age_missing("age") from None
+    except OSError as e:
+        raise age_cannot_run("age", e) from None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
 
 
 def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
@@ -371,30 +477,30 @@ def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
     "previous"). The previous key is <current key path>.previous, which
     exists only during a rotation (agent-setup.sh --rotate makes it,
     --retire deletes it); it is checked like the current key, and tried
-    only when the current key can't decrypt the blob.
+    only when the current key can't decrypt the blob. The keys are tried one
+    at a time, so the caller can say which one opened it.
     """
-    cipher = decode_blob(blob_b64)
-    check_openssl()
+    raw = decode_blob(blob_b64)
+    version = check_age()
     check_key(current)
-    proc = pkeyutl("-decrypt", current, cipher)
-    if proc.returncode == 0:
-        return proc.stdout, "current"
-    tried = f"decryption failed with the key at {current}"
+    plain = age_decrypt(raw, current)
+    if plain is not None:
+        return plain, "current"
+    tried = f"decryption failed with the key at {current!r}"
     if os.path.lexists(previous):
         check_key(previous)
-        proc = pkeyutl("-decrypt", previous, cipher)
-        if proc.returncode == 0:
-            return proc.stdout, "previous"
-        tried = (f"decryption failed with the current key ({current}) "
-                 f"and with the previous key ({previous})")
-    # One fixed message, whichever key failed and however, without openssl's
-    # reason: a decrypt that says more than "no" is an oracle (RFC 8017,
-    # section 7.1.2). It names the key files it tried (paths, never payload
-    # data). It's a stop condition: retrying with another
-    # HANDOFF_PRIVKEY is the "variation" SETUP.md forbids.
+        plain = age_decrypt(raw, previous)
+        if plain is not None:
+            return plain, "previous"
+        tried = (f"decryption failed with the current key ({current!r}) "
+                 f"and with the previous key ({previous!r})")
+    # One fixed message, whichever key failed and however, without age's
+    # own text, which depends on the blob. It names the key files it tried
+    # (paths, never payload data) and the age that ran. It's a stop condition:
+    # retrying with another HANDOFF_PRIVKEY is the "variation" SETUP.md forbids.
     raise fail(
-        tried + " (a blob made for another key, or a damaged one): stop and "
-        "report it to the user (SETUP.md, stop conditions)"
+        tried + f" (a blob made for another key, or a damaged one; age {version}): "
+        "stop and report it to the user (SETUP.md, stop conditions)"
     )
 
 
@@ -442,6 +548,26 @@ def under_dir(target: str, directory: str) -> bool:
         p = parent
 
 
+# The --rewrap blob file as the user gave it (made absolute, symlinks not
+# followed), keyed by its resolved path. Messages name the blob the way they
+# name the key paths: on macOS /var is a symlink to /private/var, and a blob
+# in resolved form beside a key in given form reads as two places. The
+# resolved path is still what is checked and written.
+SHOWN_AS: "dict[str, str]" = {}
+
+
+def shown(path: str) -> str:
+    return SHOWN_AS.get(path, path)
+
+
+def both(given: str, resolved: str) -> str:
+    """A path as the user gave it, and, when that is another spelling of the
+    place that was checked (a symlink, macOS /var), the place too."""
+    if given == resolved:
+        return repr(resolved)
+    return f"{given!r} (that is {resolved!r})"
+
+
 def check_blob_file(path: str) -> os.stat_result:
     """--rewrap's checks on its blob file, run before anything else is
     decided about it (an already-current blob included)."""
@@ -449,7 +575,7 @@ def check_blob_file(path: str) -> os.stat_result:
     try:
         st = os.stat(path)
     except OSError as e:
-        raise fail(f"cannot read the blob file {path!r}: {e.strerror}") from None
+        raise fail(f"cannot read the blob file {shown(path)!r}: {e.strerror}") from None
     # Windows reports any writable file as 0o666: no group or world bits to read.
     if os.name != "nt":
         # Group- or world-writable: anyone who can write it can plant a blob,
@@ -458,19 +584,19 @@ def check_blob_file(path: str) -> os.stat_result:
         # checked: a writable ancestor is the store's setup to get right
         # (SETUP.md, step 6).
         if st.st_mode & 0o022:
-            raise fail(f"the blob file {path!r} is writable by others (mode "
+            raise fail(f"the blob file {both(shown(path), path)} is writable by others (mode "
                        f"{stat.S_IMODE(st.st_mode):03o}); stop and report it to the user, "
                        f"who runs: chmod go-w {shell_quote(path)}")
         try:
             dst = os.stat(directory)
         except OSError as e:
-            raise fail(f"cannot read the blob file's directory {directory!r}: {e.strerror}") from None
+            raise fail(f"cannot read the blob file's directory {both(os.path.dirname(shown(path)), directory)}: {e.strerror}") from None
         if dst.st_mode & 0o022 and not dst.st_mode & stat.S_ISVTX:
-            raise fail(f"the blob file's directory {directory!r} is writable by others "
+            raise fail(f"the blob file's directory {both(os.path.dirname(shown(path)), directory)} is writable by others "
                        f"(mode {stat.S_IMODE(dst.st_mode):04o}); stop and report it to the "
                        f"user, who runs: chmod go-w {shell_quote(directory)}")
     if BLOB_FILE_READ is not None and file_identity(st) != BLOB_FILE_READ:
-        raise fail(f"the blob file {path!r} changed since it was read (a blob staged "
+        raise fail(f"the blob file {shown(path)!r} changed since it was read (a blob staged "
                    "meanwhile?); it is left as it is now: probe the label (SETUP.md, "
                    "Rotation step 4)")
     return st
@@ -497,7 +623,7 @@ def write_atomically(path: str, data: bytes) -> None:
         except OSError as e:
             why = (" (the temporary file goes in the same directory, so that directory "
                    "must be writable)" if e.errno in (errno.EACCES, errno.EROFS) else "")
-            raise fail(f"could not write the new blob beside {path!r}: {e.strerror}{why}; "
+            raise fail(f"could not write the new blob beside {shown(path)!r}: {e.strerror}{why}; "
                        "it is unchanged") from None
         with os.fdopen(fd, "wb") as fh:
             if hasattr(os, "fchmod"):
@@ -512,11 +638,11 @@ def write_atomically(path: str, data: bytes) -> None:
             os.fsync(fh.fileno())
         with open(tmp, "rb") as fh:
             if fh.read(len(data) + 1) != data:
-                raise fail(f"the new blob didn't read back whole from {tmp!r}; {path!r} is unchanged")
+                raise fail(f"the new blob didn't read back whole from the temporary file beside it; {shown(path)!r} is unchanged")
         # The file must still be the one read: a blob staged while this ran
         # isn't replaced with the old payload.
         if BLOB_FILE_READ is not None and file_identity(os.stat(path)) != BLOB_FILE_READ:
-            raise fail(f"the blob file {path!r} changed while it was being rewrapped (a "
+            raise fail(f"the blob file {shown(path)!r} changed while it was being rewrapped (a "
                        "blob staged meanwhile?); it is left as it is now: probe the label "
                        "(SETUP.md, Rotation step 4)")
         # TERM, HUP and INT blocked around the rename and the two flags, where
@@ -543,15 +669,15 @@ def write_atomically(path: str, data: bytes) -> None:
         except OSError:
             pass  # some platforms can't sync a directory; the rename is done
     except OSError as e:
-        raise fail(f"could not write the new blob to {path!r}: {e.strerror}; it is unchanged") from None
+        raise fail(f"could not write the new blob to {shown(path)!r}: {e.strerror}; it is unchanged") from None
     except KeyboardInterrupt:
         # After the rename, the file already holds the new blob.
         if renamed or (tmp is not None and not os.path.lexists(tmp)):
             tmp = None
             WRITTEN = path
-            raise fail(f"interrupted after the rename; {path!r} holds the new blob "
+            raise fail(f"interrupted after the rename; {shown(path)!r} holds the new blob "
                        "(probe the label: SETUP.md, Rotation step 4)") from None
-        raise fail(f"interrupted; {path!r} is unchanged") from None
+        raise fail(f"interrupted; {shown(path)!r} is unchanged") from None
     finally:
         if tmp is not None:
             try:
@@ -570,6 +696,27 @@ def parse_payload(plaintext: bytes) -> dict:
     return payload
 
 
+def age_encrypt(plaintext: bytes, recipient: str) -> bytes:
+    """age -r RECIPIENT on plaintext: the binary age file.
+
+    The plaintext goes in through a pipe of age's own, the environment is
+    age_env()'s, and age's stderr is not shown. Refuses, with one fixed
+    message, when age fails or its output isn't a binary age file.
+    """
+    try:
+        proc = subprocess.run(
+            ["age", "-r", recipient], input=plaintext, capture_output=True,
+            env=age_env(),
+        )
+    except FileNotFoundError:
+        raise age_missing("age") from None
+    except OSError as e:
+        raise age_cannot_run("age", e) from None
+    if proc.returncode != 0 or not proc.stdout.startswith(AGE_MAGIC):
+        raise fail("re-encrypting to the current key failed")
+    return proc.stdout
+
+
 def rewrap(plaintext: bytes, current: str) -> str:
     """The same payload, byte for byte, encrypted to the current key.
 
@@ -577,15 +724,12 @@ def rewrap(plaintext: bytes, current: str) -> str:
     key to exactly this payload, since it replaces the old blob in the store
     with no copy kept (SETUP.md, Rotation).
     """
-    proc = pkeyutl("-encrypt", current, plaintext)
-    if proc.returncode != 0 or len(proc.stdout) != CIPHERTEXT_BYTES:
-        raise fail("re-encrypting to the current key failed"
-                   + openssl_reason(proc.stderr.decode("utf-8", "replace")))
-    back = pkeyutl("-decrypt", current, proc.stdout)
-    if back.returncode != 0 or back.stdout != plaintext:
+    blob = age_encrypt(plaintext, check_key(current))
+    back = age_decrypt(blob, current)
+    if back is None or back != plaintext:
         raise fail("the new blob doesn't open with the current key to the same "
                    "payload; keep the old blob, and report this")
-    return base64.b64encode(proc.stdout).decode("ascii")
+    return base64.b64encode(blob).decode("ascii")
 
 
 def check_payload(payload: dict, label: str, env_map: dict) -> dict:
@@ -694,7 +838,7 @@ def parse_args(argv):
         elif a == "--rewrap":
             do_rewrap = True
         else:
-            raise fail(f"unrecognized argument: {a}")
+            raise fail(f"unrecognized argument: {a!r}")
         i += 1
     # Counted over the whole map, the default mappings included: a payload
     # may carry any known field, so no two may ever share a target.
@@ -729,7 +873,7 @@ def parse_args(argv):
             raise fail("--blob-file is empty")
         path = expand_home(blob_file, "--blob-file")
         not_regular = (
-            f"blob file at {blob_file} is not a regular file (a "
+            f"blob file at {blob_file!r} is not a regular file (a "
             "directory, pipe, FIFO or device); give the blob with "
             "--blob or $HANDOFF_BLOB"
         )
@@ -753,19 +897,22 @@ def parse_args(argv):
             BLOB_FILE_READ = file_identity(read_st)
             # utf-8-sig: some editors save a byte-order mark first.
             with os.fdopen(fd, "r", encoding="utf-8-sig") as fh:
-                blob = fh.read(MAX_BLOB_FILE + 1)
+                blob = fh.read(MAX_BLOB_FILE_RAW + 1)
         except OSError as e:
             # strerror comes from the OS, never from the file's contents.
-            raise fail(f"cannot read blob file at {blob_file}: {e.strerror}") from None
+            raise fail(f"cannot read blob file at {blob_file!r}: {e.strerror}") from None
         except UnicodeError:
-            raise fail(f"cannot read blob file at {blob_file} as text") from None
-        if len(blob) > MAX_BLOB_FILE:
-            raise fail(f"blob file at {blob_file} is over {MAX_BLOB_FILE} characters; not a blob")
+            raise fail(f"cannot read blob file at {blob_file!r} as text") from None
+        if len(blob) > MAX_BLOB_FILE_RAW:
+            raise fail(f"blob file at {blob_file!r} is over {MAX_BLOB_FILE_RAW} characters "
+                       "(line breaks and blanks included); not a blob")
     if blob is None:
         blob = os.environ.get(BLOB_ENV)
     if blob is None:
         raise fail(f"no blob supplied: use --blob, --blob-file, or ${BLOB_ENV}")
     target = os.path.realpath(expand_home(blob_file, "--blob-file")) if do_rewrap else None
+    if do_rewrap:
+        SHOWN_AS[target] = os.path.abspath(expand_home(blob_file, "--blob-file"))
     return label, check, do_rewrap, target, blob, env_map, cmd
 
 
@@ -836,19 +983,19 @@ def main() -> int:
         # key beside this one, HANDOFF_PRIVKEY names the wrong key, or there's
         # no rotation to rewrap for.
         raise fail(
-            f"--rewrap: no rotation under way at {current} (no {previous}). "
+            f"--rewrap: no rotation under way at {current!r} (no {previous!r}). "
             "Run it with HANDOFF_PRIVKEY as the label's wrappers set it, during "
             "a rotation (SETUP.md, Rotation); anything else, stop and report it."
         )
     if do_rewrap:
-        check_openssl()
-    # The same key, compared by its public half as agent-setup.sh compares
-    # fingerprints: a copy in another encoding (-traditional) is still it.
+        check_age()
+    # The same key, compared by its recipient (the identity's public half):
+    # a copy with other comment lines is still it.
     if do_rewrap and check_key(current) == check_key(previous):
         # Between agent-setup.sh --rotate's two steps both names hold the old
         # key: a blob "for the current key" then is for the key being retired.
         raise fail(
-            f"--rewrap: {previous} holds the same key as {current}: the rotation "
+            f"--rewrap: {previous!r} holds the same key as {current!r}: the rotation "
             "didn't finish. Run agent-setup.sh --rotate again (SETUP.md, Rotation step 1)."
         )
     if do_rewrap:
@@ -865,11 +1012,18 @@ def main() -> int:
         # put the rewrite on a key, and a blob doesn't land beside it.
         # Both the directory the key file is in and the one the wrappers name
         # (a symlinked HANDOFF_PRIVKEY, where .previous is looked up).
-        for key_dir in (os.path.dirname(os.path.realpath(current)),
-                        os.path.realpath(os.path.dirname(os.path.abspath(current)))):
+        asked = os.path.dirname(os.path.abspath(current))
+        # The directory is named as given when the key's own is that one (not
+        # a symlinked key file, whose real directory is somewhere else).
+        key_real = os.path.dirname(os.path.realpath(current))
+        for key_dir, given_dir in ((key_real,
+                                    asked if key_real == os.path.realpath(asked) else key_real),
+                                   (os.path.realpath(asked), asked)):
             if under_dir(target, key_dir):
-                raise fail(f"--rewrap's --blob-file resolves to {target!r}, under the "
-                           f"key's directory ({key_dir}); the blob belongs in the store")
+                raise fail(f"--rewrap's --blob-file {shown(target)!r} resolves to {target!r}, "
+                           f"under the key's directory ({given_dir!r}"
+                           + ("" if given_dir == key_dir else f", that is {key_dir!r}") + "); "
+                           "the blob belongs in the store")
     plaintext, slot = decrypt(blob, current, previous)
     creds = check_payload(parse_payload(plaintext), label, env_map)
     if check:
@@ -881,15 +1035,15 @@ def main() -> int:
         check_blob_file(target)
         if slot == "current":
             # Already for the current key: rewriting it would only change the
-            # bytes (OAEP is randomized) and confuse a comparison with the store.
-            print(f"consume.py: the blob in {target!r} is already for the current key "
-                  f"{current}; nothing written", file=sys.stderr)
+            # bytes (age output is randomized) and confuse a comparison with the store.
+            print(f"consume.py: the blob in {shown(target)!r} is already for the current key "
+                  f"{current!r}; nothing written", file=sys.stderr)
             return 0
         # The new blob is ciphertext, written over the blob file only once it's
         # whole and checked.
         write_atomically(target, (rewrap(plaintext, current) + "\n").encode("ascii"))
-        print(f"consume.py: rewrapped {target!r} to the current key {current}; the blob "
-              f"was for the previous key ({previous})", file=sys.stderr)
+        print(f"consume.py: rewrapped {shown(target)!r} to the current key {current!r}; the blob "
+              f"was for the previous key ({previous!r})", file=sys.stderr)
         return 0
     if slot == "current" and os.path.lexists(previous):
         # During a rotation, a positive line too: a probe's check is then for
@@ -947,7 +1101,7 @@ if __name__ == "__main__":
         sys.exit(main())
     except KeyboardInterrupt:
         if WRITTEN is not None:
-            print(f"consume.py: interrupted after the rename; {WRITTEN!r} holds the new "
+            print(f"consume.py: interrupted after the rename; {shown(WRITTEN)!r} holds the new "
                   "blob (probe the label: SETUP.md, Rotation step 4)", file=sys.stderr)
         else:
             print("consume.py: interrupted; nothing written", file=sys.stderr)

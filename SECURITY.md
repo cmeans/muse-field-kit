@@ -6,7 +6,7 @@ Each folder is versioned on its own, in its `CHANGELOG.md`. Security fixes go in
 
 | Folder | Supported | Not supported |
 | --- | --- | --- |
-| `encrypted-credential-handoff` | 0.1.x (the latest release) | none older |
+| `encrypted-credential-handoff` | 0.2.x (the latest release) | 0.1.x: 0.2.0 replaced its cryptography (RSA through OpenSSL) with `age`, and a 0.1.x install sets up again (the folder's `CHANGELOG.md`) |
 
 ## Reporting an issue
 
@@ -27,7 +27,7 @@ Guides and patterns without scripts (documentation problems) can be reported as 
 - What the problem is and what it lets an attacker do.
 - Steps to reproduce, or a proof of concept. Use the published test keys under a folder's `test/` directory, never a real key or credential.
 - The folder and its version (the release tag, or the commit you used).
-- Your platform and tool versions. For `encrypted-credential-handoff`, the operating system, `bash` and `python3` versions, and the crypto tool's version (`openssl version` in 0.1.x).
+- Your platform and tool versions. For `encrypted-credential-handoff`, the operating system, the `bash`, `python3` and `jq` versions (on Windows, the PowerShell version, `$PSVersionTable.PSVersion`), and `age --version`. The output of `handoff.sh --check-setup` (or `handoff.ps1 -CheckSetup`) or `agent-setup.sh --check-setup` gives these; it holds no secret.
 - Whether it reproduces with the folder's scripts used exactly as its `SETUP.md` says, or only with a changed setup.
 
 ## What to expect
@@ -53,7 +53,7 @@ Each security-relevant folder's own `SECURITY.md` says what its pattern claims t
 **Out of scope**
 
 - Anything a folder's threat model lists under "does not defend against" (for `encrypted-credential-handoff`: a compromised host, the agent misbehaving, sender authentication, key compromise and the others listed there). A report that one of those isn't defended is a documentation discussion, not a vulnerability.
-- Vulnerabilities in the tools a folder uses (OpenSSL, `age`, Python, `jq`, `bash`): report them upstream.
+- Vulnerabilities in the tools a folder uses (`age`, Python, `jq`, `bash`, PowerShell): report them upstream.
 - Vulnerabilities in Muse, its platform or its connectors: report them to Meta.
 - Attacks that need shell access as the agent's account, or the private key, already.
 
