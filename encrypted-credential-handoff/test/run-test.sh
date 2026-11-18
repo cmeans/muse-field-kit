@@ -589,21 +589,21 @@ if [ "$rc" != 1 ] || ! grep -q '^PASS header' "$S/out" \
   fail "--check-setup misreported a failed run (exit $rc): $(grep -E 'round trip|header' "$S/out")"
 fi
 echo "ok (--check-setup's byte comparison: a mismatch and a failed run each FAIL with their own cause)"
-# The byte check runs in the locale a wrapper sets, not the caller's: a
-# Latin-1 shell still PASSes (where such a locale is installed).
-l1=
-for l in en_US.iso88591 en_US.ISO-8859-1 de_DE.iso88591; do
-  case "$(LC_ALL=$l python3 -I -c 'import sys; print(sys.getfilesystemencoding())' 2>/dev/null)" in
-    iso8859-1|latin-1|iso-8859-1) l1=$l; break ;;
-  esac
-done
-if [ -n "$l1" ]; then
-  env LC_ALL="$l1" LANG="$l1" HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-  grep -q '^PASS round trip: .*byte for byte$' "$S/out" || fail "--check-setup under LC_ALL=$l1 didn't pass the round trip: $(grep 'round trip' "$S/out")"
-  echo "ok (--check-setup's round trip under the caller's LC_ALL=$l1)"
-else
-  echo "skip: no ISO-8859-1 locale installed, --check-setup under a Latin-1 caller wasn't run"
-fi
+# The byte check runs in the locale a wrapper sets (LANG=$wl, no LC_ALL or
+# LC_CTYPE), not the caller's: a python3 shim records what the run-mode
+# consume.py got. (No real non-UTF-8 locale is needed, so this runs on every
+# OS: macOS's Python is UTF-8 whatever the locale, and CI installs none.)
+mkdir -p "$S/locshim"
+cat >"$S/locshim/python3" <<EOF
+#!/bin/sh
+case "\$*" in *consume.py*" -- "*) printf '%s|%s|%s\n' "\${LANG-unset}" "\${LC_ALL-unset}" "\${LC_CTYPE-unset}" >"$S/loc-seen" ;; esac
+exec $(command -v python3) "\$@"
+EOF
+chmod 755 "$S/locshim/python3"; rm -f "$S/loc-seen"
+env PATH="$S/locshim:$PATH" LC_ALL=en_US.ISO-8859-1 LC_CTYPE=en_US.ISO-8859-1 LANG=en_US.ISO-8859-1 HANDOFF_PRIVKEY="$TMPKEY" \
+  bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+[ "$(cat "$S/loc-seen" 2>/dev/null)" = "$wl|unset|unset" ] || fail "--check-setup's run-mode consume.py didn't get the wrapper's locale: $(cat "$S/loc-seen" 2>/dev/null)"
+echo "ok (--check-setup's byte check runs under LANG=$wl, whatever the caller's locale)"
 # Its "no key yet" advice fits the key path (#66): plain setup only for the
 # default path, HANDOFF_KEY_DIR for another directory's handoff-identity.txt,
 # and a warning for a name no setup makes.
@@ -2655,7 +2655,7 @@ expect_refusal "--retire KEY --yes (the reason)" 2 "--yes goes right after --ret
   rk bash ../agent-setup.sh --retire "$KEY" --yes
 # A misspelled or misplaced confirmation in any position gets its reason,
 # not a bare usage line (issue #16 item 1); upper case too (item 5).
-for args in "-y $KEY" "$KEY -y" "$KEY -Y" "$KEY --YES" "--y $KEY" "$KEY yes" "yes $KEY" "$KEY y"; do
+for args in "-y $KEY" "$KEY -y" "$KEY -Y" "$KEY --YES" "--y $KEY" "$KEY yes" "yes $KEY" "$KEY y" "$KEY YES" "Y $KEY"; do
   # shellcheck disable=SC2086  # the words are separate arguments on purpose
   expect_refusal "--retire $args" 2 "the confirmation is spelled --yes, right after --retire" \
     rk bash ../agent-setup.sh --retire $args
@@ -3020,6 +3020,18 @@ dashlock="rmdir '$(cd "$S/dashdir/-" && pwd -P)/.handoff-lock'"
 (cd "$S/dashdir" && expect_refusal "--rotate of a key in a directory named -" 1 "$dashlock" \
   env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -/handoff-identity.txt)
 rm -r "$S/dashdir"
+# A key directory with a control character in its path is refused before
+# anything is made: the printed path could pass for other lines of output.
+nlkd="$S/a"$'\n'"recipient: age1fake"
+expect_refusal "setup into a key directory with a newline" 1 "has a control character in its path (a newline?); nothing was written" \
+  env HANDOFF_KEY_DIR="$nlkd" bash ../agent-setup.sh
+[ ! -e "$nlkd" ] || fail "setup made a key directory with a newline in its path"
+! grep -q '^recipient: age1fake' "$S/err" || fail "the refusal printed the path's newline raw"
+# The quoting note is matched in C: a UTF-8 path under a Latin-1 caller locale
+# (whose 0x80-0x9f are control characters) gets no note.
+mkdir -p "$S/日本€"; chmod 700 "$S/日本€"
+env LC_ALL=en_US.ISO-8859-1 HANDOFF_KEY_DIR="$S/日本€" bash ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "setup into a non-ASCII directory under a Latin-1 locale failed"; }
+! grep -qF "quote it in every wrapper" "$S/out" || fail "a UTF-8 path got the quoting note under a Latin-1 caller locale"
 # A caller's SHELLOPTS=noclobber doesn't make --check-setup's second write
 # to a scratch file fail (a false FAIL identity).
 env SHELLOPTS=noclobber HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" \
@@ -3284,6 +3296,17 @@ hasnt "handoff.sh --check-setup" "(FAIL|INFO) "
 [ "$(wc -l <"$C8/out")" -eq 9 ] || { cat "$C8/out" >&2; fail "handoff.sh --check-setup: not nine lines"; }
 [ ! -s "$C8/err" ] || { cat "$C8/err" >&2; fail "handoff.sh --check-setup wrote to stderr"; }
 echo "ok (handoff.sh --check-setup)"
+# A caller's SHELLOPTS=noclobber doesn't break the base64 -d || base64 -D
+# fallback (its second write to the same file), as on a base64 with only -D.
+rm -rf "$C8/p-b64"; cp -RP "$P_ALL" "$C8/p-b64"; rm "$C8/p-b64/base64"
+# shellcheck disable=SC2016  # $1 and $@ are the shim's own, not this shell's
+printf '#!/bin/sh\ncase "${1-}" in -d) exit 1 ;; -D) shift; exec %s -d "$@" ;; esac\nexec %s "$@"\n' \
+  "$(command -v base64)" "$(command -v base64)" >"$C8/p-b64/base64"; chmod 755 "$C8/p-b64/base64"
+run8 "handoff.sh --check-setup under noclobber, base64 with only -D" 0 \
+  env SHELLOPTS=noclobber TMPDIR="$C8/tmp" PATH="$C8/p-b64" "$BASH" "$H8" --check-setup
+has "handoff.sh --check-setup under noclobber" "PASS base64: "
+has "handoff.sh --check-setup under noclobber" "PASS round trip: "
+echo "ok (handoff.sh --check-setup under a caller's noclobber)"
 
 # It reads no stdin: a stdin that never ends doesn't hold it up.
 mkfifo "$C8/stdin.fifo"

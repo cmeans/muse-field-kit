@@ -992,6 +992,16 @@ if [ -n "${HANDOFF_KEY_DIR-}" ]; then
 else
   KEY_DIR=$(default_dir) || exit 1
 fi
+# A control character (a newline, say) in the key's path: the path printed
+# below, which a wrapper sets HANDOFF_PRIVKEY to, could pass for other lines
+# of output, and no wrapper should hold it. Checked in C, before anything is
+# made, with the current directory in front of a relative one, as the
+# absolute path below will have it.
+case "$KEY_DIR" in /*) kd_abs=$KEY_DIR ;; *) kd_abs=$PWD/$KEY_DIR ;; esac
+if ( LC_ALL=C; [[ "$kd_abs" =~ [[:cntrl:]] ]] ); then
+  echo "agent-setup.sh: the key directory $(qp "$kd_abs") has a control character in its path (a newline?); nothing was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
+  exit 1
+fi
 PRIV="$KEY_DIR/handoff-identity.txt"
 
 if [ -e "$PRIV" ]; then
@@ -1098,7 +1108,9 @@ if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-identity.txt" ]; th
 fi
 # By the characters themselves, not by printf %q, which also quotes non-ASCII
 # letters (under LC_ALL=C, and on bash 3.2) and a comma.
+# Matched in C, so the caller's locale doesn't count a UTF-8 byte as a control
+# character (0x80-0x9f are controls in Latin-1).
 shell_special='[][[:space:][:cntrl:]'\''"\\$`*?#~&;|<>(){}!^]'
-if [[ "$PRIV" =~ $shell_special ]]; then
+if ( LC_ALL=C; [[ "$PRIV" =~ $shell_special ]] ); then
   echo "note: that path has characters a shell reads specially: quote it in every wrapper, as HANDOFF_PRIVKEY=$(sq "$PRIV")"
 fi
