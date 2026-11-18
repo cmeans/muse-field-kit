@@ -1626,10 +1626,24 @@ for i in $(seq 0 $(( npc - 1 ))); do
       grep -qF -- "$c_msg" "$S/err" || fail "payload case $c_name ($how): stderr lacks \"$c_msg\""
       [ "$(wc -l <"$S/out")" -eq 1 ] || fail "payload case $c_name ($how): stdout is not one line"
       no_dummy_in "$S/out" "$S/err"
-      consume --label example --check --blob-file "$S/out" >"$S/cout" 2>"$S/cerr" \
+      consume --label example --check --blob-file "$S/out" >/dev/null 2>"$S/cerr" \
         || { cat "$S/cerr" >&2; fail "payload case $c_name ($how): consume.py --check refused the blob"; }
+      # What handoff.sh encrypted, byte for byte: the input with a leading
+      # UTF-8 byte-order mark dropped and its trailing line feeds dropped
+      # ($(...) drops them), and nothing else changed (issue #47). Opening
+      # the blob alone would pass a payload rewritten to other valid JSON.
+      base64 -d <"$S/out" | "$AGE" -d -i "$TMPKEY" >"$S/pc-got" \
+        || fail "payload case $c_name ($how): age couldn't open the blob"
+      python3 -I -c 'import sys
+b = open(sys.argv[1], "rb").read()
+if b.startswith(b"\xef\xbb\xbf"):
+    b = b[3:]
+open(sys.argv[2], "wb").write(b.rstrip(b"\n"))' "$S/pc-in" "$S/pc-want"
+      cmp -s "$S/pc-got" "$S/pc-want" \
+        || fail "payload case $c_name ($how): the decrypted bytes differ from the input ($(wc -c <"$S/pc-got") bytes, wanted $(wc -c <"$S/pc-want"))"
+      rm -f "$S/pc-got" "$S/pc-want"
     done
-    echo "ok (accepted: payload $c_name, and consume.py opens it)"
+    echo "ok (accepted: payload $c_name, and its blob holds the input's bytes)"
   else
     expect_refusal "payload case $c_name" "$c_exit" "$c_msg" bash "$S/hd/handoff.sh" <"$S/pc-in"
     expect_refusal "payload case $c_name (FILE)" "$c_exit" "$c_msg" bash "$S/hd/handoff.sh" "$S/pc-in" </dev/null

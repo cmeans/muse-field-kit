@@ -1,5 +1,11 @@
 # Changelog — encrypted-credential-handoff
 
+## Unreleased
+
+### Changed
+
+- **The test suite checks the bytes `handoff.sh` encrypts** (#54, closes #47): each accepted payload case is decrypted and compared with its input, not only opened.
+
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 
 Version 0.2.0 (#42). **`age` replaces RSA, and a 0.1.0 install sets up again from scratch:** 0.2.0 reads neither 0.1.0's RSA keys nor its blobs, so an install makes a new identity, the user saves its recipient, and each credential is staged again. Closes #37 (whether to adopt OpenSSL CMS for payloads over RSA's 190 bytes: decided against, for `age`; see README, Choosing the suite); see also #39.
