@@ -129,6 +129,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 
 DEFAULT_PRIVKEY = "~/.config/handoff/handoff-identity.txt"
 PRIVKEY_ENV = "HANDOFF_PRIVKEY"
@@ -352,6 +353,7 @@ def read_identity(path: str) -> bytes:
         raise fail(f"private key at {path!r} is a symbolic link; "
                    "give the identity file itself. Refusing.")
     check_identity_stat(path, lst)
+    check_key_dir(path)
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                      | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0))
@@ -360,6 +362,23 @@ def read_identity(path: str) -> bytes:
     with os.fdopen(fd, "rb") as f:
         check_identity_stat(path, os.fstat(f.fileno()))
         return f.read(MAX_KEY_FILE + 1)
+
+
+def check_key_dir(path: str) -> None:
+    """The key's directory must be writable by its owner alone (or carry the
+    sticky bit): anyone else who can write there can rename another file
+    over the key, or add one beside it (agent-setup.sh makes it 0700)."""
+    if os.name == "nt":
+        return
+    directory = os.path.dirname(os.path.abspath(path))
+    try:
+        dst = os.stat(directory)
+    except OSError as e:
+        raise fail(f"cannot read the key's directory {directory!r}: {e.strerror}") from None
+    if dst.st_mode & 0o022 and not dst.st_mode & stat.S_ISVTX:
+        raise fail(f"the key's directory {directory!r} is writable by others (mode "
+                   f"{stat.S_IMODE(dst.st_mode):04o}); stop and report it to the user, "
+                   f"who runs: chmod go-w {shell_quote(directory)}")
 
 
 def check_identity_stat(path: str, st: os.stat_result) -> None:
@@ -381,12 +400,19 @@ def check_identity_stat(path: str, st: os.stat_result) -> None:
 
 
 def check_key(privkey: str) -> str:
+    """The identity's recipient, after load_key's checks."""
+    return load_key(privkey)[0]
+
+
+def load_key(privkey: str) -> "tuple[str, bytes]":
     """Refuse a key file that isn't an owner-only age identity.
 
     Exactly one AGE-SECRET-KEY-1 line (comment and blank lines aside), no
     plugin or post-quantum identity, and nothing else. Returns the identity's
     recipient (`age-keygen -y`), which names the key whatever the file's
-    comments say. Nothing in a message comes from the file's contents.
+    comments say, and the bytes checked, which are what age is given
+    (age_decrypt): age never opens the key's path itself. Nothing in a
+    message comes from the file's contents.
     """
     data = read_identity(privkey)
     try:
@@ -441,33 +467,51 @@ def check_key(privkey: str) -> str:
     if proc.returncode != 0 or not AGE_RECIPIENT_RE.fullmatch(out):
         # age-keygen's own text is not shown.
         raise fail(f"cannot load the age identity at {privkey!r}")
-    return out
+    return out, data
 
 
-def identity_arg(path: str) -> str:
-    # `age -i -` reads an identity from stdin: a path that is "-" or starts
-    # with one is passed as an absolute path.
-    return path if os.path.isabs(path) else os.path.abspath(path)
+def age_decrypt(raw: bytes, identity: bytes) -> "bytes | None":
+    """age -d on raw with the identity bytes load_key checked: the
+    plaintext, or None if age said no.
 
-
-def age_decrypt(raw: bytes, identity: str) -> "bytes | None":
-    """age -d -i IDENTITY on raw: the plaintext, or None if age said no.
-
-    The blob goes in through a pipe of age's own (never the caller's stdin),
-    and age's stderr is not shown: what it says depends on the blob.
+    The identity goes to age on a pipe of its own (`-i /dev/fd/N`), never by
+    the key's path, so what age reads is what was checked, whatever happens
+    to the file meanwhile. A thread writes it, so an identity bigger than a
+    pipe's buffer can't block. The blob goes in through another pipe of
+    age's own (never the caller's stdin), and age's stderr is not shown:
+    what it says depends on the blob.
     """
+    r, w = os.pipe()
+    writer = threading.Thread(target=write_all_close, args=(w, identity), daemon=True)
     try:
-        proc = subprocess.run(
-            ["age", "-d", "-i", identity_arg(identity)],
-            input=raw, capture_output=True, env=age_env(),
-        )
-    except FileNotFoundError:
-        raise age_missing("age") from None
-    except OSError as e:
-        raise age_cannot_run("age", e) from None
+        writer.start()
+        try:
+            proc = subprocess.run(
+                ["age", "-d", "-i", "/dev/fd/%d" % r],
+                input=raw, capture_output=True, env=age_env(), pass_fds=(r,),
+            )
+        except FileNotFoundError:
+            raise age_missing("age") from None
+        except OSError as e:
+            raise age_cannot_run("age", e) from None
+    finally:
+        os.close(r)
+        writer.join()
     if proc.returncode != 0:
         return None
     return proc.stdout
+
+
+def write_all_close(fd: int, data: bytes) -> None:
+    """Write data to fd and close it; a reader that has gone (EPIPE) ends it."""
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
@@ -482,14 +526,12 @@ def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
     """
     raw = decode_blob(blob_b64)
     version = check_age()
-    check_key(current)
-    plain = age_decrypt(raw, current)
+    plain = age_decrypt(raw, load_key(current)[1])
     if plain is not None:
         return plain, "current"
     tried = f"decryption failed with the key at {current!r}"
     if os.path.lexists(previous):
-        check_key(previous)
-        plain = age_decrypt(raw, previous)
+        plain = age_decrypt(raw, load_key(previous)[1])
         if plain is not None:
             return plain, "previous"
         tried = (f"decryption failed with the current key ({current!r}) "
@@ -730,8 +772,9 @@ def rewrap(plaintext: bytes, current: str) -> str:
     key to exactly this payload, since it replaces the old blob in the store
     with no copy kept (SETUP.md, Rotation).
     """
-    blob = age_encrypt(plaintext, check_key(current))
-    back = age_decrypt(blob, current)
+    recipient, identity = load_key(current)
+    blob = age_encrypt(plaintext, recipient)
+    back = age_decrypt(blob, identity)
     if back is None or back != plaintext:
         raise fail("the new blob doesn't open with the current key to the same "
                    "payload; keep the old blob, and report this")

@@ -730,6 +730,53 @@ grep -qF "PATH was '/nonexistent'" "$S/err" || fail "the age-keygen-not-found me
 expect_refusal "age-keygen not found (first setup)" 1 "age-keygen not found" \
   env PATH=/nonexistent HANDOFF_KEY_DIR="$S/noage-key" "$BASHBIN" ../agent-setup.sh
 [ ! -e "$S/noage-key" ] || fail "first setup made a key directory without age-keygen"
+# consume.py gives age the identity bytes it checked, on a pipe (-i
+# /dev/fd/N), never the key's path: a stub age that puts another key at the
+# path just before decrypting still decrypts with the checked one. With the
+# path on age's command line, it would read the other key and fail.
+SW="$S/swap"; mkdir -p "$SW/bin" "$SW/k"; chmod 700 "$SW/k"
+cp -p "$TMPKEY" "$SW/k/id.txt"; chmod 600 "$SW/k/id.txt"
+"$AGE_KEYGEN" -o "$SW/other.txt" 2>/dev/null; chmod 600 "$SW/other.txt"
+# shellcheck disable=SC2016  # $1 and $@ are the stub's own, written literally
+printf '#!/bin/sh\ncase "$1" in -d) printf "%%s\\n" "$@" >"%s/args"; cp "%s" "%s" ;; esac\nexec %s "$@"\n' \
+  "$SW" "$SW/other.txt" "$SW/k/id.txt" "$(command -v "$AGE")" >"$SW/bin/age"
+chmod 755 "$SW/bin/age"
+env PATH="$SW/bin:$PATH" HANDOFF_PRIVKEY="$SW/k/id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "consume.py didn't decrypt with the checked identity once the key's path held another key"; }
+cmp -s "$S/out" expected-check.txt || fail "consume.py --check with the key swapped after its check printed the wrong output"
+[ -s "$SW/args" ] || fail "the stub age wasn't run to decrypt"
+grep -qE '^/dev/fd/[0-9]+$' "$SW/args" || fail "consume.py didn't give age the identity as /dev/fd/N: $(tr '\n' ' ' <"$SW/args")"
+! grep -qF "$SW/k" "$SW/args" || fail "consume.py gave age the key's path: $(tr '\n' ' ' <"$SW/args")"
+echo "ok (consume.py decrypts with the identity it checked, on a pipe, not its path)"
+# A key directory others can write to: refused by consume.py and by
+# agent-setup.sh (--rotate, --retire, first setup), and a FAIL from
+# --check-setup. The sticky bit (others can't rename the owner's files) is
+# accepted, as for --rewrap's blob directory.
+cp -p "$TMPKEY" "$SW/k/id.txt"
+chmod 770 "$SW/k"
+expect_refusal "consume.py with a group-writable key directory" 1 "the key's directory '$SW/k' is writable by others (mode 0770); stop and report it to the user, who runs: chmod go-w '$SW/k'" \
+  env HANDOFF_PRIVKEY="$SW/k/id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
+expect_refusal "--rotate in a group-writable key directory" 1 "the key's directory $SW/k is writable by others; stop and report it to the user, who runs: chmod go-w $SW/k" \
+  env HANDOFF_PRIVKEY="$SW/k/id.txt" bash ../agent-setup.sh --rotate
+[ ! -e "$SW/k/id.txt.previous" ] || fail "--rotate in a group-writable key directory changed it"
+cp -p "$SW/k/id.txt" "$SW/k/id.txt.previous"
+expect_refusal "--retire --yes in a group-writable key directory" 1 "is writable by others" \
+  env HANDOFF_PRIVKEY="$SW/k/id.txt" bash ../agent-setup.sh --retire --yes
+[ -e "$SW/k/id.txt.previous" ] || fail "--retire in a group-writable key directory deleted a key"
+rm "$SW/k/id.txt.previous"
+env HANDOFF_PRIVKEY="$SW/k/id.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed a group-writable key directory"
+grep -qxF "FAIL identity: the key's directory $SW/k is writable by others; stop and report it to the user, who runs: chmod go-w $SW/k" "$S/out" \
+  || fail "--check-setup didn't fail a group-writable key directory: $(grep identity "$S/out")"
+echo "ok (refused: --check-setup with a group-writable key directory)"
+mkdir -p "$SW/gen"; chmod 707 "$SW/gen"
+expect_refusal "first setup into a world-writable key directory" 1 "the key's directory $SW/gen is writable by others" \
+  env HANDOFF_KEY_DIR="$SW/gen" bash ../agent-setup.sh
+[ ! -e "$SW/gen/handoff-identity.txt" ] || fail "first setup wrote a key into a world-writable directory"
+chmod 1770 "$SW/k"
+env HANDOFF_PRIVKEY="$SW/k/id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt >/dev/null 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "consume.py refused a sticky group-writable key directory"; }
+echo "ok (accepted: a sticky group-writable key directory)"
+chmod 700 "$SW/k"
 # The environment age-keygen gets is built from scratch: PATH only. A stub
 # records what it sees; the variables age reads must not reach it.
 mkdir -p "$S/envstub"
