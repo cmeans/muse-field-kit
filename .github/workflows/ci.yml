@@ -28,9 +28,11 @@ concurrency:
 jobs:
   # NOTE: pr-labels.yml and pr-labels-ci.yml find this workflow by its name
   # ("CI") and file (ci.yml). If either is renamed, update them too.
-  # This job's name ("encrypted-credential-handoff") is a required check in
-  # main's ruleset: if it is renamed, update the ruleset, or every PR waits
-  # on a check that never comes.
+  # main's ruleset requires QA Gate and one CI check: "ci-ok" (the last job,
+  # which needs all the others) once the maintainer swaps it in, and this
+  # job ("encrypted-credential-handoff") until then. If a required job is
+  # renamed, update the ruleset, or every PR waits on a check that never
+  # comes.
   encrypted-credential-handoff:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -337,7 +339,8 @@ jobs:
           retention-days: 1
 
   # Older age releases, built from source (go install, checked against
-  # sum.golang.org), against the agent side. Not required for merging at first.
+  # sum.golang.org), against the agent side. Required for merging through
+  # ci-ok, like every job here.
   linux-age-versions:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -593,3 +596,123 @@ jobs:
           find "$RUNNER_TEMP/windows-interop" -type f | sort | head -80
           python3 -I encrypted-credential-handoff/test/check-interop.py \
             "$RUNNER_TEMP/windows-interop/ps5" "$RUNNER_TEMP/windows-interop/ps7"
+
+  # The one CI check main's ruleset requires besides QA Gate, once the
+  # maintainer swaps it in (see the note at the top of jobs:). It passes
+  # only when every job it needs passed. Each kit's jobs
+  # cover the platforms that kit supports, so a Linux-only kit adds Linux
+  # jobs and the ruleset never changes. Add every new job to `needs` below:
+  # a job missing from it fails ci-ok's last step, which names it. All the
+  # gate's logic is in .github/scripts/ci-jobs.sh, which the self-test step
+  # checks on every run.
+  # `if: always()` makes it run, and fail, when a job it needs failed or was
+  # canceled: a job skipped because another failed reports "skipped", which
+  # a required check would count as passing.
+  # Don't give ci.yml an `on: ... paths:` filter: a workflow that doesn't
+  # run leaves the required ci-ok check pending and the PR blocked. A job
+  # skipped on purpose (its own `if:`) would need a named exception in
+  # ci-jobs.sh check; today none is, so anything but success fails.
+  # `always()`, not `!cancelled()`, on purpose: in a canceled run a
+  # `!cancelled()` gate would be skipped, and a skipped required check counts
+  # as passing. Its last step has `if: always()` too, so in a canceled run it
+  # still runs and fails on the canceled results. ci-jobs.sh reads ci.yml
+  # with yq (preinstalled on Ubuntu runners) and refuses a job-level
+  # `continue-on-error`, whose failure would read as success here.
+  ci-ok:
+    if: always()
+    needs:
+      - encrypted-credential-handoff
+      - assets
+      - linux-age-versions
+      - macos
+      - windows
+      - windows-interop
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ci-jobs.sh self-test (list and check)
+        env:
+          GATE: ${{ github.job }}
+        run: |
+          # list: copies of ci.yml with one job added in each YAML form must
+          # list exactly the real jobs plus that one; broken or unsafe files
+          # must be refused. check: for every job in turn, needs with it
+          # missing, skipped, canceled or failed must fail; only every job
+          # present and successful passes.
+          s=.github/scripts/ci-jobs.sh
+          w=.github/workflows/ci.yml
+          t="$RUNNER_TEMP/ci-jobs"; mkdir -p "$t"
+          j=zz-ci-jobs-selftest
+          fx() { echo "::error::self-test fixture: $1 (the self-test, not ci-jobs.sh, needs updating for ci.yml's layout)"; exit 1; }
+          base=$("$s" list "$w" 2>&1) || { printf '%s\n' "$base"; echo "::error::$(printf '%s' "$base" | tail -n 1)"; exit 1; }
+          if printf '%s\n' "$base" | grep -qx "$j"; then echo "::error::a real job is named $j: rename the self-test's job"; exit 1; fi
+          want=$(printf '%s\n' "$base" "$j" | LC_ALL=C sort)
+          # The fixtures append jobs at the end and edit the plain `jobs:` line.
+          [ "$(yq -r 'keys | .[-1]' "$w")" = jobs ] || fx "jobs: is no longer ci.yml's last top-level key"
+          [ "$(grep -c '^jobs:$' "$w")" = 1 ] || fx "ci.yml has no single plain 'jobs:' line"
+          add() { cp "$w" "$t/$1.yml"; printf '%s\n' "$2" '    runs-on: ubuntu-latest' '    steps:' '      - run: exit 1' >> "$t/$1.yml"; }
+          add plain "  $j:"
+          add comment "  $j: # a Linux-only kit"
+          add dquoted "  \"$j\":"
+          add squoted "  '$j':"
+          cp "$w" "$t/flow.yml"; printf '%s\n' "  $j: {runs-on: ubuntu-latest, steps: [{run: exit 1}]}" >> "$t/flow.yml"
+          # A decoy jobs: inside a quoted scalar continued at column 0, after
+          # the real key is respelled: a line-based reader saw only the decoy.
+          sed 's/^jobs:$/jobs :/' "$w" > "$t/decoy.yml"
+          printf '%s\n' "  $j:" '    runs-on: ubuntu-latest' '    steps:' '      - name: "x' 'jobs:' '  a:' '          "' '        run: exit 1' >> "$t/decoy.yml"
+          # First under jobs:, not last.
+          awk -v j="$j" '{ print } /^jobs:$/ && !d { print "  " j ":"; print "    runs-on: ubuntu-latest"; print "    steps:"; print "      - run: exit 1"; d = 1 }' "$w" > "$t/first.yml"
+          # A job written as an alias of a template elsewhere in the file.
+          cp "$w" "$t/alias.yml"; printf '%s\n' "  $j: *zz-tmpl" >> "$t/alias.yml"
+          sed -i 's/^jobs:$/x-tmpl: \&zz-tmpl {runs-on: ubuntu-latest, steps: [{run: exit 1}]}\njobs:/' "$t/alias.yml"
+          for c in plain comment dquoted squoted flow decoy first alias; do
+            [ "$("$s" list "$t/$c.yml")" = "$want" ] || { echo "::error::ci-jobs.sh didn't list exactly the jobs plus the one added ($c)"; exit 1; }
+          done
+          # A fixed file with a known answer, so a list that drops a job
+          # everywhere (and so agrees with itself above) still fails.
+          printf '%s\n' 'on: push' 'jobs:' '  b-two:' '    runs-on: x' '  "a-one":' '    runs-on: x' '  c-three: {runs-on: x}' > "$t/known.yml"
+          [ "$("$s" list "$t/known.yml")" = "$(printf '%s\n' a-one b-two c-three)" ] || { echo "::error::ci-jobs.sh list gave the wrong jobs for a known file"; exit 1; }
+          printf '%s\n' 'name: x' 'on: push' > "$t/nojobs.yml"
+          printf '%s\n' 'jobs: {}' > "$t/emptyjobs.yml"
+          printf '%s\n' 'jobs:' '  a: [' > "$t/broken.yml"
+          add coe "  $j:"; printf '%s\n' '    continue-on-error: true' >> "$t/coe.yml"
+          # continue-on-error reached through an alias.
+          cp "$w" "$t/coealias.yml"; printf '%s\n' "  $j: *zz-tmpl" >> "$t/coealias.yml"
+          sed -i 's/^jobs:$/x-tmpl: \&zz-tmpl {runs-on: ubuntu-latest, continue-on-error: true, steps: [{run: exit 1}]}\njobs:/' "$t/coealias.yml"
+          for c in nojobs emptyjobs broken coe coealias; do
+            if "$s" list "$t/$c.yml" >/dev/null 2>&1; then echo "::error::ci-jobs.sh accepted the $c copy"; exit 1; fi
+          done
+          ok=$(printf '%s\n' "$base" | grep -vxF -- "$GATE" | jq -R -s -c 'split("\n") | map(select(. != "")) | map({(.): {result: "success"}}) | add')
+          "$s" check "$w" "$GATE" "$ok" >/dev/null || { echo "::error::ci-jobs.sh check failed needs where every job passed"; exit 1; }
+          for k in $(printf '%s' "$ok" | jq -r 'keys[]'); do
+            for v in missing skipped cancelled failure; do
+              case $v in
+                missing) n=$(printf '%s' "$ok" | jq -c --arg k "$k" 'del(.[$k])') ;;
+                *) n=$(printf '%s' "$ok" | jq -c --arg k "$k" --arg r "$v" '.[$k].result = $r') ;;
+              esac
+              if "$s" check "$w" "$GATE" "$n" >/dev/null 2>&1; then echo "::error::ci-jobs.sh check passed with $k $v"; exit 1; fi
+            done
+          done
+          # These also fail by another path; the message must name the cause.
+          for n in '[]' 'not json'; do
+            if e=$("$s" check "$w" "$GATE" "$n" 2>&1); then echo "::error::ci-jobs.sh check passed with needs $n"; exit 1; fi
+            printf '%s' "$e" | grep -q "NEEDS_JSON isn't a JSON object" || { echo "::error::ci-jobs.sh check with needs $n didn't say it isn't an object"; exit 1; }
+          done
+          if e=$("$s" check "$w" no-such-gate "$ok" 2>&1); then echo "::error::ci-jobs.sh check passed with a gate that isn't a job"; exit 1; fi
+          printf '%s' "$e" | grep -q "no job named no-such-gate" || { echo "::error::ci-jobs.sh check with an unknown gate didn't say so"; exit 1; }
+          echo "ci-jobs.sh: list gives exactly the jobs for each form tried (aliases included) and refuses broken, jobless, empty and continue-on-error files; check fails for every job missing, skipped, canceled or failed, for bad needs and for an unknown gate"
+      - name: Every job here is gated and passed
+        # Also when a run is canceled: then it runs and fails on the
+        # canceled results, whatever GitHub does with skipped steps.
+        if: always()
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          GATE: ${{ github.job }}
+        run: |
+          # The cause (ci-jobs.sh's last line) becomes the run's annotation.
+          out=$(.github/scripts/ci-jobs.sh check .github/workflows/ci.yml "$GATE" "$NEEDS" 2>&1) \
+            || { printf '%s\n' "$out"; echo "::error::$(printf '%s' "$out" | tail -n 1)"; exit 1; }
+          printf '%s\n' "$out"
