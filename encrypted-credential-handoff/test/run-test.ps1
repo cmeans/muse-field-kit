@@ -392,6 +392,16 @@ if ($caseFs) {
   Assert-Refusal '-To Muse with handoff-muse.age beside it' 1 'but handoff-muse.age does. Names are case-sensitive: did you mean -To muse?' $r
 }
 Clear-HN
+# The case and the separator both differ, for a NAME given with -To: the
+# rename keeps the file's own NAME and -To names it (issue #27 item 2).
+Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir 'handoff_muse.age')
+Assert-Refusal '-To Muse with handoff_muse.age beside it' 1 "but handoff_muse.age does. If that file is the agent's current recipient, rename it to handoff-muse.age and run with -To muse (names are case-sensitive)" (Invoke-Handoff -Script $hn -ArgText '-To Muse -Fingerprint')
+Clear-HN
+# A look-alike that a case-blind match folds to ASCII (U+212A KELVIN SIGN to
+# k) isn't a near miss (issue #27 item 1).
+Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir ('handoff-' + [char]0x212A + 'im.age'))
+Assert-Refusal '-To Kim with a KELVIN SIGN look-alike beside it' 1 "handoff-Kim.age doesn't exist. Save the agent's recipient there" (Invoke-Handoff -Script $hn -ArgText '-To Kim -Fingerprint')
+Clear-HN
 if (-not $OnWindows) {
   Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir "handoff`nmuse.age")
   Assert-Refusal 'a newline in place of the -' 1 "handoff-muse.age doesn't exist. Save the agent's recipient there" (Invoke-Handoff -Script $hn -ArgText '-Fingerprint')
@@ -416,9 +426,13 @@ New-Link (Join-Path $K 'handoff-dangling.age') (Join-Path $K 'nowhere.age')
 Assert-Refusal 'a dangling link' 1 "handoff-dangling.age is a symlink that doesn't resolve to a file" (Invoke-Handoff -Script $hk -ArgText '-To dangling -Fingerprint')
 New-Link (Join-Path $K 'handoff-loop.age') (Join-Path $K 'handoff-loop.age')
 Assert-Refusal 'a link loop' 1 "handoff-loop.age is a symlink that doesn't resolve to a file" (Invoke-Handoff -Script $hk -ArgText '-To loop -Fingerprint')
+# A link that resolves to a valid recipient file is refused too, as in
+# handoff.sh: whoever can repoint it changes the recipient (issue #27).
 New-Link (Join-Path $K 'handoff-linked.age') $RcptFile
-$r = Invoke-Handoff -Script $hk -ArgText '-To linked -Fingerprint'
-Assert-True ($r.Exit -eq 0 -and $r.Out.TrimEnd("`r", "`n") -ceq $Want) "a link to a recipient file was refused: $($r.Err)"
+Assert-Refusal 'a link to a valid recipient file' 1 "handoff-linked.age is a symlink: save the agent's recipient there as a plain file" (Invoke-Handoff -Script $hk -ArgText '-To linked -Fingerprint')
+Assert-Refusal 'encrypting to a linked recipient file' 1 'handoff-linked.age is a symlink' (Invoke-Handoff -Script $hk -ArgText '-To linked' -Pipe $PayFile)
+$r = Invoke-Handoff -Script $hk -ArgText '-To linked -CheckSetup'
+Assert-True ($r.Exit -eq 1 -and $r.Out -cmatch '(?m)^FAIL recipient: .*handoff-linked\.age is a symlink') "-CheckSetup didn't fail a linked recipient file: $($r.Out)"
 Say 'ok (links and directories)'
 
 # The shared table: the recipient-file cases that are a file's contents.
@@ -496,7 +510,26 @@ Assert-Refusal 'an empty pipeline' 1 'empty, aborting' (Invoke-Handoff -Call "@(
 Assert-Refusal 'no input at all' 1 'empty, aborting' (Invoke-Handoff -Script $hk)
 Assert-Refusal '-File that is not there' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File $(Q (Join-Path $S 'nothere.json'))")
 Assert-Refusal '-File with an empty path' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File ''")
-Assert-Refusal '-File that is a folder' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $S)")
+Assert-Refusal '-File that is a folder' 1 'is a directory, not a payload file' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $S)")
+# The read is bounded (#65 F12): a large file, stdin's bytes or a pipeline
+# ends at the cap with the size refusal, before the JSON check.
+$spaces = Join-Path $S 'spaces.json'
+[IO.File]::WriteAllBytes($spaces, [Text.Encoding]::ASCII.GetBytes(' ' * 4000000))
+$t0 = [DateTime]::UtcNow
+Assert-Refusal '-File of 4 MB of spaces' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $spaces)")
+Assert-Refusal 'stdin of 4 MB of spaces' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -Stdin ([IO.File]::ReadAllBytes($spaces)))
+Assert-Refusal 'a pipeline of 4 MB of spaces' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -Pipe $spaces)
+if (-not $OnWindows -and (Test-Path -LiteralPath '/dev/zero')) {
+  Assert-Refusal '-File /dev/zero' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -ArgText "-File '/dev/zero'")
+}
+Assert-True (([DateTime]::UtcNow - $t0).TotalSeconds -lt 120) "the bounded reads took $(([DateTime]::UtcNow - $t0).TotalSeconds) s"
+Remove-Item -LiteralPath $spaces
+# A UTF-16 payload with a byte-order mark is read as UTF-16 (handoff.sh
+# refuses it; only handoff.ps1 reads it).
+$u16 = Join-Path $S 'u16bom.json'
+[IO.File]::WriteAllText($u16, '{"svc":"example","password":"mk-Zq9"}', (New-Object System.Text.UnicodeEncoding $false, $true))
+[void](Assert-Blob 'a UTF-16 payload with a byte-order mark (-File)' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $u16)"))
+Remove-Item -LiteralPath $u16
 
 # Run in the caller's own session (& .\handoff.ps1 in-process), handoff.ps1
 # leaves the caller's $Error as it found it: nothing a run records (an input

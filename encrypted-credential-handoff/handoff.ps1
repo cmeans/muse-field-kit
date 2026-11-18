@@ -96,6 +96,9 @@ begin {
   # the largest payload, in bytes, handed to age (handoff.sh has the arithmetic:
   # MAX_BLOB_FILE / 4 * 3 - 168 - 32 - 256 = 48696);
   $MAX_PAYLOAD = 48696
+  # the bounded read: MAX_PAYLOAD and room for what is dropped before the
+  # count (a byte-order mark, trailing line ends), as in handoff.sh;
+  $READ_CAP = $MAX_PAYLOAD + 4096
   # the credential fields: consume.py's DEFAULT_ENV_MAP's keys, in its order;
   $KNOWN_FIELDS = 'username password api_key_id api_key_secret token_id token_secret private_key app_id installation_id'
   # an X25519 recipient exactly: age1 and 58 lowercase bech32 characters. \z,
@@ -130,6 +133,7 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
   # --- arguments ----------------------------------------------------------
   if ($Help) { Write-Usage; Exit-Handoff 0 }
   $fileGiven = $PSBoundParameters.ContainsKey('File')
+  $ToGiven = $PSBoundParameters.ContainsKey('To')
   foreach ($x in @($Rest)) {
     if ($null -eq $x) { continue }
     if ($x.StartsWith('-')) { Stop-Usage "unknown option $x" }
@@ -247,13 +251,26 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
 
     $attrs = $null
     try { $attrs = [IO.File]::GetAttributes($keyfile) } catch { }   # the entry itself, link or not
+    # A symbolic link or junction is refused, resolving or not, as handoff.sh
+    # refuses a symlink: whoever can repoint it changes the recipient without
+    # touching the file the user checked. (A OneDrive placeholder is a reparse
+    # point too, but not a link: it is used once it opens.)
+    $isLink = $false
+    if ($null -ne $attrs -and ($attrs -band [IO.FileAttributes]::ReparsePoint)) {
+      $li = $null
+      try { $li = Get-Item -LiteralPath $keyfile -Force -ErrorAction Stop } catch { }
+      if ($null -ne $li -and ($li.PSObject.Properties.Name -contains 'LinkType') -and ($li.LinkType -ceq 'SymbolicLink' -or $li.LinkType -ceq 'Junction')) { $isLink = $true }
+    }
     $stream = $null
     try { $stream = [IO.File]::Open($keyfile, 'Open', 'Read', 'ReadWrite') } catch { }   # follows links
+    if ($isLink) {
+      if ($null -ne $stream) { $stream.Dispose() }
+      if ($null -eq $stream) { Stop-Key "$keyfile is a symlink that doesn't resolve to a file" }
+      Stop-Key "$keyfile is a symlink: save the agent's recipient there as a plain file (a link can be repointed without the file it names changing)"
+    }
     if ($null -eq $stream) {
       if ([IO.Directory]::Exists($keyfile)) { Stop-Key "$keyfile is not a regular file" }
-      # A link (symbolic link or junction) whose target won't open. A link that
-      # resolves to a file is used, as handoff.sh follows a symlink; so is a
-      # OneDrive placeholder, also a reparse point, once it opens.
+      # A reparse point whose target won't open (a link Get-Item couldn't name).
       if ($null -ne $attrs -and ($attrs -band [IO.FileAttributes]::ReparsePoint)) { Stop-Key "$keyfile is a symlink that doesn't resolve to a file" }
       if ($null -ne $attrs) { Stop-Key "cannot read $keyfile" }
 
@@ -271,6 +288,9 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
         $re = New-Object System.Text.RegularExpressions.Regex ('^' + $base + $suffix + '\z'), $opts
         foreach ($n in @($names | Where-Object { $re.IsMatch($_) } | Sort-Object -CaseSensitive)) {
           if ($n -ceq "handoff-$To.age") { continue }
+          # ASCII names only: a case-blind match lets a look-alike such as the
+          # KELVIN SIGN pass for k.
+          if ($n -cnotmatch '^[A-Za-z0-9._-]+\z') { continue }
           $a = $null
           try { $a = [IO.File]::GetAttributes((Join-Path $dir $n)) } catch { }
           if ($null -ne $a -and -not ($a -band ([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint))) { $near = $n; break }
@@ -278,12 +298,21 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
         if ($near) { break }
       }
       if ($near) {
-        # Only NAME's case differs (-To Muse, with handoff-muse.age there): the
-        # remedy is the other -To, not a rename the default run would then miss.
-        if ($near.StartsWith('handoff-', [StringComparison]::Ordinal) -and $near.EndsWith('.age', [StringComparison]::Ordinal)) {
-          $nm = $near.Substring(8, $near.Length - 12)
-          if ($nm -cne $To -and $nm.ToLowerInvariant() -ceq $To.ToLowerInvariant()) {
+        # The NAME in the near miss's own spelling: handoff and its separator
+        # off the front, the .age (and an editor's extra extension) off the end.
+        $nm = $near.Substring(8)
+        if ($nm -imatch '\.age\.(txt|age)\z') { $nm = $nm.Substring(0, $nm.Length - 8) }
+        elseif ($nm -imatch '\.age\z') { $nm = $nm.Substring(0, $nm.Length - 4) }
+        if ($nm -cne $To) {
+          # Only NAME's case differs (-To Muse, with handoff-muse.age there): the
+          # remedy is the other -To, not a rename the default run would then miss.
+          if ($near -ceq "handoff-$nm.age") {
             Stop-Key "no recipient file for '$To': $keyfile doesn't exist, but $near does. Names are case-sensitive: did you mean -To $($nm)?" $true
+          }
+          # The case and something else differ, for a NAME given with -To: the
+          # rename keeps the file's own NAME, which -To then names (handoff.sh).
+          if ($ToGiven) {
+            Stop-Key "no recipient file for '$To': $keyfile doesn't exist, but $near does. If that file is the agent's current recipient, rename it to handoff-$nm.age and run with -To $nm (names are case-sensitive), then compare -Fingerprint with the recipient the agent reports" $true
           }
         }
         Stop-Key "no recipient file for '$To': $keyfile doesn't exist, but $near does. If that file is the agent's current recipient, rename it to handoff-$To.age, then compare -Fingerprint with the recipient the agent reports" $true
@@ -326,10 +355,15 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
         Stop-Key "$keyfile holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
       }
     }
-    if ($lines.Count -ne 1) { Stop-Key "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it" }
+    # Copied with more than the recipient: the "recipient: " agent-setup.sh
+    # prints before it, or quotes or backticks around it. Said in the refusals
+    # below (the file is the user's to fix; nothing is stripped).
+    $extra = ''
+    if ($text -cmatch '[Rr]ecipient:|["''`]') { $extra = '. Keep only the age1... text, without "recipient:", quotes or backticks' }
+    if ($lines.Count -ne 1) { Stop-Key "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it$extra" }
     $RECIPIENT = $lines[0]
     if ($RECIPIENT -cnotmatch $RECIPIENT_RE) {
-      Stop-Key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
+      Stop-Key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it$extra"
     }
     # The bech32 checksum: age itself rejects a recipient that fails it. Asked
     # now, on nothing, so a mistyped file is refused before the secret is typed.
@@ -557,12 +591,26 @@ public static class HandoffCheckCleanup {
     Exit-Handoff 0
   }
 
+  function Stop-TooBig([string]$size) {
+    [Console]::Error.WriteLine("handoff.ps1: payload is $size bytes; the most handoff.ps1 sends is $MAX_PAYLOAD bytes.")
+    [Console]::Error.WriteLine('Shorten the JSON. (Larger payloads need a larger limit on both sides;')
+    [Console]::Error.WriteLine('see README.md.)')
+    Exit-Handoff 1
+  }
+
   $piped = New-Object System.Collections.Generic.List[string]
+  $pipedLen = 0
 }
 
 process {
   trap { [Console]::Error.WriteLine("handoff.ps1: unexpected error ($($_.Exception.GetType().Name)), aborting"); Exit-Handoff 1 }
-  if ($PSBoundParameters.ContainsKey('InputObject') -and $null -ne $InputObject) { $piped.Add($InputObject) }
+  if ($PSBoundParameters.ContainsKey('InputObject') -and $null -ne $InputObject) {
+    # Bounded: a UTF-8 byte or more per character, so past READ_CAP characters
+    # the payload is over the cap whatever it holds.
+    $pipedLen += $InputObject.Length + 1
+    if ($pipedLen -gt $READ_CAP) { $piped.Clear(); Stop-TooBig "over $READ_CAP" }
+    $piped.Add($InputObject)
+  }
 }
 
 end {
@@ -601,33 +649,71 @@ end {
   # history nor Start-Transcript sees it (Read-Host -AsSecureString would be
   # hidden too, but takes one line, and a multi-line paste would leave the rest
   # for the prompt to run). It ends at Ctrl-Z (Ctrl-D off Windows).
+  # At most READ_CAP bytes and one more from STREAM (disposed): an endless
+  # file or pipe ends here, and nothing larger reaches the checks below.
+  # $null if the read failed.
+  function Read-Capped([IO.Stream]$stream) {
+    $buf = New-Object byte[] ($READ_CAP + 1)
+    $size = 0
+    try {
+      while ($size -lt $buf.Length) {
+        $got = $stream.Read($buf, $size, $buf.Length - $size)
+        if ($got -le 0) { break }
+        $size += $got
+      }
+    } catch { return $null } finally { $stream.Dispose() }
+    if ($size -gt $READ_CAP) { [Array]::Clear($buf, 0, $buf.Length); Stop-TooBig "over $READ_CAP" }
+    $b = New-Object byte[] $size
+    [Array]::Copy($buf, $b, $size)
+    [Array]::Clear($buf, 0, $buf.Length)
+    return ,$b
+  }
+  # A UTF-16 file without a byte-order mark: a NUL beside the first { or
+  # blank (strict UTF-8 would take the NULs). With a mark, it's read as UTF-16.
+  function Test-Utf16NoBom([byte[]]$b) {
+    if ($b.Length -lt 2) { return $false }
+    $lead = @(0x7B, 0x20, 0x09, 0x0D, 0x0A)
+    return (($lead -contains $b[0] -and $b[1] -eq 0) -or ($b[0] -eq 0 -and $lead -contains $b[1]))
+  }
+  $utf16Msg = 'the payload is saved as UTF-16 without a byte-order mark: save it as UTF-8, aborting'
   $secret = $null
   if ($fileGiven) {
     # Relative to the PowerShell location, not the process's working directory.
     $bytes = $null
-    try {   # note: plaintext is already on disk in this path
-      $path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($File)
-      $bytes = [IO.File]::ReadAllBytes($path)
-    } catch { }
+    $path = $null
+    # (An empty FILE resolves to the current location: it gets "cannot read".)
+    if ($File.Length -gt 0) { try { $path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($File) } catch { } }
+    if ($null -ne $path -and [IO.Directory]::Exists($path)) { Stop-Run "$File is a directory, not a payload file" }
+    $fs = $null
+    try { $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite') } catch { }   # note: plaintext is already on disk in this path
+    if ($null -ne $fs) { $bytes = Read-Capped $fs }
     if ($null -eq $bytes) { Stop-Run "cannot read $File" }
+    if (Test-Utf16NoBom $bytes) { Stop-Run $utf16Msg }
     $secret = ConvertFrom-Bytes $bytes
+    [Array]::Clear($bytes, 0, $bytes.Length)
   } elseif ($piped.Count -gt 0 -or $MyInvocation.ExpectingInput) {
     $secret = [string]::Join("`n", $piped.ToArray())
   } elseif ([Console]::IsInputRedirected) {
-    $ms = New-Object System.IO.MemoryStream
-    $in = [Console]::OpenStandardInput()
-    try { $in.CopyTo($ms) } finally { $in.Dispose() }
-    $secret = ConvertFrom-Bytes $ms.ToArray()
+    $bytes = Read-Capped ([Console]::OpenStandardInput())
+    if ($null -eq $bytes) { Stop-Run 'cannot read stdin' }
+    if (Test-Utf16NoBom $bytes) { Stop-Run $utf16Msg }
+    $secret = ConvertFrom-Bytes $bytes
+    [Array]::Clear($bytes, 0, $bytes.Length)
   } else {
     [Console]::Error.WriteLine("Paste or type the JSON, then press Enter and $EndKey.")
     [Console]::Error.WriteLine('Example: {"svc": "example", "username": "u", "password": "p"}  or  {"svc": "example", "api_key_id": "k", "api_key_secret": "s"}')
     [Console]::Error.WriteLine('(input is hidden and is not written to PowerShell history)')
     $sb = New-Object System.Text.StringBuilder
+    $over = $false
     try {
       while ($true) {
         $k = [Console]::ReadKey($true)
         $c = $k.KeyChar
         if (Test-EndKey $k) { break }
+        # Past the cap, the rest is read to the end key and dropped, so none
+        # of a paste is left for the prompt to run.
+        if ($over) { continue }
+        if ($sb.Length -gt $READ_CAP) { $over = $true; [void]$sb.Clear(); continue }
         if ($k.Key -eq [ConsoleKey]::Enter) { [void]$sb.Append("`n"); continue }
         if ($k.Key -eq [ConsoleKey]::Backspace) { if ($sb.Length -gt 0) { [void]$sb.Remove($sb.Length - 1, 1) }; continue }
         if ($c -ne [char]0) { [void]$sb.Append($c) }
@@ -636,6 +722,7 @@ end {
       Stop-Run 'cannot read from this console: pipe the JSON in, or use -File'
     }
     [Console]::Error.WriteLine()
+    if ($over) { Stop-TooBig "over $READ_CAP" }
     $secret = $sb.ToString()
     [void]$sb.Clear()
   }
@@ -660,7 +747,9 @@ end {
   # space, tab, CR and LF; strings in double quotes, with no control
   # characters and only the standard escapes; surrogates only in pairs. As in
   # jq, a repeated "svc" counts the last one, and keys that differ only in case
-  # are different keys. It only checks: age gets the input's own bytes.
+  # are different keys. It only checks: age gets $strict.GetBytes of the text
+  # it checked (a byte-order mark dropped, trailing line ends trimmed, UTF-16
+  # transcoded to UTF-8).
   # Returns $null for a payload that passes, else the refusal (fixed text,
   # nothing from the payload).
   function Test-Payload([string]$s) {
@@ -725,11 +814,62 @@ end {
     $known = $KNOWN_FIELDS.Split(' ')
     foreach ($v in $vals.Values) { if ($v.IndexOf([char]0) -ge 0) { return 'a value contains a NUL character (\u0000), aborting' } }
     foreach ($f in $known) { if ($vals.ContainsKey($f) -and $vals[$f].Length -eq 0) { return 'a credential field is empty, aborting' } }
+    # The field names, for the note on unknown ones (names, never values).
+    $script:PayloadKeys = @($vals.Keys)
     foreach ($f in $known) { if ($vals.ContainsKey($f)) { return $null } }
     return "no known credential field (one of: $($KNOWN_FIELDS.Replace(' ', ', '))), aborting"
   }
+  # A name as an ASCII JSON string, as handoff.sh's jq -a prints it: no
+  # character in it can break, reorder or hide the line it's shown on.
+  function Format-JsonAscii([string]$s) {
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    foreach ($ch in $s.ToCharArray()) {
+      $c = [int]$ch
+      switch ($c) {
+        0x22 { [void]$sb.Append('\"'); continue }
+        0x5C { [void]$sb.Append('\\'); continue }
+        0x0A { [void]$sb.Append('\n'); continue }
+        0x0D { [void]$sb.Append('\r'); continue }
+        0x09 { [void]$sb.Append('\t'); continue }
+        0x08 { [void]$sb.Append('\b'); continue }
+        0x0C { [void]$sb.Append('\f'); continue }
+        default {
+          if ($c -lt 0x20 -or $c -gt 0x7E) { [void]$sb.Append('\u' + $c.ToString('x4')) }
+          else { [void]$sb.Append($ch) }
+        }
+      }
+    }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+  }
+  $script:PayloadKeys = @()
   $refusal = Test-Payload $secret
+  if ($refusal -ceq $jsonMsg) {
+    # A hint for the likeliest causes it can see (fixed text, nothing from the
+    # payload), as handoff.sh gives.
+    [Console]::Error.WriteLine("handoff.ps1: $jsonMsg")
+    if ($secret.Length -gt 0 -and $secret[0] -eq [char]0xFEFF) {
+      [Console]::Error.WriteLine('handoff.ps1: it starts with a second byte-order mark (U+FEFF): save the file as UTF-8 without them')
+    }
+    if ($secret.IndexOf([char]0x201C) -ge 0 -or $secret.IndexOf([char]0x201D) -ge 0) {
+      [Console]::Error.WriteLine('handoff.ps1: it has typographic quotes (U+201C or U+201D), which JSON doesn''t take for quotes: retype them as straight quotes ("), which some editors and chat apps change')
+    }
+    $secret = $null
+    Exit-Handoff 1
+  }
   if ($null -ne $refusal) { Stop-Run $refusal }
+  # Fields consume.py doesn't know are ignored there, so a misspelled one
+  # never reaches the agent: named here, before encrypting (handoff.sh's note).
+  $knownSet = @($KNOWN_FIELDS.Split(' ')) + @('svc')
+  $unknown = @($script:PayloadKeys | Where-Object { $knownSet -cnotcontains $_ })
+  $script:PayloadKeys = @()
+  if ($unknown.Count -gt 0) {
+    $shown = (@($unknown | Select-Object -First 5 | ForEach-Object { Format-JsonAscii $_ })) -join ', '
+    $more = ''
+    if ($unknown.Count -gt 5) { $more = " and $($unknown.Count - 5) more" }
+    [Console]::Error.WriteLine("handoff.ps1: note: consume.py ignores $($unknown.Count) field(s) it doesn't know: $shown$more (it uses: $($KNOWN_FIELDS.Replace(' ', ', '))). If one is misspelled, fix it and run again: an ignored field never reaches the agent")
+  }
 
   $bytes = $null
   try { $bytes = $strict.GetBytes($secret) } catch { Stop-Run $jsonMsg }   # a lone surrogate

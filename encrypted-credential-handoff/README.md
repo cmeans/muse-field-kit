@@ -52,7 +52,9 @@ The fields `consume.py` knows, and the environment variable each goes into unles
 | `private_key` | `SERVICE_PRIVATE_KEY` (a PEM or similar multi-line secret, byte for byte) |
 | `app_id`, `installation_id` | `SERVICE_APP_ID`, `SERVICE_INSTALLATION_ID` (a GitHub App's, beside its `private_key`) |
 
-Every field stands alone; a payload carries the ones its tool needs. A field `consume.py` doesn't know is counted on stderr and injected nowhere, and a payload with no known field is refused, by `handoff.sh` and `handoff.ps1` before it is encrypted and by `consume.py`.
+Every field stands alone; a payload carries the ones its tool needs. A field `consume.py` doesn't know is counted on stderr and injected nowhere, and `handoff.sh` and `handoff.ps1` name each one before encrypting (`note: consume.py ignores 1 field(s) it doesn't know: "usrename"`), so a misspelling shows before the blob is sent. A payload with no known field is refused, by `handoff.sh` and `handoff.ps1` before it is encrypted and by `consume.py`.
+
+**Typing or pasting it.** `handoff.sh` reads a payload file as UTF-8 (a UTF-16 file, as Windows PowerShell 5.1's `>` writes, is refused with that reason; `handoff.ps1` reads one with a byte-order mark). At `handoff.sh`'s hidden prompt, the terminal cuts a line over about 4 KB (1 KB on macOS): a long payload on one line, such as a `private_key` JSON-escaped by hand, goes in as a file or through a pipe instead, as below. Typographic quotes (“ ”), which some editors and chat apps put in place of `"`, aren't JSON quotes: both scripts say so when they refuse a payload holding them.
 
 **Building a `private_key` payload.** A PEM's line breaks have to be JSON-escaped, which is no job for a hidden paste. Let `jq` build the payload from the key file you already hold and pipe it straight in (Linux, macOS):
 
@@ -198,7 +200,7 @@ This pattern fills that gap for programs that read the credential from their env
 
 ## Residual exposure (stated plainly)
 
-- On your machine, the plaintext lives in the handoff script's memory while it runs (the shell's, or PowerShell's), and could in principle be swapped out. No “shredding” is claimed.
+- On your machine, the plaintext lives in the handoff script's memory while it runs (the shell's, or PowerShell's), and could in principle be swapped out. No “shredding” is claimed. `handoff.sh` turns core dumps off for itself and the programs it runs (`ulimit -c 0`), so a crash or a Ctrl-\ at the prompt writes no core file; a system that collects crashes another way (Windows Error Reporting, for `handoff.ps1`) is outside the script's reach.
 - If you pass a file argument, or build a payload from a key file (“Payloads”), that file already contains plaintext on your disk; the script did not put it there, and deleting it is your call.
 - Whoever holds the private key can decrypt every blob ever made with its public key. Protect it like any private key; rotate on suspicion (below).
 - The host and the agent-account caveats in the threat model are real and accepted by this design, not footnotes to skip.
@@ -328,7 +330,7 @@ Only then remove the Mark of the Web with `Unblock-File .\handoff.ps1`, and run 
 
 **What the checksum proves, plainly:** `SHA256SUMS` comes from the same release page as the script, so it catches a damaged download and a copy swapped on the way (a chat attachment, a mirror), not a compromise of the GitHub account or repository. The attestation ties the file to the release workflow's run. Neither replaces the recipient comparison (invariant 6).
 
-Save the agent's recipient as `handoff-<name>.age` in the same directory as the script (`handoff-muse.age` for the default name): one line, `age1…`, as the agent gives it. The script reads it from there and nowhere else.
+Save the agent's recipient as `handoff-<name>.age` in the same directory as the script (`handoff-muse.age` for the default name): one line, `age1…`, as the agent gives it, without the `recipient: ` that `--fingerprint` prints before it, or any quotes. The script reads it from there and nowhere else, and it must be a plain file: a symlink there is refused, since whoever can repoint a link changes the recipient without touching the file you checked.
 
 ### Check your setup
 
