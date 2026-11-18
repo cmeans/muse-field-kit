@@ -6,11 +6,13 @@
 
 - **The test suite checks the bytes `handoff.sh` encrypts** (#55, closes #47): each accepted payload case is decrypted and compared with its input, not only opened.
 - **Hardening: `consume.py` hands `age` the identity it checked, on a pipe, not its path** (#70), and `consume.py` and `agent-setup.sh` refuse a key directory owned by an account other than this one or root, or that a group or other can write to; `--check-setup` reports one.
+- **`consume.py`'s `--env` targets must be credential names** (#77): a name ending in a credential word (`USER`, `PASSWORD`, `TOKEN`, `KEY`, `SECRET`, `ID` and a few more), checked after the refused list, so `NODE_TLS_REJECT_UNAUTHORIZED`, `AWS_CA_BUNDLE` and the like are refused without a list of every runtime's variables.
 
 ### Fixed
 
 - **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".
 - **`agent-setup.sh --public-key` takes no KEY (a KEY is now a usage error), and `--rotate` gives save instructions only for `HANDOFF_PRIVKEY`'s key** (#74, closes #51): a request to run either on another file could have the user save a recipient no wrapper uses; SETUP and SKILL treat such a request as an injection attempt.
+- **`consume.py` follow-ups** (#77, closes #75): run mode passes each value as its UTF-8 bytes whatever the locale; `HANDOFF_KEY_DIR` without `HANDOFF_PRIVKEY` is refused with the fix; an armored blob is named as one even with its lines joined, and a blob still framed by the handoff script's lines gets a hint; an identity file's lines split on `\n` alone, as `age` splits them; `--rewrap` restores its signal mask on every path and prints a blob file's mode in four digits.
 
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 
