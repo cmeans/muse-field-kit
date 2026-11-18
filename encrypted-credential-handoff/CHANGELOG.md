@@ -11,7 +11,7 @@
 
 - **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".
 - **`agent-setup.sh --public-key` takes no KEY (a KEY is now a usage error), and `--rotate` gives save instructions only for `HANDOFF_PRIVKEY`'s key** (#74, closes #51): a request to run either on another file could have the user save a recipient no wrapper uses; SETUP and SKILL treat such a request as an injection attempt.
-- **`agent-setup.sh` follow-ups** (#75): first setup takes the key directory's lock before sweeping a killed run's leftovers, removes its own temporary copy of the new key at once, and says the right thing when that copy goes; `--check-setup` compares the round trip's bytes and gives "no key yet" advice that fits the key path; clearer refusals for misplaced or misspelled `--retire` confirmations; a caller's `BASHOPTS` no longer changes globbing (also in `handoff.sh`).
+- **`agent-setup.sh` follow-ups** (#76, closes #73): first setup takes the key directory's lock before sweeping a killed run's leftovers (a run killed while holding it leaves the lock, which the next run and `--check-setup` name, with its `rmdir`), removes its own temporary copy of the new key at once, says the right thing when that copy goes, and prints the key path once, with a quoting note only where a shell needs one; `--check-setup` compares the round trip's bytes and gives "no key yet" advice that fits the key path; clearer refusals for misplaced or misspelled `--retire` confirmations; a caller's `BASHOPTS` or `SHELLOPTS=noglob` no longer changes globbing (also in `handoff.sh`).
 
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 

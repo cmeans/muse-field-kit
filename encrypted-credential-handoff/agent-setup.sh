@@ -63,9 +63,11 @@ set +a
 # way; chmod is called as BSD's needs either way.)
 set +o posix
 set -euo pipefail
-# Glob behavior a caller's BASHOPTS could change: failglob would make every
-# unmatched cleanup glob fatal (--rotate's .handoff-new.*), nullglob and
-# dotglob would change what the sweeps match. This script's own settings.
+# Glob behavior a caller's BASHOPTS or SHELLOPTS could change: noglob (set -f)
+# would make every sweep match nothing, failglob would make every unmatched
+# cleanup glob fatal (--rotate's .handoff-new.*), nullglob and dotglob would
+# change what the sweeps match. This script's own settings.
+set +f
 shopt -u failglob nullglob dotglob nocaseglob nocasematch extglob 2>/dev/null || true
 umask 077
 
@@ -73,7 +75,8 @@ MAX_KEY_BYTES=16384   # equal to consume.py's MAX_KEY_FILE
 # cd must never search the caller's CDPATH for a relative key directory.
 unset CDPATH
 # This run's temporary key and lock (cleanup removes them, except after a
-# SIGKILL; the next run removes a key left behind): never inherited.
+# SIGKILL, which leaves the lock for the user to remove: leftover_note): never
+# inherited.
 new=""
 newd=""
 lock=""
@@ -118,6 +121,9 @@ expand_home() {  # PATH WHAT
 # A path in a message, quoted as the shell would (printf %q): a name with a
 # newline or other control character can't pass for a line of output.
 qp() { printf '%q' "$1"; }
+# A path single-quoted for a POSIX shell, for a command the user copies (and
+# may run as root, or under sh).
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # The PATH age-keygen is looked for on, in the words of consume.py's
 # age_missing (long ones cut at 300 characters).
@@ -380,7 +386,7 @@ rotate_save_text() {  # RECIPIENT
   fi
 }
 
-# One --rotate or --retire at a time per key directory: a portable lock
+# One setup, --rotate or --retire at a time per key directory: a portable lock
 # (mkdir is atomic everywhere; flock isn't on macOS). An interrupted run
 # that couldn't remove it says so on the next run.
 lock_dir() {  # DIR
@@ -398,6 +404,24 @@ lock_dir() {  # DIR
     exit 1
   fi
   lock=$l  # only once it's ours, so cleanup never removes another run's
+}
+
+# What a run killed with SIGKILL after taking the lock leaves: the lock, and
+# perhaps a temporary copy of the key (a second hard link to it). Named, with
+# the lock's rmdir, for a refusal that stops before the lock would; nothing
+# printed when there's neither. Only by the names this script makes.
+leftover_note() {  # DIR
+  local d="$1" abs f n=0 tmps=
+  for f in "$d"/.handoff-tmp.?????? "$d"/.handoff-setup.??????; do
+    if [ -e "$f" ] && [ ! -L "$f" ]; then n=$((n + 1)); fi
+  done
+  [ "$n" -eq 0 ] || tmps="$n temporary key file(s) or directory(ies) a killed run left (--rotate and --retire remove them)"
+  if [ -d "$d/.handoff-lock" ] && [ ! -L "$d/.handoff-lock" ]; then
+    abs=$(cd -- "$d" 2>/dev/null && pwd -P) || abs=$d
+    echo "note: $(qp "$d/.handoff-lock") exists: a setup, --rotate or --retire is running, or one was killed${tmps:+; also $tmps}. If none is running, report it to the user, who removes the lock with: rmdir $(sq "$abs/.handoff-lock")"
+  elif [ -n "$tmps" ]; then
+    echo "note: $(qp "$d") holds $tmps"
+  fi
 }
 
 # Run on any exit: removes this run's lock and temporary key. Both start
@@ -423,7 +447,8 @@ usage() {
 # --- --check-setup: prove the tools work on this machine, by running them -----
 # One line per check on stdout (PASS, INFO or FAIL, a name, a detail), nothing
 # else there; exit 0 unless a line is FAIL. The round trip goes through
-# consume.py --check itself, with HANDOFF_PRIVKEY pointed at a throwaway
+# consume.py itself (--check, then a run that hands the password to a one-line
+# program, to compare its bytes), with HANDOFF_PRIVKEY pointed at a throwaway
 # identity in a private temporary directory (removed on every exit), so the
 # helper's own header check and decrypt are what's tested. The real key is
 # only read, by recipient_of's checks, and never printed. No prompt, no stdin.
@@ -517,16 +542,30 @@ password: 20 bytes"
         # The bytes too, not only the length --check reports: the throwaway
         # password (no secret) goes to a one-line program the way a wrapper's
         # tool gets it, and is compared byte for byte with what was encrypted.
-        same=no
+        same=no got=
         if [ "$rc" -eq 0 ] && [ "$v" = "$want" ]; then
           got=$(unset HANDOFF_BLOB HANDOFF_LABEL HANDOFF_PRIVKEY
               HANDOFF_PRIVKEY="$newd/id.txt" python3 -I "$consume" --label check --blob-file "$newd/blob.txt" \
-                -- python3 -I -c 'import os, sys; sys.stdout.write(os.environb[b"SERVICE_PASSWORD"].hex())' </dev/null 2>/dev/null) || got=
+                -- python3 -I -c 'import os, sys; sys.stdout.write(os.environb[b"SERVICE_PASSWORD"].hex())' </dev/null 2>"$newd/rerr") || got=
           [ "$got" = "$(printf '%s' 'pässwörd-ü-日本' | od -An -tx1 | tr -d ' \n')" ] && same=yes
         fi
         if [ "$same" = yes ]; then
           hdr="PASS|consume.py accepted the header: exactly one X25519 stanza"
           rt="PASS|encrypted, then decrypted by consume.py: the 20-byte UTF-8 password came back unchanged, byte for byte"
+        elif [ "$rc" -eq 0 ] && [ "$v" = "$want" ] && [ -z "$got" ]; then
+          # --check worked; running a program with the password didn't. Its
+          # last stderr line: consume.py's own message, or a traceback's
+          # exception (a non-UTF-8 locale can't pass the password on).
+          hdr="PASS|consume.py accepted the header: exactly one X25519 stanza"
+          kmsg=$(grep -v '^[[:space:]]*$' "$newd/rerr" 2>/dev/null | tail -n 1)
+          kmsg=${kmsg#consume.py: }
+          case "$kmsg" in
+            *codec*|*[Uu]nicode*) kmsg="$kmsg (this shell's locale is not UTF-8; a wrapper sets LANG= to a UTF-8 locale, SETUP.md step 7)" ;;
+          esac
+          rt="FAIL|consume.py --check passed, but running a program with the password failed: ${kmsg:-no message}"
+        elif [ "$rc" -eq 0 ] && [ "$v" = "$want" ]; then
+          hdr="PASS|consume.py accepted the header: exactly one X25519 stanza"
+          rt="FAIL|consume.py passed on a password other than the one encrypted"
         elif [ "$rc" -eq 0 ]; then
           hdr="PASS|consume.py accepted the header: exactly one X25519 stanza"
           rt="FAIL|consume.py --check decrypted something other than what was encrypted"
@@ -569,7 +608,7 @@ password: 20 bytes"
       if [ -n "${HOME-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
         cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
       elif [ "${k##*/}" = handoff-identity.txt ]; then
-        cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(qp "${k%/*}") agent-setup.sh makes it"
+        cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(qp "$(dirname -- "$k")") agent-setup.sh makes it"
       else
         cs_out INFO identity "no key at $k yet, and no setup makes that name (setup names its key handoff-identity.txt): check HANDOFF_PRIVKEY"
       fi
@@ -583,6 +622,10 @@ password: 20 bytes"
     else
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null)
       cs_out FAIL identity "${kmsg:-the key at $k did not pass the identity checks}"
+    fi
+    # A killed run's lock would stop the next --rotate; say so now.
+    if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")") && [ -n "$kmsg" ]; then
+      cs_out INFO leftovers "${kmsg#note: }"
     fi
   else
     cs_out INFO identity "skipped (needs age-keygen)"
@@ -617,7 +660,8 @@ case "${1-}" in
         for a in "$@"; do
           case "$a" in
             (--yes) if [ -n "$yes" ]; then why="--yes given twice"; else why="--yes goes right after --retire, before KEY"; fi; break ;;
-            (--yes=*|--[Yy][Ee][Ss]|--[Yy]|--[Yy][Ee]|-[Yy]|-[Yy][Ee]|-[Yy][Ee][Ss]) why="the confirmation is spelled --yes, right after --retire"; break ;;
+            (--yes=*|--[Yy][Ee][Ss]|--[Yy]|--[Yy][Ee]|-[Yy]|-[Yy][Ee]|-[Yy][Ee][Ss]|[Yy]|[Yy][Ee]|[Yy][Ee][Ss])
+              if [ -n "$yes" ]; then why="$a: a second, misspelled --yes"; else why="the confirmation is spelled --yes, right after --retire"; fi; break ;;
           esac
         done
       fi
@@ -877,8 +921,7 @@ case "$mode" in
       # shellcheck disable=SC2012  # ls -di is the portable inode read (find -printf is GNU's)
       ino=$(ls -di -- "$q" 2>/dev/null | awk 'NR == 1 { print $1; exit }')
       case $ino in ''|*[!0-9]*) ino= ;; esac
-      # Each path single-quoted for a POSIX shell: the user may run this as root.
-      sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+      # Each path single-quoted (sq): the user may run this as root.
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
       echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $(sq "$abs"), which the command lists too (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
@@ -922,6 +965,7 @@ PRIV="$KEY_DIR/handoff-identity.txt"
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
   printf 'if a setup was cut short, this is its key: HANDOFF_PRIVKEY=%q agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
+  leftover_note "$(dirname -- "$PRIV")" >&2
   exit 1
 fi
 
@@ -1020,6 +1064,9 @@ echo "this key lives at: $PRIV"
 if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-identity.txt" ]; then
   echo "non-default location: set HANDOFF_PRIVKEY to that path wherever the helper runs"
 fi
-if [ "$(qp "$PRIV")" != "$PRIV" ]; then
-  echo "note: that path has characters a shell reads specially: quote it in every wrapper (HANDOFF_PRIVKEY='…')"
+# By the characters themselves, not by printf %q, which also quotes non-ASCII
+# letters (under LC_ALL=C, and on bash 3.2) and a comma.
+shell_special='[][[:space:][:cntrl:]'\''"\\$`*?#~&;|<>(){}!^]'
+if [[ "$PRIV" =~ $shell_special ]]; then
+  echo "note: that path has characters a shell reads specially: quote it in every wrapper, as HANDOFF_PRIVKEY=$(sq "$PRIV")"
 fi

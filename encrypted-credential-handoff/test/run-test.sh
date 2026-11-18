@@ -564,6 +564,30 @@ env SHELLOPTS=xtrace HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-se
 # --check reports (#66 F17).
 grep -qx 'PASS round trip: encrypted, then decrypted by consume.py: the 20-byte UTF-8 password came back unchanged, byte for byte' "$S/out" \
   || fail "--check-setup's round trip didn't say it compared the bytes: $(grep 'round trip' "$S/out")"
+# Bytes that differ FAIL (an od shim makes the expected bytes 00 11).
+mkdir -p "$S/odshim"; printf '#!/bin/sh\necho " 00 11"\n' >"$S/odshim/od"; chmod 755 "$S/odshim/od"
+rc=0; env PATH="$S/odshim:$PATH" HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || rc=$?
+if [ "$rc" != 1 ] || ! grep -qx 'FAIL round trip: consume.py passed on a password other than the one encrypted' "$S/out"; then
+  fail "--check-setup passed bytes that differ (exit $rc): $(grep 'round trip' "$S/out")"
+fi
+# A program run with the password that fails (here a UnicodeEncodeError, as
+# a non-UTF-8 locale gives) is named as that, with its last stderr line, not
+# as a wrong decrypt.
+mkdir -p "$S/pyshim"
+cat >"$S/pyshim/python3" <<EOF
+#!/bin/sh
+if [ "\$1 \$2" = "-I -c" ]; then case "\$3" in *SERVICE_PASSWORD*)
+  echo "Traceback (most recent call last):" >&2
+  echo "UnicodeEncodeError: 'latin-1' codec can't encode characters" >&2; exit 1 ;; esac; fi
+exec $(command -v python3) "\$@"
+EOF
+chmod 755 "$S/pyshim/python3"
+rc=0; env PATH="$S/pyshim:$PATH" HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || rc=$?
+if [ "$rc" != 1 ] || ! grep -q '^PASS header' "$S/out" \
+   || ! grep -qxF "FAIL round trip: consume.py --check passed, but running a program with the password failed: UnicodeEncodeError: 'latin-1' codec can't encode characters (this shell's locale is not UTF-8; a wrapper sets LANG= to a UTF-8 locale, SETUP.md step 7)" "$S/out"; then
+  fail "--check-setup misreported a failed run (exit $rc): $(grep -E 'round trip|header' "$S/out")"
+fi
+echo "ok (--check-setup's byte comparison: a mismatch and a failed run each FAIL with their own cause)"
 # Its "no key yet" advice fits the key path (#66): plain setup only for the
 # default path, HANDOFF_KEY_DIR for another directory's handoff-identity.txt,
 # and a warning for a name no setup makes.
@@ -574,6 +598,12 @@ grep -qF "INFO identity: no key at $S/nokey-home/.config/handoff/handoff-identit
 env HANDOFF_PRIVKEY="$nk/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 grep -qF "INFO identity: no key at $nk/handoff-identity.txt yet; HANDOFF_KEY_DIR=$(printf '%q' "$nk") agent-setup.sh makes it" "$S/out" \
   || fail "--check-setup's no-key advice for another directory is wrong: $(grep identity "$S/out")"
+# A key in / or named without a directory gets that directory, not the name
+# or an empty one.
+env HANDOFF_PRIVKEY=/handoff-identity.txt bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qF "HANDOFF_KEY_DIR=/ agent-setup.sh makes it" "$S/out" || fail "--check-setup's no-key advice for /handoff-identity.txt is wrong: $(grep identity "$S/out")"
+(cd "$S" && env HANDOFF_PRIVKEY=handoff-identity.txt bash "$OLDPWD/../agent-setup.sh" --check-setup >"$S/out" 2>/dev/null) || true
+grep -qF "HANDOFF_KEY_DIR=. agent-setup.sh makes it" "$S/out" || fail "--check-setup's no-key advice for a bare handoff-identity.txt is wrong: $(grep identity "$S/out")"
 env HANDOFF_PRIVKEY="$nk/custom.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 grep -qF "no setup makes that name (setup names its key handoff-identity.txt): check HANDOFF_PRIVKEY" "$S/out" \
   || fail "--check-setup's no-key advice for a custom name is wrong: $(grep identity "$S/out")"
@@ -1652,6 +1682,15 @@ for near in handoff_muse.age handoff.muse.age HANDOFF_MUSE.age handoff-muse.age.
     bash "$S/hn/handoff.sh" --fingerprint
 done
 rm -rf "$S/hn/"handoff?muse.age* "$S/hn/"handoff?Muse.age* "$S/hn/"HANDOFF?MUSE.age*
+# A caller's BASHOPTS (failglob: an unmatched near-miss pattern was fatal) or
+# SHELLOPTS (noglob: no pattern matched) doesn't change the near-miss lookup
+# (issue #43 item 12).
+cp handoff-test.age "$S/hn/handoff_muse.age"
+for o in BASHOPTS=failglob SHELLOPTS=noglob; do
+  expect_refusal "handoff.sh with handoff_muse.age beside it, under $o" 1 "but handoff_muse.age does. If that file is the agent's current recipient" \
+    env "$o" bash "$S/hn/handoff.sh" --fingerprint
+done
+rm -f "$S/hn/handoff_muse.age"
 # Only NAME's case differs: the hint suggests the other --to, not a rename.
 cp handoff-test.age "$S/hn/handoff-muse.age"
 if [ -e "$S/hn/HANDOFF-MUSE.AGE" ]; then
@@ -2600,11 +2639,13 @@ expect_refusal "--retire KEY --yes (the reason)" 2 "--yes goes right after --ret
   rk bash ../agent-setup.sh --retire "$KEY" --yes
 # A misspelled or misplaced confirmation in any position gets its reason,
 # not a bare usage line (issue #16 item 1); upper case too (item 5).
-for args in "-y $KEY" "$KEY -y" "$KEY -Y" "$KEY --YES" "--y $KEY"; do
+for args in "-y $KEY" "$KEY -y" "$KEY -Y" "$KEY --YES" "--y $KEY" "$KEY yes" "yes $KEY" "$KEY y"; do
   # shellcheck disable=SC2086  # the words are separate arguments on purpose
   expect_refusal "--retire $args" 2 "the confirmation is spelled --yes, right after --retire" \
     rk bash ../agent-setup.sh --retire $args
 done
+expect_refusal "--retire --yes --YES KEY" 2 "(--YES: a second, misspelled --yes)" \
+  rk bash ../agent-setup.sh --retire --yes --YES "$KEY"
 expect_refusal "--retire --yes --yes KEY" 2 "(--yes given twice)" \
   rk bash ../agent-setup.sh --retire --yes --yes "$KEY"
 # An unknown option after --retire is an option of --retire (item 4); after
@@ -2782,7 +2823,13 @@ rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after
 # with failglob, every unmatched cleanup glob was fatal.
 rk env BASHOPTS=failglob:nullglob:nocasematch bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" || fail "--rotate failed with BASHOPTS=failglob: $(cat "$R/err")"
 rk env BASHOPTS=failglob:nullglob:nocasematch bash ../agent-setup.sh --retire --yes >/dev/null 2>"$R/err" || fail "--retire --yes failed with BASHOPTS=failglob: $(cat "$R/err")"
-echo "ok (--rotate and --retire under a caller's BASHOPTS=failglob)"
+# With noglob (SHELLOPTS), every sweep matched nothing: a killed --rotate's
+# temporary key stayed.
+printf 'leftover\n' > "$R/.handoff-new.Leftov"
+rk env SHELLOPTS=noglob bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" || fail "--rotate failed with SHELLOPTS=noglob: $(cat "$R/err")"
+[ ! -e "$R/.handoff-new.Leftov" ] || fail "--rotate under SHELLOPTS=noglob didn't remove a killed run's temporary key"
+rk env SHELLOPTS=noglob bash ../agent-setup.sh --retire --yes >/dev/null 2>"$R/err" || fail "--retire --yes failed with SHELLOPTS=noglob: $(cat "$R/err")"
+echo "ok (--rotate and --retire under a caller's BASHOPTS=failglob or SHELLOPTS=noglob)"
 [ ! -e "$R/.handoff-lock" ] || fail "--retire left its lock behind"
 # A key path that starts with "-" is a path, not an option.
 mkdir -p "$R/dash"; cp "$TMPKEY" "$R/dash/-k.txt"
@@ -2907,10 +2954,28 @@ grep -qxF "note: removed 2 temporary key file(s) or directory(ies) a killed setu
 # First setup takes the lock too (issue #43 item 11): with another run's lock
 # held, it refuses and makes nothing.
 mkdir -p "$S/locked-setup"; chmod 700 "$S/locked-setup"; mkdir "$S/locked-setup/.handoff-lock"
+# The lock comes before the sweep: the lock holder's temporary directory stays.
+mkdir "$S/locked-setup/.handoff-tmp.AbCdEf"
 expect_refusal "first setup while another holds the lock" 1 "another setup, --rotate or --retire is running" \
   env HANDOFF_KEY_DIR="$S/locked-setup" bash ../agent-setup.sh
 [ ! -e "$S/locked-setup/handoff-identity.txt" ] || fail "first setup made a key while another run held the lock"
-rmdir "$S/locked-setup/.handoff-lock"
+[ -d "$S/locked-setup/.handoff-tmp.AbCdEf" ] || fail "a first setup refused at the lock swept the lock holder's temporary directory"
+# A setup killed after the lock leaves it, and perhaps a temporary copy of the
+# key: a rerun refuses to overwrite the key, and names both, with the rmdir;
+# --check-setup names them too (an INFO line).
+cp "$TMPKEY" "$S/locked-setup/handoff-identity.txt"; chmod 600 "$S/locked-setup/handoff-identity.txt"
+expect_refusal "a rerun after a setup killed at the lock" 1 "exists: a setup, --rotate or --retire is running, or one was killed; also 1 temporary key file(s) or directory(ies) a killed run left (--rotate and --retire remove them). If none is running, report it to the user, who removes the lock with: rmdir '$(cd "$S/locked-setup" && pwd -P)/.handoff-lock'" \
+  env HANDOFF_KEY_DIR="$S/locked-setup" bash ../agent-setup.sh
+grep -qF "refusing to overwrite existing key" "$S/err" || fail "the rerun didn't refuse to overwrite: $(cat "$S/err")"
+env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -q '^INFO leftovers: .*\.handoff-lock exists' "$S/out" || fail "--check-setup didn't name a killed run's lock: $(cat "$S/out")"
+rmdir "$S/locked-setup/.handoff-lock" "$S/locked-setup/.handoff-tmp.AbCdEf"
+env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+! grep -q '^INFO leftovers' "$S/out" || fail "--check-setup named leftovers where there are none: $(cat "$S/out")"
+# A caller's SHELLOPTS=noglob doesn't stop the sweep (issue #43 item 12).
+mkdir -p "$S/noglob-setup"; chmod 700 "$S/noglob-setup"; mkdir "$S/noglob-setup/.handoff-tmp.QwErTy"
+env SHELLOPTS=noglob HANDOFF_KEY_DIR="$S/noglob-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "first setup under SHELLOPTS=noglob failed"; }
+[ ! -e "$S/noglob-setup/.handoff-tmp.QwErTy" ] || fail "first setup under SHELLOPTS=noglob didn't sweep a killed run's leftovers"
 # An existing key directory that isn't 0700 (but isn't writable by others)
 # gets the note.
 mkdir -p "$S/note-setup"; chmod 750 "$S/note-setup"
@@ -2922,6 +2987,15 @@ mkdir -p "$S/q dir"; chmod 700 "$S/q dir"
 HANDOFF_KEY_DIR="$S/q dir" bash ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "first setup into a directory with a space failed"; }
 grep -qxF "this key lives at: $S/q dir/handoff-identity.txt" "$S/out" || fail "first setup didn't print the key path as written"
 grep -qF "quote it in every wrapper" "$S/out" || fail "first setup didn't say to quote a path with a space"
+# The quoting it gives works for a path with a ', and a non-ASCII letter or a
+# comma, which no shell reads specially, gets no note (even under LC_ALL=C).
+mkdir -p "$S/it's dir"; chmod 700 "$S/it's dir"
+HANDOFF_KEY_DIR="$S/it's dir" bash ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "first setup into a directory with a ' failed"; }
+q=$(sed -n "s/^note: that path has characters a shell reads specially: quote it in every wrapper, as HANDOFF_PRIVKEY=//p" "$S/out")
+[ -n "$q" ] && [ "$(sh -c "printf '%s' $q")" = "$S/it's dir/handoff-identity.txt" ] || fail "the quote note's HANDOFF_PRIVKEY= form doesn't give the path back: $q"
+mkdir -p "$S/josé,x"; chmod 700 "$S/josé,x"
+HANDOFF_KEY_DIR="$S/josé,x" LC_ALL=C bash ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "first setup into a non-ASCII directory failed"; }
+! grep -qF "quote it in every wrapper" "$S/out" || fail "first setup said to quote a path with only a non-ASCII letter and a comma"
 ! grep -qF 'q\ dir' "$S/out" || fail "first setup printed the key path in a second, shell-quoted form"
 # --rotate under POSIX option parsing (as BSD chmod parses): chmod -- MODE,
 # through the chmod shim above (agent-setup.sh unsets POSIXLY_CORRECT).
