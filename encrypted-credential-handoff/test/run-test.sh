@@ -1107,6 +1107,22 @@ for v in PGPASSWORD PGUSER MYSQL_PWD GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS
     >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--env password=$v was refused, or the value didn't arrive under it"; }
 done
 echo "ok (accepted: credential-named --env targets)"
+# An AUTH name that reads as a switch turning authentication off is refused.
+for v in NO_AUTH DISABLE_AUTH SKIP_AUTH INSECURE_SKIP_AUTH no_auth; do
+  expect_refusal "--env $v" 1 "reads as a switch that turns authentication off" \
+    consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
+done
+# An inherited entry with an empty name (a raw execve can pass one) is
+# dropped, not a traceback from os.execvpe.
+got=$(python3 -I -c '
+import os, sys
+os.environb = {**os.environb, b"": b"weird"}
+sys.argv = ["consume.py", "--label", "example", "--blob-file", "blob-age.txt", "--", "sh", "-c", "echo ran"]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' 2>"$S/err") || { cat "$S/err" >&2; fail "run mode with an empty-named inherited variable failed"; }
+[ "$got" = ran ] || fail "run mode with an empty-named inherited variable: $got"
+! grep -q Traceback "$S/err" || fail "run mode with an empty-named inherited variable gave a traceback"
+echo "ok (refused: AUTH switch names; dropped: an empty-named inherited variable)"
 # HANDOFF_KEY_DIR without HANDOFF_PRIVKEY is refused with agent-setup.sh's
 # hint, not the default key read quietly (issue #44 item 2).
 expect_refusal "HANDOFF_KEY_DIR without HANDOFF_PRIVKEY" 1 "HANDOFF_KEY_DIR is set but HANDOFF_PRIVKEY isn't" \

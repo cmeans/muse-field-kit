@@ -198,6 +198,7 @@ CREDENTIAL_WORDS = (
     "TOKEN", "PAT", "KEY", "SECRET", "AUTH",
     "APIKEY", "ACCESSKEY", "SECRETKEY", "AUTHKEY", "PRIVATEKEY",
 )
+AUTH_SWITCH_WORDS = {"NO", "DISABLE", "DISABLED", "SKIP", "INSECURE", "BYPASS"}
 CREDENTIAL_WORDS_UNSEPARATED = (
     "USER", "USERNAME", "PASSWORD", "PASSWD", "PASSPHRASE", "TOKEN", "SECRET",
 )
@@ -933,6 +934,14 @@ def check_env_name(name: str) -> None:
             "Refusing: a name a program reads for anything else could change what it "
             "runs or whom it trusts (SETUP.md step 7)"
         )
+    # An AUTH name that is a switch, not a credential (NO_AUTH, DISABLE_AUTH,
+    # INSECURE_SKIP_AUTH): its value would turn a check off.
+    parts = upper.split("_")
+    if parts[-1] == "AUTH" and AUTH_SWITCH_WORDS & set(parts[:-1]):
+        raise fail(
+            f"--env target {name!r} reads as a switch that turns authentication off, "
+            "not a credential's variable; refusing (SETUP.md step 7)"
+        )
 
 
 def parse_args(argv):
@@ -1128,6 +1137,12 @@ def main() -> int:
             "Don't unset it to get past this: report it to the user."
         )
     label, check, do_rewrap, target, blob, env_map, cmd = parse_args(sys.argv[1:])
+    # Run mode builds the command's environment from bytes. Every platform
+    # this side runs on (Linux, macOS: SETUP.md step 1) has one; refused
+    # before anything is decrypted where there isn't.
+    if not (check or do_rewrap) and not os.supports_bytes_environ:
+        raise fail("run mode needs Linux or macOS (SETUP.md step 1): this "
+                   "platform has no bytes environment")
     current = privkey_path()
     if current.lower().endswith(".previous"):
         # A rotation's old key as the current one: the previous key would be
@@ -1224,12 +1239,11 @@ def main() -> int:
     # bytes the user encrypted, whatever this process's locale. With str
     # values, os.execvpe encodes them in the locale's encoding, so a non-UTF-8
     # locale gave a traceback or another password's bytes (issue #75).
-    # Inherited variables pass through as the bytes they were. Every platform
-    # this side runs on (Linux, macOS: SETUP.md step 1) has a bytes environment.
-    if not os.supports_bytes_environ:
-        raise fail("run mode needs Linux or macOS (SETUP.md step 1): this "
-                   "platform has no bytes environment")
-    env = dict(os.environb)
+    # Inherited variables pass through as the bytes they were (checked for a
+    # bytes environment before the decrypt, in main). An entry with an empty
+    # name, which a raw execve can pass, is dropped: os.execvpe refuses one
+    # with a ValueError.
+    env = {k: v for k, v in os.environb.items() if k}
     key = os.fsencode  # a variable's name, as the OS encodes names
     # The command needs the credentials, not the blob or the key's path.
     env.pop(key(BLOB_ENV), None)

@@ -6,7 +6,7 @@
 
 - **The test suite checks the bytes `handoff.sh` encrypts** (#55, closes #47): each accepted payload case is decrypted and compared with its input, not only opened.
 - **Hardening: `consume.py` hands `age` the identity it checked, on a pipe, not its path** (#70), and `consume.py` and `agent-setup.sh` refuse a key directory owned by an account other than this one or root, or that a group or other can write to; `--check-setup` reports one.
-- **`consume.py`'s `--env` targets must be credential names** (#78): a name ending in a credential word (`USER`, `PASSWORD`, `TOKEN`, `KEY`, `SECRET`, `ID` and a few more) after a `_` or as the whole name (the longer words, as in `PGPASSWORD`, with no `_` too), checked after the refused list and the shell's own `USER`, `USERNAME` and `PWD`, which are refused. A wrapper mapping to another name (`SSHPASS`, `TF_TOKEN_<host>`) stops with "isn't a credential variable's name": see SETUP step 7.
+- **`consume.py`'s `--env` targets must be credential names** (#78): a name ending in a credential word (`USER`, `PASSWORD`, `TOKEN`, `KEY`, `SECRET`, `ID` and a few more) after a `_` or as the whole name (some of them, `USER`, `PASSWORD`, `TOKEN`, `SECRET` and a few more, with no `_` too, as in `PGPASSWORD`), checked after the refused list and the shell's own `USER`, `USERNAME` and `PWD`, which are refused. A wrapper mapping to another name (`SSHPASS`, `TF_TOKEN_<host>`) stops with "isn't a credential variable's name": see SETUP step 7.
 
 ### Fixed
 
