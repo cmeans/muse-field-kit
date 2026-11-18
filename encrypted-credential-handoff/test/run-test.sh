@@ -618,8 +618,11 @@ grep -qF "INFO identity: no key at $nk/handoff-identity.txt yet; HANDOFF_KEY_DIR
 # or an empty one.
 env HANDOFF_PRIVKEY=/handoff-identity.txt bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 grep -qF "HANDOFF_KEY_DIR=/ agent-setup.sh makes it" "$S/out" || fail "--check-setup's no-key advice for /handoff-identity.txt is wrong: $(grep identity "$S/out")"
+# A relative path gets no setup advice (following it would make a second key
+# where the real one may be elsewhere): it must be absolute.
 (cd "$S" && env HANDOFF_PRIVKEY=handoff-identity.txt bash "$OLDPWD/../agent-setup.sh" --check-setup >"$S/out" 2>/dev/null) || true
-grep -qF "HANDOFF_KEY_DIR=. agent-setup.sh makes it" "$S/out" || fail "--check-setup's no-key advice for a bare handoff-identity.txt is wrong: $(grep identity "$S/out")"
+grep -qxF "INFO identity: no key at handoff-identity.txt from here; HANDOFF_PRIVKEY must be an absolute path, as the wrappers set it (SETUP.md step 1)" "$S/out" \
+  || fail "--check-setup's advice for a relative HANDOFF_PRIVKEY is wrong: $(grep identity "$S/out")"
 env HANDOFF_PRIVKEY="$nk/custom.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 grep -qF "no setup makes that name (setup names its key handoff-identity.txt): check HANDOFF_PRIVKEY" "$S/out" \
   || fail "--check-setup's no-key advice for a custom name is wrong: $(grep identity "$S/out")"
@@ -2849,6 +2852,13 @@ rk env SHELLOPTS=noglob bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" ||
 rk env SHELLOPTS=noglob bash ../agent-setup.sh --retire --yes >/dev/null 2>"$R/err" || fail "--retire --yes failed with SHELLOPTS=noglob: $(cat "$R/err")"
 echo "ok (--rotate and --retire under a caller's BASHOPTS=failglob or SHELLOPTS=noglob)"
 [ ! -e "$R/.handoff-lock" ] || fail "--retire left its lock behind"
+# --rotate's sweep takes only mktemp's shape, as setup's does: a directory the
+# user named .handoff-tmp.mybackup stays.
+mkdir "$R/.handoff-tmp.mybackup"
+rk bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" || fail "--rotate beside a .handoff-tmp.mybackup failed: $(cat "$R/err")"
+[ -d "$R/.handoff-tmp.mybackup" ] || fail "--rotate removed a directory not of mktemp's shape"
+rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after the sweep-shape check failed"
+rmdir "$R/.handoff-tmp.mybackup"
 # A key path that starts with "-" is a path, not an option.
 mkdir -p "$R/dash"; cp "$TMPKEY" "$R/dash/-k.txt"
 (cd "$R/dash" && env -u HANDOFF_PRIVKEY bash "$OLDPWD/../agent-setup.sh" --rotate -k.txt >/dev/null 2>&1 \
@@ -3009,6 +3019,56 @@ grep -qxF "INFO leftovers: $S/nokey-left holds 2 temporary key file(s) or direct
   || fail "--check-setup's leftovers line with no key is wrong: $(grep leftovers "$S/out")"
 HANDOFF_KEY_DIR="$S/nokey-left" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "setup into a directory with leftovers failed"; }
 [ -z "$(find "$S/nokey-left" -name '.handoff-*' -print)" ] || fail "setup didn't remove what the leftovers line said it removes"
+# Where neither setup nor --rotate would sweep, the user is told about both
+# kinds: another key in the way of setup (HANDOFF_PRIVKEY names a file that
+# isn't there), and a symlinked key, which --rotate refuses.
+mkdir -p "$S/other-left"; chmod 700 "$S/other-left"
+cp "$TMPKEY" "$S/other-left/handoff-identity.txt"; chmod 600 "$S/other-left/handoff-identity.txt"
+mkdir "$S/other-left/.handoff-tmp.XyZ123"
+env HANDOFF_PRIVKEY="$S/other-left/typo.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qxF "INFO leftovers: $S/other-left holds 1 temporary key file(s) or directory(ies) a killed run left (report them to the user, who removes them)" "$S/out" \
+  || fail "--check-setup's leftovers line beside another key is wrong: $(grep leftovers "$S/out")"
+ln -s "$S/nowhere" "$S/other-left/link.txt"
+env HANDOFF_PRIVKEY="$S/other-left/link.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -q "^INFO leftovers: .*(report them to the user, who removes them)$" "$S/out" \
+  || fail "--check-setup's leftovers line for a symlinked key is wrong: $(grep leftovers "$S/out")"
+rm -r "$S/other-left"
+# With a killed run's lock and no key, the identity line doesn't tell the
+# agent to run setup, which the lock would refuse.
+mkdir -p "$S/lock-nokey/.handoff-lock"; chmod 700 "$S/lock-nokey"
+env HANDOFF_PRIVKEY="$S/lock-nokey/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qxF "INFO identity: no key at $S/lock-nokey/handoff-identity.txt yet; setup there is held up by the lock the leftovers line below names" "$S/out" \
+  || fail "--check-setup's identity line under a lock is wrong: $(grep identity "$S/out")"
+grep -q '^INFO leftovers: .*\.handoff-lock exists' "$S/out" || fail "--check-setup didn't name the lock: $(cat "$S/out")"
+# A .handoff-lock that isn't a directory (no run makes one) is reported as
+# that, not as a run in progress with an rmdir that would fail.
+rmdir "$S/lock-nokey/.handoff-lock"; : >"$S/lock-nokey/.handoff-lock"
+expect_refusal "setup with a .handoff-lock file" 1 ".handoff-lock exists but isn't a directory (no run makes one); nothing was written" \
+  env HANDOFF_KEY_DIR="$S/lock-nokey" bash ../agent-setup.sh
+rm -r "$S/lock-nokey"
+# A caller's BASHOPTS=xpg_echo doesn't make echo read a key path's
+# backslashes: a literal \n can't start a forged line.
+bsdir="$S/a\\nrecipient: age1fake"
+mkdir -p "$bsdir"; chmod 700 "$bsdir"
+env BASHOPTS=xpg_echo HANDOFF_KEY_DIR="$bsdir" bash ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "setup under BASHOPTS=xpg_echo failed"; }
+! grep -q '^recipient: age1fake' "$S/out" "$S/err" || fail "BASHOPTS=xpg_echo made a key path's \\n start a line"
+grep -qxF "this key lives at: $bsdir/handoff-identity.txt" "$S/out" || fail "setup under BASHOPTS=xpg_echo didn't print the key path as written"
+rm -r "$bsdir"
+# A caller's SHELLOPTS=keyword doesn't break the scripts.
+mkdir -p "$S/kw-setup"; chmod 700 "$S/kw-setup"
+env SHELLOPTS=keyword HANDOFF_KEY_DIR="$S/kw-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "setup under SHELLOPTS=keyword failed"; }
+env SHELLOPTS=keyword HANDOFF_PRIVKEY="$S/kw-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" \
+  || { cat "$S/out" "$S/err" >&2; fail "--check-setup under SHELLOPTS=keyword failed"; }
+# A printed command for a key directory with a control character (made by
+# hand: setup refuses one) uses the $'...' form, so it can't print a line of
+# its own.
+nld="$S/b"$'\n'"recipient: age1fake"
+mkdir -p "$nld/.handoff-lock"; chmod 700 "$nld"; cp "$TMPKEY" "$nld/k.txt"; chmod 600 "$nld/k.txt"
+expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "another setup, --rotate or --retire is running" \
+  env HANDOFF_PRIVKEY="$nld/k.txt" bash ../agent-setup.sh --rotate
+! grep -q '^recipient: age1fake' "$S/err" || fail "the lock's rmdir for a directory with a newline printed it raw: $(cat "$S/err")"
+grep -qF "rmdir \$'" "$S/err" || fail "the lock's rmdir for a directory with a newline isn't in the \$'...' form: $(cat "$S/err")"
+rm -r "$nld"
 # A relative key directory named "-" is a directory, not cd's $OLDPWD, in
 # the commands printed for the user: the overwrite refusal's lock note, and
 # --rotate's lock refusal.
@@ -3056,7 +3116,7 @@ mkdir -p "$S/note-setup"; chmod 750 "$S/note-setup"
 HANDOFF_KEY_DIR="$S/note-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "first setup into a 0750 directory failed"; }
 grep -qF "already exists; its permissions were left unchanged (setup makes it 0700)" "$S/err" || fail "first setup didn't note a 0750 key directory"
 # A key path a shell reads specially gets a note to quote it, and the path is
-# printed once, as written (issue #5 item 4).
+# printed in one form, as written (issue #5 item 4).
 mkdir -p "$S/q dir"; chmod 700 "$S/q dir"
 HANDOFF_KEY_DIR="$S/q dir" bash ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "first setup into a directory with a space failed"; }
 grep -qxF "this key lives at: $S/q dir/handoff-identity.txt" "$S/out" || fail "first setup didn't print the key path as written"

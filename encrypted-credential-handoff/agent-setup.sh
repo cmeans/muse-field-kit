@@ -68,10 +68,14 @@ set -euo pipefail
 # would make every sweep match nothing, failglob would make every unmatched
 # cleanup glob fatal (--rotate's .handoff-new.*), nullglob and dotglob would
 # change what the sweeps match. This script's own settings. noclobber (set -C)
-# would make a second write to a scratch file fail.
+# would make a second write to a scratch file fail. keyword (set -k) would take
+# a word like a=b anywhere as an assignment. xpg_echo would make echo read a
+# path's backslashes (\n, \c) as escapes. (onecmd, set -t, can't be undone
+# here: bash exits after the first command.)
 set +f
 set +C
-shopt -u failglob nullglob dotglob nocaseglob nocasematch extglob 2>/dev/null || true
+set +k
+shopt -u failglob nullglob dotglob nocaseglob nocasematch extglob xpg_echo 2>/dev/null || true
 umask 077
 
 MAX_KEY_BYTES=16384   # equal to consume.py's MAX_KEY_FILE
@@ -126,7 +130,12 @@ expand_home() {  # PATH WHAT
 qp() { printf '%q' "$1"; }
 # A path single-quoted for a POSIX shell, for a command the user copies (and
 # may run as root, or under sh).
-sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+# A path with a control character (a newline, say) gets printf %q's $'...'
+# form instead: bash-only, but it can't pass for another line of output.
+sq() {
+  if ( LC_ALL=C; [[ "$1" =~ [[:cntrl:]] ]] ); then printf '%q' "$1"; return; fi
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
 
 # The PATH age-keygen is looked for on, in the words of consume.py's
 # age_missing (long ones cut at 300 characters).
@@ -403,12 +412,15 @@ phys_dir() {  # DIR
 lock_dir() {  # DIR
   local l="$1/.handoff-lock" err abs
   if ! err=$(mkdir -- "$l" 2>&1); then
-    if [ -e "$l" ]; then
+    if [ -L "$l" ] || { [ -e "$l" ] && [ ! -d "$l" ]; }; then
+      # No run makes anything else by that name, and rmdir wouldn't remove it.
+      echo "agent-setup.sh: $(qp "$l") exists but isn't a directory (no run makes one); nothing was written. Stop and report it to the user." >&2
+    elif [ -e "$l" ]; then
       # Absolute and single-quoted, so the command works from any directory
       # and in a POSIX shell, as --retire's hard-link hint is.
       abs=$(phys_dir "$1")/.handoff-lock || abs=$l
       echo "agent-setup.sh: another setup, --rotate or --retire is running ($(qp "$l") exists)." >&2
-      echo "Stop and report it to the user: if no run is going (one was killed), they remove it with: rmdir '$(printf '%s' "$abs" | sed "s/'/'\\\\''/g")'" >&2
+      echo "Stop and report it to the user: if no run is going (one was killed), they remove it with: rmdir $(sq "$abs")" >&2
     else
       echo "agent-setup.sh: cannot create the lock in $1: $err" >&2
     fi
@@ -421,7 +433,7 @@ lock_dir() {  # DIR
 # perhaps a temporary copy of the key (a second hard link to it). Named, with
 # the lock's rmdir, for a refusal that stops before the lock would; nothing
 # printed when there's neither. Only by the names this script makes.
-leftover_note() {  # DIR KEY-EXISTS (yes or no)
+leftover_note() {  # DIR WHO (setup: no key, setup sweeps; rotate: a key --rotate can rotate; user: neither)
   local d="$1" abs f nd=0 nf=0 tmps=
   for f in "$d"/.handoff-tmp.??????; do
     if [ -d "$f" ] && [ ! -L "$f" ]; then nd=$((nd + 1)); fi
@@ -432,9 +444,13 @@ leftover_note() {  # DIR KEY-EXISTS (yes or no)
   # Who removes what. With no key yet, the next setup sweeps both kinds (and
   # --rotate refuses). Once a key exists, --rotate sweeps the directories, and
   # nothing here removes a .handoff-setup file (--retire only one that is a
-  # hard link to the previous key), so the user is told.
-  if [ "$2" = no ]; then
+  # hard link to the previous key), so the user is told. Where neither setup
+  # nor --rotate would run (a symlinked key, or another key in the way), the
+  # user is told about both.
+  if [ "$2" = setup ]; then
     [ $((nd + nf)) -eq 0 ] || tmps="$((nd + nf)) temporary key file(s) or directory(ies) a killed setup left (the next setup removes them)"
+  elif [ "$2" = user ]; then
+    [ $((nd + nf)) -eq 0 ] || tmps="$((nd + nf)) temporary key file(s) or directory(ies) a killed run left (report them to the user, who removes them)"
   else
     [ "$nd" -eq 0 ] || tmps="$nd temporary key directory(ies) a killed run left (the next --rotate removes them)"
     if [ "$nf" -gt 0 ]; then
@@ -568,8 +584,8 @@ password: 20 bytes"
         # password (no secret) goes to a one-line program the way a wrapper's
         # tool gets it, and is compared byte for byte with what was encrypted.
         # In the locale a wrapper sets (SETUP.md step 7: LANG=C.UTF-8, or
-        # en_US.UTF-8 on macOS, with no LC_ALL), not the caller's: the check
-        # is of what the wrappers will do.
+        # en_US.UTF-8 on macOS, with no LC_ALL), not the caller's. (This
+        # python3 is the caller's; a wrapper's PATH may find another.)
         same=no got='' wl=C.UTF-8
         [ "$(uname -s 2>/dev/null)" != Darwin ] || wl=en_US.UTF-8
         if [ "$rc" -eq 0 ] && [ "$v" = "$want" ]; then
@@ -634,8 +650,14 @@ password: 20 bytes"
       cs_out FAIL identity "HANDOFF_PRIVKEY ($k) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$kc"
     elif [ ! -e "$k" ] && [ ! -L "$k" ]; then
       # Which setup makes it: plain setup only makes the default path, and
-      # any setup names its key handoff-identity.txt.
-      if [ -n "${HOME-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
+      # any setup names its key handoff-identity.txt. No setup advice where
+      # it would mislead: a relative path (it names a key only from one
+      # directory), or a lock that would stop setup (the leftovers line).
+      if case "$k" in /*) false ;; *) true ;; esac; then
+        cs_out INFO identity "no key at $k from here; HANDOFF_PRIVKEY must be an absolute path, as the wrappers set it (SETUP.md step 1)"
+      elif [ -d "$(dirname -- "$k")/.handoff-lock" ]; then
+        cs_out INFO identity "no key at $k yet; setup there is held up by the lock the leftovers line below names"
+      elif [ -n "${HOME-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
         cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
       elif [ "${k##*/}" = handoff-identity.txt ]; then
         cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(qp "$(dirname -- "$k")") agent-setup.sh makes it"
@@ -653,8 +675,16 @@ password: 20 bytes"
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null)
       cs_out FAIL identity "${kmsg:-the key at $k did not pass the identity checks}"
     fi
-    # A killed run's lock would stop the next --rotate; say so now.
-    kc=no; if [ -e "$k" ] || [ -L "$k" ]; then kc=yes; fi
+    # A killed run's lock would stop the next --rotate; say so now. Who
+    # removes the leftovers depends on what would run in that directory:
+    # --rotate, for a key file it can rotate; setup, where there's no key to
+    # refuse to overwrite; otherwise (a symlinked key, something else at the
+    # key path, or another key in the way) the user.
+    kc=setup
+    if [ -L "$k" ]; then kc=user
+    elif [ -f "$k" ]; then kc=rotate
+    elif [ -e "$k" ] || [ -e "$(dirname -- "$k")/handoff-identity.txt" ] || [ -L "$(dirname -- "$k")/handoff-identity.txt" ]; then kc=user
+    fi
     if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")" "$kc") && [ -n "$kmsg" ]; then
       cs_out INFO leftovers "${kmsg#note: }"
     fi
@@ -820,7 +850,7 @@ case "$mode" in
       rm -f -- "$f"
       echo "note: removed a temporary key a killed --rotate left behind: $(qp "$f")" >&2
     done
-    for f in "$dir"/.handoff-tmp.*; do
+    for f in "$dir"/.handoff-tmp.??????; do
       # The private directory of a killed --rotate or setup (the lock says
       # none is running).
       [ -d "$f" ] && [ ! -L "$f" ] || continue
@@ -1007,7 +1037,9 @@ PRIV="$KEY_DIR/handoff-identity.txt"
 if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
   printf 'if a setup was cut short, this is its key: HANDOFF_PRIVKEY=%q agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
-  leftover_note "$(dirname -- "$PRIV")" yes >&2
+  # --rotate sweeps only for a key it can rotate: not a symlink.
+  if [ -L "$PRIV" ] || [ ! -f "$PRIV" ]; then leftover_note "$(dirname -- "$PRIV")" user >&2
+  else leftover_note "$(dirname -- "$PRIV")" rotate >&2; fi
   exit 1
 fi
 
