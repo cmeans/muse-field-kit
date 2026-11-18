@@ -284,12 +284,24 @@ no_symlinks() {
 # where consume.py never looks, and put a new key at KEY.previous; --retire
 # would delete the wrong key (issue #46). Matched without case, as macOS's
 # default volume names the same file either way.
+is_previous_name() {  # PATH
+  case "$1" in *.[Pp][Rr][Ee][Vv][Ii][Oo][Uu][Ss]) return 0 ;; esac
+  return 1
+}
+# ", <the name without .previous>" when that is a file name, else nothing
+# (a key file named just ".previous" has no current key to suggest).
+suggest_current() {  # PATH
+  local c=${1%.*}
+  case "$c" in ''|*/) ;; *) printf ', %s' "$(qp "$c")" ;; esac
+}
 not_previous() {
-  case "$key" in
-    *.[Pp][Rr][Ee][Vv][Ii][Oo][Uu][Ss])
-      echo "agent-setup.sh: $(qp "$key") is a rotation's old key (its name ends in .previous); $mode takes the current key, $(qp "${key%.*}"), or no KEY for the one HANDOFF_PRIVKEY names; nothing changed" >&2
-      exit 1 ;;
-  esac
+  is_previous_name "$key" || return 0
+  if [ "$key_given" = 1 ]; then
+    echo "agent-setup.sh: $(qp "$key") is a rotation's old key (its name ends in .previous); $mode takes the current key$(suggest_current "$key"); nothing changed" >&2
+  else
+    echo "agent-setup.sh: HANDOFF_PRIVKEY ($(qp "$key")) names a rotation's old key (its name ends in .previous); set it to the current key$(suggest_current "$key"), as the wrappers do; nothing changed" >&2
+  fi
+  exit 1
 }
 
 # Make a new identity at FILE, which must not exist (age-keygen makes it
@@ -479,6 +491,9 @@ password: 20 bytes"
     if [ -z "$k" ]; then
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null); kmsg=${kmsg#agent-setup.sh: }
       cs_out FAIL identity "${kmsg:-cannot work out where the key is}"
+    elif is_previous_name "$k"; then
+      # consume.py refuses it (issue #46): every wrapper with it would fail.
+      cs_out FAIL identity "HANDOFF_PRIVKEY ($k) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$(suggest_current "$k")"
     elif [ ! -e "$k" ] && [ ! -L "$k" ]; then
       cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
     elif recipient_of "$k" >/dev/null 2>"$newd/kerr"; then
@@ -594,6 +609,12 @@ case "$mode" in
     trap 'echo "agent-setup.sh: interrupted; run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1' INT TERM HUP
     lock_dir "$dir"
     key_recipient "$key"
+    if [ -e "$prev.previous" ] || [ -L "$prev.previous" ]; then
+      # See --retire: the keys aren't where a rotation keeps them, and
+      # rotating again would only move them further (issue #46).
+      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was rotated. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
+      exit 1
+    fi
     for f in "$dir"/.handoff-new.*; do
       # A temporary key a killed --rotate left (the lock says none is running).
       [ -e "$f" ] || [ -L "$f" ] || continue
@@ -697,11 +718,12 @@ case "$mode" in
       echo "agent-setup.sh: $(qp "$prev") holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
       exit 1
     fi
-    # Only a --rotate given KEY.previous made this, before 0.2.1 refused that
-    # (issue #46): it may hold the rotation's real old key, and this run would
-    # delete another. Nothing here can tell which key the user needs.
+    # Most likely left by a --rotate given KEY.previous, which releases up to
+    # 0.2.0 allowed (issue #46): it may hold the rotation's real old key, and
+    # this run would delete another. Nothing here can tell which key the user
+    # needs.
     if [ -e "$prev.previous" ] || [ -L "$prev.previous" ]; then
-      echo "agent-setup.sh: $(qp "$prev.previous") exists: an earlier --rotate was given $(qp "$prev") as its KEY, and the keys are no longer where a rotation keeps them; nothing was deleted. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
+      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was deleted. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
       exit 1
     fi
     # A killed setup or --rotate can leave a temporary file that is a hard
