@@ -337,7 +337,8 @@ jobs:
           retention-days: 1
 
   # Older age releases, built from source (go install, checked against
-  # sum.golang.org), against the agent side. Not required for merging at first.
+  # sum.golang.org), against the agent side. Required for merging through
+  # ci-ok, like every job here.
   linux-age-versions:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -603,6 +604,10 @@ jobs:
   # which a required check would count as passing.
   # A job that is skipped on purpose (an `if:` on a path) needs an exception
   # here, by name; today none is, so anything but success fails.
+  # `always()`, not `!cancelled()`, on purpose: in a canceled run a
+  # `!cancelled()` gate would be skipped, and GitHub counts a skipped
+  # required check as passing. A canceled run's ci-ok fails instead (its
+  # checkout is bounded by timeout-minutes).
   ci-ok:
     if: always()
     needs:
@@ -618,16 +623,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: ci-jobs.sh catches a job it isn't told about, in each form
+        run: |
+          # Each copy of ci.yml adds one job in another form: the plain and
+          # quoted forms must be listed, and the forms it doesn't read must
+          # be refused, never skipped.
+          s=.github/scripts/ci-jobs.sh
+          t="$RUNNER_TEMP/ci-jobs"; mkdir -p "$t"
+          add() { cp .github/workflows/ci.yml "$t/$1.yml"; printf '%s\n' "$2" '    runs-on: ubuntu-latest' '    steps:' '      - run: exit 1' >> "$t/$1.yml"; }
+          add plain '  zz-new-kit:'
+          add comment '  zz-new-kit: # a Linux-only kit'
+          add dquoted '  "zz-new-kit":'
+          add squoted "  'zz-new-kit':"
+          for c in plain comment dquoted squoted; do
+            "$s" "$t/$c.yml" | grep -qx zz-new-kit || { echo "::error::ci-jobs.sh didn't list the job added as $c"; exit 1; }
+          done
+          cp .github/workflows/ci.yml "$t/flow.yml"; printf '%s\n' '  zz-new-kit: {runs-on: ubuntu-latest, steps: [{run: exit 1}]}' >> "$t/flow.yml"
+          sed 's/$/\r/' .github/workflows/ci.yml > "$t/crlf.yml"
+          printf '%s\n' 'name: x' 'on: push' > "$t/nojobs.yml"
+          for c in flow crlf nojobs; do
+            if "$s" "$t/$c.yml" >/dev/null 2>&1; then echo "::error::ci-jobs.sh accepted the $c copy"; exit 1; fi
+          done
+          echo "ci-jobs.sh: lists the plain, comment and quoted forms; refuses flow style, CRLF and no jobs"
       - name: Every job in this file is gated here
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          # The job names: two-space keys under `jobs:` (this file's layout).
-          jobs=$(awk '/^jobs:/ { in_jobs = 1; next } in_jobs && /^[^ #]/ { exit }
-            in_jobs && /^  [A-Za-z0-9_-]+:[ ]*$/ { sub(/^  /, ""); sub(/:[ ]*$/, ""); print }' \
-            .github/workflows/ci.yml | grep -vx ci-ok | sort)
-          gated=$(printf '%s' "$NEEDS" | jq -r 'keys[]' | sort)
+          # ci-jobs.sh fails closed on a job key it can't read, so a job
+          # can't be missed by being written in another YAML form.
+          all=$(.github/scripts/ci-jobs.sh .github/workflows/ci.yml) || { echo "::error::ci-jobs.sh couldn't list ci.yml's jobs (above)"; exit 1; }
+          jobs=$(printf '%s\n' "$all" | grep -vx ci-ok) || true
           [ -n "$jobs" ] || { echo "::error::found no jobs in ci.yml"; exit 1; }
+          gated=$(printf '%s' "$NEEDS" | jq -r 'keys[]' | sort)
           missing=$(comm -23 <(printf '%s\n' "$jobs") <(printf '%s\n' "$gated"))
           if [ -n "$missing" ]; then
             echo "::error::ci-ok doesn't need these jobs, so they aren't gated: $(printf '%s' "$missing" | tr '\n' ' ')"
