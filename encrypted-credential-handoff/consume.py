@@ -494,6 +494,12 @@ def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
             return plain, "previous"
         tried = (f"decryption failed with the current key ({current!r}) "
                  f"and with the previous key ({previous!r})")
+    if os.path.lexists(previous + ".previous"):
+        # Most likely a --rotate given the .previous key, which releases up
+        # to 0.2.0 allowed: the old key may be there, with or without a
+        # .previous beside the current key (issue #46).
+        tried += (f", and {previous + '.previous'!r} exists "
+                  "(SETUP.md, Rotation: A .previous.previous file)")
     # One fixed message, whichever key failed and however, without age's
     # own text, which depends on the blob. It names the key files it tried
     # (paths, never payload data) and the age that ran. It's a stop condition:
@@ -976,6 +982,19 @@ def main() -> int:
         )
     label, check, do_rewrap, target, blob, env_map, cmd = parse_args(sys.argv[1:])
     current = privkey_path()
+    if current.lower().endswith(".previous"):
+        # A rotation's old key as the current one: the previous key would be
+        # looked up at .previous.previous, and where one exists --rewrap would
+        # encrypt to the old key (issue #46). Without case, as on macOS's
+        # default volume.
+        stem = current[:-len(".previous")]
+        # A key file named just ".previous" has no current key to suggest.
+        named = f", {stem!r}" if stem and not stem.endswith(os.sep) else ""
+        raise fail(
+            f"${PRIVKEY_ENV} ({current!r}) names a rotation's old key (its name ends in "
+            f".previous); a wrapper sets it to the current key{named} "
+            "(SETUP.md step 7). Refusing: report it to the user."
+        )
     previous = current + ".previous"
     if do_rewrap and not os.path.lexists(previous):
         # "For the current key" means the label is done only during a
