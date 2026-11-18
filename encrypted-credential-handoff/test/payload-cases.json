@@ -1,5 +1,11 @@
 [
  {
+  "name": "rawutf8",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJww6Rzc3fDtnJkLeaXpeacrC3wn5iALW1rLVpxOSJ9",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
   "name": "dateescape",
   "payload": "{\"svc\":\"example\",\"password\":\"\\/Date(0)\\/mk-Zq9\"}",
   "exit": 0,

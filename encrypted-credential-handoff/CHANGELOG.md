@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **The test suite checks the bytes `handoff.sh` encrypts** (#54, closes #47): each accepted payload case is decrypted and compared with its input, not only opened.
+- **The test suite checks the bytes `handoff.sh` encrypts** (#55, closes #47): each accepted payload case is decrypted and compared with its input, not only opened.
 
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 
