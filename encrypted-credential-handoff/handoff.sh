@@ -36,6 +36,19 @@ set +o posix
 set +x   # SHELLOPTS=xtrace or bash -x would print the secret
 set +a   # SHELLOPTS=allexport would export the secret to every command run
 set -euo pipefail
+# Glob and match behavior a caller's BASHOPTS or SHELLOPTS could change
+# (noglob, failglob, nullglob, nocasematch on the payload checks' case
+# patterns): this script's own. The rest of a caller's shell (BASH_ENV,
+# exported functions) belongs to whoever set it up: run
+# `bash -p ./handoff.sh` to ignore them. noclobber (set -C) would make a
+# second write to a scratch file fail, keyword (set -k) would take a word
+# like a=b anywhere as an assignment, and xpg_echo would make echo read a
+# path's backslashes as escapes. (onecmd, set -t, can't be undone here: bash
+# exits after the first command.)
+set +f
+set +C
+set +k
+shopt -u failglob nullglob dotglob nocaseglob nocasematch extglob xpg_echo 2>/dev/null || true
 # A SECRET_JSON exported by the caller would sit in every child's environment:
 unset SECRET_JSON blob
 
