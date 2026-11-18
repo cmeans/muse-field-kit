@@ -703,6 +703,15 @@ jobs:
           done
           if e=$("$s" check "$w" no-such-gate "$ok" 2>&1); then echo "::error::ci-jobs.sh check passed with a gate that isn't a job"; exit 1; fi
           printf '%s' "$e" | grep -q "no job named no-such-gate" || { echo "::error::ci-jobs.sh check with an unknown gate didn't say so"; exit 1; }
+          # Ids that contain one another: the gate is matched whole, never as
+          # a substring (issue #62). A job named after the gate must still be
+          # gated, and a gate id that is only part of a job's id isn't a job.
+          add gateprefix "  $GATE-zz:"
+          if e=$("$s" check "$t/gateprefix.yml" "$GATE" "$ok" 2>&1); then echo "::error::ci-jobs.sh check passed with $GATE-zz left out of needs"; exit 1; fi
+          printf '%s' "$e" | grep -q "aren't gated: $GATE-zz" || { echo "::error::ci-jobs.sh check didn't name $GATE-zz as ungated"; exit 1; }
+          part=${GATE%?}
+          if e=$("$s" check "$w" "$part" "$ok" 2>&1); then echo "::error::ci-jobs.sh check passed with gate $part, part of $GATE"; exit 1; fi
+          printf '%s' "$e" | grep -q "no job named $part " || { echo "::error::ci-jobs.sh check with gate $part didn't say it isn't a job"; exit 1; }
           echo "ci-jobs.sh: list gives exactly the jobs for each form tried (aliases included) and refuses broken, jobless, empty and continue-on-error files; check fails for every job missing, skipped, canceled or failed, for bad needs and for an unknown gate"
       - name: Every job here is gated and passed
         # Also when a run is canceled: then it runs and fails on the
