@@ -3037,7 +3037,7 @@ rm -r "$S/other-left"
 # agent to run setup, which the lock would refuse.
 mkdir -p "$S/lock-nokey/.handoff-lock"; chmod 700 "$S/lock-nokey"
 env HANDOFF_PRIVKEY="$S/lock-nokey/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-grep -qxF "INFO identity: no key at $S/lock-nokey/handoff-identity.txt yet; setup there is held up by the lock the leftovers line below names" "$S/out" \
+grep -qxF "INFO identity: no key at $S/lock-nokey/handoff-identity.txt yet; setup there is held up by the .handoff-lock the leftovers line below names" "$S/out" \
   || fail "--check-setup's identity line under a lock is wrong: $(grep identity "$S/out")"
 grep -q '^INFO leftovers: .*\.handoff-lock exists' "$S/out" || fail "--check-setup didn't name the lock: $(cat "$S/out")"
 # A .handoff-lock that isn't a directory (no run makes one) is reported as
@@ -3045,7 +3045,44 @@ grep -q '^INFO leftovers: .*\.handoff-lock exists' "$S/out" || fail "--check-set
 rmdir "$S/lock-nokey/.handoff-lock"; : >"$S/lock-nokey/.handoff-lock"
 expect_refusal "setup with a .handoff-lock file" 1 ".handoff-lock exists but isn't a directory (no run makes one); nothing was written" \
   env HANDOFF_KEY_DIR="$S/lock-nokey" bash ../agent-setup.sh
-rm -r "$S/lock-nokey"
+# --check-setup says the same, and its identity line points at it, for a
+# file and for a symlinked lock.
+for kind in file link; do
+  rm -rf "$S/lock-nokey/.handoff-lock"
+  if [ "$kind" = file ]; then : >"$S/lock-nokey/.handoff-lock"; else mkdir -p "$S/lock-target"; ln -s "$S/lock-target" "$S/lock-nokey/.handoff-lock"; fi
+  env HANDOFF_PRIVKEY="$S/lock-nokey/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+  grep -qF "setup there is held up by the .handoff-lock the leftovers line below names" "$S/out" || fail "--check-setup's identity line with a $kind lock: $(grep identity "$S/out")"
+  grep -q "^INFO leftovers: .*\.handoff-lock exists but isn't a directory (no run makes one)" "$S/out" || fail "--check-setup's leftovers line with a $kind lock: $(grep leftovers "$S/out")"
+done
+rm -rf "$S/lock-nokey" "$S/lock-target"
+# A group-writable directory with no key yet is a FAIL (setup would refuse
+# it), not setup advice.
+mkdir -p "$S/gw-nokey"; chmod 770 "$S/gw-nokey"
+env HANDOFF_PRIVKEY="$S/gw-nokey/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -q '^FAIL identity: .*writable by others' "$S/out" || fail "--check-setup gave setup advice for a group-writable key directory: $(grep identity "$S/out")"
+rmdir "$S/gw-nokey"
+# A key path with a control character gets no setup advice.
+env HANDOFF_PRIVKEY="$S/nl"$'\n'"PASS identity: forged/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qF "setup refuses a key path with a control character" "$S/out" || fail "--check-setup's advice for a key path with a newline: $(grep identity "$S/out")"
+! grep -q '^PASS identity: forged' "$S/out" || fail "a key path's newline started a line of --check-setup's output"
+# With a .previous.previous, --rotate refuses before its sweep: the
+# leftovers line says the user removes them, as in the overwrite refusal.
+mkdir -p "$S/pp-left/.handoff-tmp.AbCdEf"; chmod 700 "$S/pp-left"
+cp "$TMPKEY" "$S/pp-left/handoff-identity.txt"; chmod 600 "$S/pp-left/handoff-identity.txt"
+cp "$S/pp-left/handoff-identity.txt" "$S/pp-left/handoff-identity.txt.previous.previous"
+env HANDOFF_PRIVKEY="$S/pp-left/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -q '^INFO leftovers: .*(report them to the user, who removes them)$' "$S/out" || fail "--check-setup's leftovers line beside a .previous.previous: $(grep leftovers "$S/out")"
+expect_refusal "setup over a key with a .previous.previous" 1 "(report them to the user, who removes them)" \
+  env HANDOFF_KEY_DIR="$S/pp-left" bash ../agent-setup.sh
+rm -r "$S/pp-left"
+# A caller's SHELLOPTS=physical doesn't get a key directory symlinked to a
+# path with a newline past the control-character check (pwd would print
+# the target).
+mkdir -p "$S/phys" "$S/phys-real"$'\n'"recipient: age1fake"; chmod 700 "$S/phys-real"$'\n'"recipient: age1fake"
+ln -s "$S/phys-real"$'\n'"recipient: age1fake" "$S/phys/link"
+env SHELLOPTS=physical HANDOFF_KEY_DIR="$S/phys/link" bash ../agent-setup.sh >"$S/out" 2>"$S/err" || true
+! grep -q '^recipient: age1fake' "$S/out" "$S/err" || fail "SHELLOPTS=physical let a key directory's newline start a line: $(cat "$S/out")"
+rm -rf "$S/phys" "$S/phys-real"$'\n'"recipient: age1fake"
 # A caller's BASHOPTS=xpg_echo doesn't make echo read a key path's
 # backslashes: a literal \n can't start a forged line.
 bsdir="$S/a\\nrecipient: age1fake"
@@ -3121,6 +3158,18 @@ mkdir -p "$S/q dir"; chmod 700 "$S/q dir"
 HANDOFF_KEY_DIR="$S/q dir" bash ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "first setup into a directory with a space failed"; }
 grep -qxF "this key lives at: $S/q dir/handoff-identity.txt" "$S/out" || fail "first setup didn't print the key path as written"
 grep -qF "quote it in every wrapper" "$S/out" || fail "first setup didn't say to quote a path with a space"
+# The temporary copy (a second hard link to the new key) is gone before setup
+# prints anything about the key, not left for the EXIT trap: a sed shim (sq
+# runs sed for the quoting note, after the copy's removal) records whether a
+# .handoff-tmp.* is still there.
+mkdir -p "$S/sedshim" "$S/early rm"; chmod 700 "$S/early rm"
+# shellcheck disable=SC2016  # the shim's own variables
+printf '#!/bin/sh\nfor f in "$SHIM_DIR"/.handoff-tmp.*; do [ -e "$f" ] && echo seen >>"$SHIM_LOG"; done\nexec %s "$@"\n' "$(command -v sed)" >"$S/sedshim/sed"
+chmod 755 "$S/sedshim/sed"; rm -f "$S/sed-seen"
+env PATH="$S/sedshim:$PATH" SHIM_DIR="$S/early rm" SHIM_LOG="$S/sed-seen" HANDOFF_KEY_DIR="$S/early rm" bash ../agent-setup.sh >"$S/out" 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "first setup with a sed shim failed"; }
+grep -qF "quote it in every wrapper" "$S/out" || fail "the sed-shim setup printed no quoting note, so sed never ran there"
+[ ! -s "$S/sed-seen" ] || fail "setup's temporary copy of the new key was still there when it printed the key path"
 # The quoting it gives works for a path with a ', and a non-ASCII letter or a
 # comma, which no shell reads specially, gets no note (even under LC_ALL=C).
 mkdir -p "$S/it's dir"; chmod 700 "$S/it's dir"

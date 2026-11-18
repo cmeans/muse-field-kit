@@ -70,11 +70,13 @@ set -euo pipefail
 # change what the sweeps match. This script's own settings. noclobber (set -C)
 # would make a second write to a scratch file fail. keyword (set -k) would take
 # a word like a=b anywhere as an assignment. xpg_echo would make echo read a
-# path's backslashes (\n, \c) as escapes. (onecmd, set -t, can't be undone
-# here: bash exits after the first command.)
+# path's backslashes (\n, \c) as escapes. physical (set -P) would make pwd
+# print a symlink's target, which the key-path checks don't see. (onecmd,
+# set -t, can't be undone here: bash exits after the first command.)
 set +f
 set +C
 set +k
+set +P
 shopt -u failglob nullglob dotglob nocaseglob nocasematch extglob xpg_echo 2>/dev/null || true
 umask 077
 
@@ -457,7 +459,9 @@ leftover_note() {  # DIR WHO (setup: no key, setup sweeps; rotate: a key --rotat
       tmps="${tmps:+$tmps, and }$nf temporary key file(s) a killed setup left (report them to the user, who removes them)"
     fi
   fi
-  if [ -d "$d/.handoff-lock" ] && [ ! -L "$d/.handoff-lock" ]; then
+  if [ -L "$d/.handoff-lock" ] || { [ -e "$d/.handoff-lock" ] && [ ! -d "$d/.handoff-lock" ]; }; then
+    echo "note: $(qp "$d/.handoff-lock") exists but isn't a directory (no run makes one), and it stops setup, --rotate and --retire${tmps:+; also $tmps}. Report it to the user."
+  elif [ -d "$d/.handoff-lock" ]; then
     abs=$(phys_dir "$d") || abs=$d
     echo "note: $(qp "$d/.handoff-lock") exists: a setup, --rotate or --retire is running, or one was killed${tmps:+; also $tmps}. If none is running, report it to the user, who removes the lock with: rmdir $(sq "$abs/.handoff-lock")"
   elif [ -n "$tmps" ]; then
@@ -501,7 +505,7 @@ cs_out() {  # STATUS NAME DETAIL
 }
 check_setup() {
   local p v rc blob rcpt re have_age=0 have_keygen=0 have_py=0 here consume
-  local payload rt="" hdr="" b64="" want k kmsg kc same got wl
+  local payload rt="" hdr="" b64="" want k kmsg kc same got wl who pw pwn
   set +e
   # The traps first, so no signal can fall between the folder and its cleanup
   # (newd starts empty, and cleanup removes it only if set).
@@ -549,7 +553,11 @@ check_setup() {
     case "$here" in */*) here=${here%/*} ;; *) here=. ;; esac
     consume=$here/consume.py
     re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
-    payload='{"svc":"check","password":"pässwörd-ü-日本"}'
+    # The throwaway password, written once: the payload, its length and the
+    # byte check below all come from it.
+    pw='pässwörd-ü-日本'
+    pwn=$(printf '%s' "$pw" | LC_ALL=C wc -c | tr -d ' ')
+    payload="{\"svc\":\"check\",\"password\":\"$pw\"}"
     rcpt=$(env -i PATH="${PATH-}" age-keygen -y "$newd/id.txt" </dev/null 2>/dev/null)
     if [[ ! "$rcpt" =~ $re ]]; then
       rt="FAIL|age-keygen -y did not print a recipient for the throwaway identity"
@@ -579,7 +587,7 @@ check_setup() {
             HANDOFF_PRIVKEY="$newd/id.txt" python3 -I "$consume" --label check --check --blob-file "$newd/blob.txt" </dev/null 2>"$newd/cerr")
         rc=$?
         want="svc: matches label 'check'
-password: 20 bytes"
+password: $pwn bytes"
         # The bytes too, not only the length --check reports: the throwaway
         # password (no secret) goes to a one-line program the way a wrapper's
         # tool gets it, and is compared byte for byte with what was encrypted.
@@ -593,11 +601,11 @@ password: 20 bytes"
               export LANG="$wl"
               HANDOFF_PRIVKEY="$newd/id.txt" python3 -I "$consume" --label check --blob-file "$newd/blob.txt" \
                 -- python3 -I -c 'import os, sys; sys.stdout.write(os.environb[b"SERVICE_PASSWORD"].hex())' </dev/null 2>"$newd/rerr") || got=
-          [ "$got" = "$(printf '%s' 'pässwörd-ü-日本' | od -An -tx1 | tr -d ' \n')" ] && same=yes
+          [ "$got" = "$(printf '%s' "$pw" | od -An -tx1 | tr -d ' \n')" ] && same=yes
         fi
         if [ "$same" = yes ]; then
           hdr="PASS|consume.py accepted the header: exactly one X25519 stanza"
-          rt="PASS|encrypted, then decrypted by consume.py: the 20-byte UTF-8 password came back unchanged, byte for byte"
+          rt="PASS|encrypted, then decrypted by consume.py: the $pwn-byte UTF-8 password came back unchanged, byte for byte"
         elif [ "$rc" -eq 0 ] && [ "$v" = "$want" ] && [ -z "$got" ]; then
           # --check worked; running a program with the password didn't. Its
           # last stderr line: consume.py's own message, or a traceback's
@@ -655,8 +663,13 @@ password: 20 bytes"
       # directory), or a lock that would stop setup (the leftovers line).
       if case "$k" in /*) false ;; *) true ;; esac; then
         cs_out INFO identity "no key at $k from here; HANDOFF_PRIVKEY must be an absolute path, as the wrappers set it (SETUP.md step 1)"
-      elif [ -d "$(dirname -- "$k")/.handoff-lock" ]; then
-        cs_out INFO identity "no key at $k yet; setup there is held up by the lock the leftovers line below names"
+      elif ( LC_ALL=C; [[ "$k" =~ [[:cntrl:]] ]] ); then
+        cs_out INFO identity "no key at $(qp "$k") yet, and setup refuses a key path with a control character: check HANDOFF_PRIVKEY"
+      elif [ -e "$(dirname -- "$k")/.handoff-lock" ] || [ -L "$(dirname -- "$k")/.handoff-lock" ]; then
+        cs_out INFO identity "no key at $k yet; setup there is held up by the .handoff-lock the leftovers line below names"
+      elif [ -d "$(dirname -- "$k")" ] && kmsg=$(key_dir_unsafe_msg "$(dirname -- "$k")"); then
+        # Setup would refuse this directory too.
+        cs_out FAIL identity "$kmsg"
       elif [ -n "${HOME-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
         cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
       elif [ "${k##*/}" = handoff-identity.txt ]; then
@@ -679,13 +692,14 @@ password: 20 bytes"
     # removes the leftovers depends on what would run in that directory:
     # --rotate, for a key file it can rotate; setup, where there's no key to
     # refuse to overwrite; otherwise (a symlinked key, something else at the
-    # key path, or another key in the way) the user.
-    kc=setup
-    if [ -L "$k" ]; then kc=user
-    elif [ -f "$k" ]; then kc=rotate
-    elif [ -e "$k" ] || [ -e "$(dirname -- "$k")/handoff-identity.txt" ] || [ -L "$(dirname -- "$k")/handoff-identity.txt" ]; then kc=user
+    # key path, another key in the way, or a .previous.previous, which
+    # --rotate refuses before its sweep) the user.
+    who=setup
+    if [ -L "$k" ] || [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then who=user
+    elif [ -f "$k" ]; then who=rotate
+    elif [ -e "$k" ] || [ -e "$(dirname -- "$k")/handoff-identity.txt" ] || [ -L "$(dirname -- "$k")/handoff-identity.txt" ]; then who=user
     fi
-    if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")" "$kc") && [ -n "$kmsg" ]; then
+    if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")" "$who") && [ -n "$kmsg" ]; then
       cs_out INFO leftovers "${kmsg#note: }"
     fi
   else
@@ -1038,7 +1052,8 @@ if [ -e "$PRIV" ]; then
   echo "refusing to overwrite existing key: $PRIV" >&2
   printf 'if a setup was cut short, this is its key: HANDOFF_PRIVKEY=%q agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
   # --rotate sweeps only for a key it can rotate: not a symlink.
-  if [ -L "$PRIV" ] || [ ! -f "$PRIV" ]; then leftover_note "$(dirname -- "$PRIV")" user >&2
+  if [ -L "$PRIV" ] || [ ! -f "$PRIV" ] || [ -e "$PRIV.previous.previous" ] || [ -L "$PRIV.previous.previous" ]; then
+    leftover_note "$(dirname -- "$PRIV")" user >&2
   else leftover_note "$(dirname -- "$PRIV")" rotate >&2; fi
   exit 1
 fi
@@ -1064,6 +1079,11 @@ fi
 # set HANDOFF_PRIVKEY to, from whatever directory they run in.
 case "$KEY_DIR" in /*) ;; *) KEY_DIR="./$KEY_DIR" ;; esac  # not cd's "-" or a search
 KEY_DIR=$(cd -- "$KEY_DIR" && pwd)
+# Again on the path that is printed (the check above saw the logical one).
+if ( LC_ALL=C; [[ "$KEY_DIR" =~ [[:cntrl:]] ]] ); then
+  echo "agent-setup.sh: the key directory $(qp "$KEY_DIR") has a control character in its path (a newline?); no key was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
+  exit 1
+fi
 PRIV="$KEY_DIR/handoff-identity.txt"
 
 # No stderr suppression of a failure: if key generation fails, the human needs
