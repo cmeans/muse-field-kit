@@ -1064,11 +1064,99 @@ expect_refusal "--env unknown field (a typo)" 1 "not a known credential field" \
 expect_refusal "--env wrong-case field" 1 "not a known credential field" \
   consume --label example --blob-file blob-age.txt --env Password=APP_PASS -- true
 expect_refusal "--env one field twice" 1 "maps 'password' twice" \
-  consume --label example --blob-file blob-age.txt --env password=A_P --env password=B_P -- true
+  consume --label example --blob-file blob-age.txt --env password=A_PASS --env password=B_PASS -- true
 expect_refusal "--env not a variable name" 1 "not a valid variable name" \
   consume --label example --blob-file blob-age.txt --env 'password=A B' -- true
 expect_refusal "--env two fields, one target" 1 "same environment variable" \
   consume --label example --blob-file blob-age.txt --env username=SERVICE_PASSWORD -- true
+# The allowlist (issue #43 item 13): a target must read as a credential's
+# name. Each of these changes what a program runs, trusts or where it
+# connects, or isn't a credential at all, and isn't on the refused list.
+n=0
+for v in NODE_TLS_REJECT_UNAUTHORIZED AWS_CA_BUNDLE SHELL TMPDIR AWS_ENDPOINT_URL AWS_ENDPOINT_URL_S3 \
+         CARGO_HTTP_CAINFO GODEBUG GOFLAGS LUA_CPATH LUA_PATH CORECLR_PROFILER_PATH PHPRC LOCPATH \
+         OLDPWD SSH_AGENT_PID PROXY_BYPASS GOOGLE_APPLICATION_CREDENTIALS TLS_KEY_FILE SOME_VAR \
+         node_tls_reject_unauthorized SSHPASS; do
+  expect_refusal "--env $v" 1 "isn't a credential variable's name" \
+    consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
+  n=$((n + 1))
+done
+echo "ok (refused: $n --env targets that aren't credential names)"
+# The shell's own USER, USERNAME and PWD end in a credential word: refused
+# as the shell's, with a message of their own.
+for v in USER USERNAME PWD pwd; do
+  expect_refusal "--env $v" 1 "is the shell's own (who runs, or where)" \
+    consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
+done
+# The refusal lists the words as the check uses them: every word, and the
+# ones with no _ needed, read from consume.py's own tuples.
+consume --label example --blob-file blob-age.txt --env password=SOME_VAR -- true >/dev/null 2>"$S/err" || true
+words=$(python3 -I -c 'import importlib.util as u, sys; s = u.spec_from_file_location("c", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m); print(", ".join(m.CREDENTIAL_WORDS) + "|" + ", ".join(m.CREDENTIAL_WORDS_UNSEPARATED))' ../consume.py)
+grep -qF "one of ${words%%|*} (after a _, or the whole name; ${words#*|} without one too)" "$S/err" \
+  || fail "the allowlist refusal's word lists don't match consume.py's tuples: $(cat "$S/err")"
+# SETUP.md names the same no-_ words, as `A`, `B` and `C`.
+# shellcheck disable=SC2016  # the backticks are sed's replacement text
+setup_words=$(printf '%s' "${words#*|}" | sed 's/\([A-Z][A-Z]*\)/`\1`/g; s/\(.*\), /\1 and /')
+grep -qF "CREDENTIAL_WORDS_UNSEPARATED\`, $setup_words, may also end a name" ../SETUP.md \
+  || fail "SETUP.md's no-_ word list doesn't match consume.py's CREDENTIAL_WORDS_UNSEPARATED ($setup_words)"
+# Credential names are accepted, with the value under that name.
+for v in PGPASSWORD PGUSER MYSQL_PWD GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
+         OPENAI_API_KEY JIRA_EMAIL SNOWFLAKE_ACCOUNT AZURE_DEVOPS_PAT APP_PASS NAS_LOGIN db_password \
+         KEY SECRET REDISCLI_AUTH SHODAN_APIKEY MINIO_SECRETKEY MINIO_ACCESSKEY TS_AUTHKEY WG_PRIVATEKEY; do
+  consume --label example --blob-file blob-age.txt --env "password=$v" -- sh -c "[ \"\${$v}\" = \"\$1\" ]" sh "$P" \
+    >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--env password=$v was refused, or the value didn't arrive under it"; }
+done
+echo "ok (accepted: credential-named --env targets)"
+# An AUTH name that reads as a switch turning authentication off is refused.
+for v in NO_AUTH DISABLE_AUTH SKIP_AUTH INSECURE_SKIP_AUTH no_auth; do
+  expect_refusal "--env $v" 1 "reads as a switch that turns authentication off" \
+    consume --label example --blob-file blob-age.txt --env "password=$v" -- true >/dev/null
+done
+# An inherited entry with an empty name (a raw execve can pass one) is
+# dropped, not a traceback from os.execvpe.
+got=$(python3 -I -c '
+import os, sys
+os.environb = {**os.environb, b"": b"weird"}
+sys.argv = ["consume.py", "--label", "example", "--blob-file", "blob-age.txt", "--", "sh", "-c", "echo ran"]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' 2>"$S/err") || { cat "$S/err" >&2; fail "run mode with an empty-named inherited variable failed"; }
+[ "$got" = ran ] || fail "run mode with an empty-named inherited variable: $got"
+! grep -q Traceback "$S/err" || fail "run mode with an empty-named inherited variable gave a traceback"
+echo "ok (refused: AUTH switch names; dropped: an empty-named inherited variable)"
+# HANDOFF_KEY_DIR without HANDOFF_PRIVKEY is refused with agent-setup.sh's
+# hint, not the default key read quietly (issue #44 item 2).
+expect_refusal "HANDOFF_KEY_DIR without HANDOFF_PRIVKEY" 1 "HANDOFF_KEY_DIR is set but HANDOFF_PRIVKEY isn't" \
+  env -u HANDOFF_PRIVKEY HANDOFF_KEY_DIR="$S/somewhere" python3 ../consume.py --label example --check --blob-file blob-age.txt
+grep -qF "Set HANDOFF_PRIVKEY=<dir>/handoff-identity.txt as the wrappers do" "$S/err" || fail "the HANDOFF_KEY_DIR refusal doesn't give the fix: $(cat "$S/err")"
+# Both set: HANDOFF_PRIVKEY is the key, as before.
+HANDOFF_KEY_DIR="$S/somewhere" consume --label example --check --blob-file blob-age.txt >/dev/null 2>"$S/err" \
+  || { cat "$S/err" >&2; fail "HANDOFF_KEY_DIR beside HANDOFF_PRIVKEY was refused"; }
+# Run mode hands each value on as its UTF-8 bytes whatever the locale
+# (issue #75): a non-UTF-8 locale gave a traceback, or latin-1 bytes for a
+# password latin-1 can encode. LC_ALL=C with -X utf8=0 gives Python an ASCII
+# filesystem encoding on glibc, with no locale to install (macOS's Python is
+# UTF-8 there whatever the locale, so it passes either way).
+for pw in 'pässwörd' 'pässwörd-日本'; do
+  b=$(enc "{\"svc\":\"loc\",\"password\":\"$pw\"}")
+  got=$(LC_ALL=C python3 -X utf8=0 -I ../consume.py --label loc --blob "$b" \
+    -- python3 -I -c 'import os, sys; sys.stdout.write(os.environb[b"SERVICE_PASSWORD"].hex())' 2>"$S/err") \
+    || { cat "$S/err" >&2; fail "run mode with an ASCII filesystem encoding failed for a non-ASCII password"; }
+  [ "$got" = "$(printf '%s' "$pw" | od -An -tx1 | tr -d ' \n')" ] || fail "run mode with an ASCII filesystem encoding passed other bytes than the UTF-8 encrypted ($got)"
+done
+echo "ok (run mode passes UTF-8 bytes whatever the locale's encoding)"
+# The other half of #75, where a Latin-1 locale is installed: a password
+# latin-1 can encode came through as latin-1 bytes, with no error. (Nothing
+# is printed where there's none: CI fails on a skip line, and the ASCII case
+# above covers the code path.)
+# (-X utf8=0: Python 3.15 is in UTF-8 mode by default, which would hide it.)
+if [ "$(LC_ALL=en_US.ISO-8859-1 python3 -X utf8=0 -I -c 'import sys; print(sys.getfilesystemencoding())' 2>/dev/null)" = iso8859-1 ]; then
+  b=$(enc '{"svc":"loc","password":"pässwörd"}')
+  got=$(LC_ALL=en_US.ISO-8859-1 python3 -X utf8=0 -I ../consume.py --label loc --blob "$b" \
+    -- python3 -I -c 'import os, sys; sys.stdout.write(os.environb[b"SERVICE_PASSWORD"].hex())' 2>"$S/err") \
+    || { cat "$S/err" >&2; fail "run mode under a Latin-1 locale failed"; }
+  [ "$got" = "$(printf '%s' 'pässwörd' | od -An -tx1 | tr -d ' \n')" ] || fail "run mode under a Latin-1 locale passed latin-1 bytes ($got)"
+  echo "ok (run mode passes UTF-8 bytes under a Latin-1 locale)"
+fi
 expect_refusal "command not found" 127 "cannot run" \
   consume --label example --blob-file blob-age.txt -- "$S/no-such-command"
 printf '#!/bin/sh\n' > "$S/not-executable"; chmod 644 "$S/not-executable"
@@ -1358,6 +1446,24 @@ for v in scrypt:"$M" plugin-stanza:"$M" pq-stanza:"$M" ssh-stanza:"$M" \
   expect_refusal "vector ${v%%:*}" 1 "${v#*:}" \
     consume --label test --check --blob-file vectors/"${v%%:*}".txt
 done
+# Armored text whose lines a shell joined (echo $A) is still named as armored
+# (#66 F15), and so is one with blank lines or indent before it.
+expect_refusal "armored text joined onto one line" 1 "armored" \
+  consume --label test --check --blob "$(tr '\n' ' ' < vectors/armored-raw.txt)"
+# (A regression guard: the first-line check this replaced caught it too.)
+expect_refusal "armored text after a blank, indented line" 1 "armored" \
+  consume --label test --check --blob "$(printf '\n   \n  '; cat vectors/armored-raw.txt)"
+# A blob saved with the handoff script's framing lines gets a hint to keep
+# only the line between them (#43 item 16); each line alone too.
+{ echo "--- paste everything below into chat with muse (recipient file ./handoff-muse.age) ---"; cat blob-age.txt; echo "--- end ---"; } >"$S/blob-framed.txt"
+expect_refusal "a blob with the framing lines" 1 "still has the '--- paste everything below ... ---' or '--- end ---' line" \
+  consume --label example --check --blob-file "$S/blob-framed.txt"
+{ cat blob-age.txt; echo "--- end ---"; } >"$S/blob-framed.txt"
+expect_refusal "a blob with the end line" 1 "give only the line between them" \
+  consume --label example --check --blob-file "$S/blob-framed.txt"
+{ echo "--- paste everything below into chat with muse (recipient file ./handoff-muse.age) ---"; cat blob-age.txt; } >"$S/blob-framed.txt"
+expect_refusal "a blob with the paste line" 1 "give only the line between them" \
+  consume --label example --check --blob-file "$S/blob-framed.txt"
 # A 0.1.0-shaped blob (256 bytes of RSA ciphertext) is not an age blob.
 head -c 256 /dev/urandom | base64 | tr -d '\n' >"$S/blob-256.txt"
 expect_refusal "a 256-byte 0.1.0-shaped blob" 1 "not an age blob" \
@@ -1485,6 +1591,15 @@ expect_refusal "arbitrary text at the identity path" 1 "is not an age identity f
   env PATH="$S/kgstub:$PATH" HANDOFF_PRIVKEY="$S/id-text.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 ! grep -q recipient "$S/err" || fail "arbitrary text was called a recipient"
 [ ! -e "$S/keygen-ran" ] || fail "age-keygen was started for a file that isn't an identity"
+# Lines split on \n alone, as age and agent-setup.sh split them (issue #43
+# item 18): a \f, \v or U+2028 inside a comment doesn't make a line of its own.
+for c in $'\f' $'\v' $'\xe2\x80\xa8'; do
+  { printf '# a comment%swith it inside\n' "$c"; cat "$TMPKEY"; } >"$S/id-ctl.txt"; chmod 600 "$S/id-ctl.txt"
+  HANDOFF_PRIVKEY="$S/id-ctl.txt" consume --label example --check --blob-file blob-age.txt >/dev/null 2>"$S/err" \
+    || { cat "$S/err" >&2; fail "consume.py refused an identity with $(printf '%q' "$c") in a comment"; }
+  bash ../agent-setup.sh --fingerprint "$S/id-ctl.txt" >/dev/null 2>&1 || fail "agent-setup.sh refused an identity with $(printf '%q' "$c") in a comment"
+done
+echo "ok (an identity's comment may hold a form feed, a vertical tab or U+2028, in both tools)"
 # The environment age gets is built from scratch: none of the variables it reads
 # (age 1.3.2: AGE_PASSPHRASE, AGE_PASSPHRASE_FD, AGE_PASSPHRASE_WORK_FACTOR,
 # AGE_PASSPHRASE_MAX_WORK_FACTOR, AGEDEBUG) reaches it, nor anything else.
@@ -2032,7 +2147,7 @@ rk python3 ../consume.py --label example --rewrap --blob-file "$ST/mode.txt" 2>/
 bq() { if [ "$1" = "$2" ]; then printf "'%s'" "$2"; else printf "'%s' (that is '%s')" "$1" "$2"; fi; }
 RST=$(cd -P "$ST" && pwd); RR=$(cd -P "$R" && pwd)
 cp blob-age.txt "$ST/gw.txt"; chmod 660 "$ST/gw.txt"
-expect_refusal "--rewrap of a group-writable blob file" 1 "the blob file $(bq "$ST/gw.txt" "$RST/gw.txt") is writable by others (mode 660); stop and report it to the user, who runs: chmod go-w '$RST/gw.txt'" \
+expect_refusal "--rewrap of a group-writable blob file" 1 "the blob file $(bq "$ST/gw.txt" "$RST/gw.txt") is writable by others (mode 0660); stop and report it to the user, who runs: chmod go-w '$RST/gw.txt'" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/gw.txt"
 # A directory others can write (without the sticky bit) is refused too; with it, not.
 mkdir -p "$ST/gwd"; cp blob-age.txt "$ST/gwd/b.txt"; chmod 770 "$ST/gwd"
@@ -2234,6 +2349,34 @@ exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "
     cmp -s blob-age.txt "$ST/term.txt" && fail "a TERM after the rename: the file wasn't replaced"
   fi
 done
+# A signal handler run as the block returns (a signal pending then) doesn't
+# leave TERM, HUP and INT blocked (#9 item 10): pthread_sigmask's block call
+# raises KeyboardInterrupt once, after blocking, and the mask is read after.
+if python3 -I -c 'import signal, sys; sys.exit(0 if hasattr(signal, "pthread_sigmask") else 1)'; then
+  cp blob-age.txt "$ST/mask.txt"
+  got=$(rk python3 -I -c '
+import signal, sys
+real = signal.pthread_sigmask
+def block_then_interrupt(how, sigs):
+    r = real(how, sigs)
+    if how == signal.SIG_BLOCK and set(sigs):
+        signal.pthread_sigmask = real
+        raise KeyboardInterrupt
+    return r
+signal.pthread_sigmask = block_then_interrupt
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+try:
+    exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+except SystemExit as e:
+    if isinstance(e.code, str):
+        print(e.code, file=sys.stderr)  # as the interpreter would at exit
+print(sorted(int(s) for s in real(signal.SIG_BLOCK, [])))
+' "$ST/mask.txt" 2>"$R/err")
+  [ "$got" = "[]" ] || fail "a handler run as --rewrap's signal block returned left signals blocked: $got ($(cat "$R/err"))"
+  grep -qF "interrupted; '$ST/mask.txt' is unchanged" "$R/err" || fail "a handler run at the signal block: $(cat "$R/err")"
+  cmp -s blob-age.txt "$ST/mask.txt" || fail "a handler run at the signal block changed the blob file"
+  echo "ok (--rewrap restores its signal mask when a handler runs at the block)"
+fi
 # An INT before any write (during the decrypt): one line, nothing written.
 cp blob-age.txt "$ST/int.txt"
 rc=0; rk python3 -I -c '
