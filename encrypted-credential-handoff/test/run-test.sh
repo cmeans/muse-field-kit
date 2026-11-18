@@ -2244,7 +2244,7 @@ mv "$KEY.previous" "$R/held.txt"
 expect_refusal "--rewrap with no rotation under way" 1 "no rotation under way at '$KEY'" \
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt"
 mv "$R/held.txt" "$KEY.previous"
-expect_refusal "--rewrap pointed at the previous key" 1 "no rotation under way at '$KEY.previous'" \
+expect_refusal "--rewrap pointed at the previous key" 1 "names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key, '$KEY'" \
   env HANDOFF_PRIVKEY="$KEY.previous" python3 ../consume.py --label example --rewrap --blob-file "$ST/new.txt"
 # A blob neither key opens: stop and report, never another HANDOFF_PRIVKEY.
 enc_other '{"svc":"example","password":"mk-Zq9"}' > "$ST/neither.txt"
@@ -2290,6 +2290,35 @@ expect_refusal "--retire --yes through a symlink" 1 "is a symlink" \
   env HANDOFF_PRIVKEY="$R/link.txt" bash ../agent-setup.sh --retire --yes
 [ -e "$KEY.previous" ] || fail "a refused --retire deleted the previous key"
 rm "$R/link.txt"
+# A rotation's old key as KEY (issue #46): --rotate on it would keep the old
+# key as .previous.previous and put a new key at .previous; --retire would
+# delete the wrong key. Refused as a KEY and from HANDOFF_PRIVKEY, in any
+# case, before anything is read; nothing on disk changes.
+keys_now() { for f in "$KEY" "$KEY.previous"; do "$AGE_KEYGEN" -y "$f"; done; ls -A "$(dirname -- "$KEY")"; }
+before_prev=$(keys_now)
+expect_refusal "--rotate KEY.previous" 1 "is a rotation's old key (its name ends in .previous); --rotate takes the current key, $KEY," \
+  bash ../agent-setup.sh --rotate "$KEY.previous"
+expect_refusal "--rotate with HANDOFF_PRIVKEY at .previous" 1 "is a rotation's old key" \
+  env HANDOFF_PRIVKEY="$KEY.previous" bash ../agent-setup.sh --rotate
+expect_refusal "--retire --yes KEY.previous" 1 "is a rotation's old key (its name ends in .previous); --retire takes the current key" \
+  bash ../agent-setup.sh --retire --yes "$KEY.previous"
+expect_refusal "--rotate KEY.PREVIOUS" 1 "is a rotation's old key" \
+  bash ../agent-setup.sh --rotate "$KEY.PREVIOUS"
+expect_refusal "consume.py with HANDOFF_PRIVKEY at .previous" 1 "names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key, '$KEY'" \
+  env HANDOFF_PRIVKEY="$KEY.previous" python3 ../consume.py --label example --check --blob-file blob-age.txt
+expect_refusal "consume.py --rewrap with HANDOFF_PRIVKEY at .Previous" 1 "names a rotation's old key" \
+  env HANDOFF_PRIVKEY="$KEY.Previous" python3 ../consume.py --label example --rewrap --blob-file blob-age.txt
+[ "$(keys_now)" = "$before_prev" ] || fail "a refused .previous KEY changed the key directory"
+# What a pre-0.2.1 --rotate on KEY.previous left: --retire deletes nothing.
+cp -p "$KEY.previous" "$KEY.previous.previous"
+expect_refusal "--retire --yes with a .previous.previous" 1 "previous.previous exists: an earlier --rotate was given" \
+  rk bash ../agent-setup.sh --retire --yes
+[ -e "$KEY.previous" ] && [ -e "$KEY.previous.previous" ] || fail "a refused --retire with a .previous.previous deleted a key"
+rm "$KEY.previous.previous"; ln -s "$R/nowhere" "$KEY.previous.previous"
+expect_refusal "--retire --yes with a dangling .previous.previous link" 1 "previous.previous exists" \
+  rk bash ../agent-setup.sh --retire --yes
+rm "$KEY.previous.previous"
+[ "$(keys_now)" = "$before_prev" ] || fail "the .previous.previous checks changed the key directory"
 # --retire without --yes keeps the old key and names it with its recipient.
 expect_refusal "--retire without --yes" 1 "only once SETUP.md Rotation step 5's last pass is recorded" \
   rk bash ../agent-setup.sh --retire

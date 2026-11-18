@@ -1,5 +1,11 @@
 # Changelog — encrypted-credential-handoff
 
+## Unreleased
+
+### Fixed
+
+- **A rotation's old key is refused as the current one (#46).** Given `<key path>.previous` as its KEY, `agent-setup.sh --rotate` used to keep the rotation's old key as `.previous.previous`, where `consume.py` never looks, and write a new key over `.previous`. That stranded every blob still made for the old key. `--retire` on such a KEY deleted the wrong key, and in a compromise response the leaked key could survive the retire with nothing reported. Now `--rotate` and `--retire` refuse a KEY, or a `HANDOFF_PRIVKEY`, whose name ends in `.previous` (in any case), before reading anything. `consume.py` refuses such a `HANDOFF_PRIVKEY` too. `--retire` deletes nothing while a `.previous.previous` exists, and SETUP's new "A .previous.previous file" says what the agent does then.
+
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 
 Version 0.2.0 (#42). **`age` replaces RSA, and a 0.1.0 install sets up again from scratch:** 0.2.0 reads neither 0.1.0's RSA keys nor its blobs, so an install makes a new identity, the user saves its recipient, and each credential is staged again. Closes #37 (whether to adopt OpenSSL CMS for payloads over RSA's 190 bytes: decided against, for `age`; see README, Choosing the suite); see also #39.

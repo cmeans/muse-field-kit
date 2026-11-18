@@ -976,6 +976,15 @@ def main() -> int:
         )
     label, check, do_rewrap, target, blob, env_map, cmd = parse_args(sys.argv[1:])
     current = privkey_path()
+    if current.lower().endswith(".previous"):
+        # A rotation's old key as the current one: the previous key would be
+        # looked up at .previous.previous, and --rewrap would encrypt to the
+        # old key (issue #46). Without case, as on macOS's default volume.
+        raise fail(
+            f"${PRIVKEY_ENV} ({current!r}) names a rotation's old key (its name ends in "
+            f".previous); a wrapper sets it to the current key, {current[:-len('.previous')]!r} "
+            "(SETUP.md step 7). Refusing: report it to the user."
+        )
     previous = current + ".previous"
     if do_rewrap and not os.path.lexists(previous):
         # "For the current key" means the label is done only during a

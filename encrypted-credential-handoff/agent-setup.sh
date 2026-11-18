@@ -279,6 +279,19 @@ no_symlinks() {
   done
 }
 
+# --rotate and --retire take the current key, never a rotation's old one: on
+# KEY.previous, --rotate would keep the old key as KEY.previous.previous,
+# where consume.py never looks, and put a new key at KEY.previous; --retire
+# would delete the wrong key (issue #46). Matched without case, as macOS's
+# default volume names the same file either way.
+not_previous() {
+  case "$key" in
+    *.[Pp][Rr][Ee][Vv][Ii][Oo][Uu][Ss])
+      echo "agent-setup.sh: $(qp "$key") is a rotation's old key (its name ends in .previous); $mode takes the current key, $(qp "${key%.*}"), or no KEY for the one HANDOFF_PRIVKEY names; nothing changed" >&2
+      exit 1 ;;
+  esac
+}
+
 # Make a new identity at FILE, which must not exist (age-keygen makes it
 # itself and refuses to replace anything, a planted link included). Its own
 # text, "Public key: …" on success, is not shown; on failure it is, since the
@@ -569,6 +582,7 @@ case "$mode" in
     # Which state a rotation is in is read from the keys' recipients, not
     # their inodes, so a copied .previous (a backup restore) reads the same.
     prev="$key.previous"
+    not_previous
     no_symlinks
     [ -f "$key" ] || { echo "no key file at $(qp "$key")" >&2; exit 1; }
     dir=$(dirname -- "$key")
@@ -657,6 +671,7 @@ case "$mode" in
     # finished, and asks for --yes, since nothing here can tell whether a
     # label's stored blob still needs the old key (issue #4).
     prev="$key.previous"
+    not_previous
     no_symlinks
     # The key first, as the other modes check it: a mistyped KEY (-y for
     # --yes) is "no key file", not "no rotation to retire", which would read
@@ -680,6 +695,13 @@ case "$mode" in
     prev_rcpt=$(recipient_of "$prev") || exit 1
     if [ "$prev_rcpt" = "$rcpt" ]; then
       echo "agent-setup.sh: $(qp "$prev") holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
+      exit 1
+    fi
+    # Only a --rotate given KEY.previous made this, before 0.2.1 refused that
+    # (issue #46): it may hold the rotation's real old key, and this run would
+    # delete another. Nothing here can tell which key the user needs.
+    if [ -e "$prev.previous" ] || [ -L "$prev.previous" ]; then
+      echo "agent-setup.sh: $(qp "$prev.previous") exists: an earlier --rotate was given $(qp "$prev") as its KEY, and the keys are no longer where a rotation keeps them; nothing was deleted. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
       exit 1
     fi
     # A killed setup or --rotate can leave a temporary file that is a hard
