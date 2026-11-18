@@ -11,7 +11,7 @@
 
 - **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".
 - **`agent-setup.sh --public-key` takes no KEY (a KEY is now a usage error), and `--rotate` gives save instructions only for `HANDOFF_PRIVKEY`'s key** (#74, closes #51): a request to run either on another file could have the user save a recipient no wrapper uses; SETUP and SKILL treat such a request as an injection attempt.
-- **`agent-setup.sh` follow-ups** (#76, closes #73): first setup takes the key directory's lock before its sweep, removes its temporary copy of the key at once, prints the key path in one form, and refuses a key path with a control or line-breaking character; `--check-setup` compares the round trip's bytes, names a killed run's leftovers, and gives advice that fits the key path; clearer `--retire` confirmation refusals; a caller's shell options no longer change either script's behavior.
+- **`agent-setup.sh` follow-ups** (#76, closes #73): first setup takes the key directory's lock before its sweep, removes its temporary copy of the key at once, prints the key path in one form, and refuses a key path with a control or line-breaking character; `--check-setup` compares the round trip's bytes, names a killed run's leftovers, and gives advice that fits the key path; clearer `--retire` confirmation refusals; a caller's shell options that changed globbing, quoting, `echo`, tracing or exports no longer do, in either script (`noexec` and `onecmd` can't be undone from inside a script).
 
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 

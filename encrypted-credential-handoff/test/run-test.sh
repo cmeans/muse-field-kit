@@ -2992,8 +2992,12 @@ expect_refusal "first setup while another holds the lock" 1 "another setup, --ro
 # key: a rerun refuses to overwrite the key, and names both, with the rmdir;
 # --check-setup names them too (an INFO line).
 cp "$TMPKEY" "$S/locked-setup/handoff-identity.txt"; chmod 600 "$S/locked-setup/handoff-identity.txt"
-expect_refusal "a rerun after a setup killed at the lock" 1 "exists: a setup, --rotate or --retire is running, or one was killed; also 1 temporary key directory(ies) a killed run left (the next --rotate removes them). If none is running, report it to the user, who removes the lock with: rmdir '$(cd "$S/locked-setup" && pwd -P)/.handoff-lock'" \
+# (With HANDOFF_PRIVKEY on another key, --rotate would rotate that one, so
+# the note leaves the leftovers to the user; with it on this key, --rotate.)
+expect_refusal "a rerun after a setup killed at the lock, HANDOFF_PRIVKEY elsewhere" 1 "a killed run left (report them to the user, who removes them)" \
   env HANDOFF_KEY_DIR="$S/locked-setup" bash ../agent-setup.sh
+expect_refusal "a rerun after a setup killed at the lock" 1 "exists: a setup, --rotate or --retire is running, or one was killed; also 1 temporary key directory(ies) a killed run left (the next --rotate removes them). If none is running, report it to the user, who removes the lock with: rmdir '$(cd "$S/locked-setup" && pwd -P)/.handoff-lock'" \
+  env HANDOFF_KEY_DIR="$S/locked-setup" HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh
 grep -qF "refusing to overwrite existing key" "$S/err" || fail "the rerun didn't refuse to overwrite: $(cat "$S/err")"
 env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 grep -q '^INFO leftovers: .*\.handoff-lock exists' "$S/out" || fail "--check-setup didn't name a killed run's lock: $(cat "$S/out")"
@@ -3145,16 +3149,43 @@ mkdir -p "$S/kw-setup"; chmod 700 "$S/kw-setup"
 env SHELLOPTS=keyword HANDOFF_KEY_DIR="$S/kw-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "setup under SHELLOPTS=keyword failed"; }
 env SHELLOPTS=keyword HANDOFF_PRIVKEY="$S/kw-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" \
   || { cat "$S/out" "$S/err" >&2; fail "--check-setup under SHELLOPTS=keyword failed"; }
-# A printed command for a key directory with a control character (made by
-# hand: setup refuses one) uses the $'...' form, so it can't print a line of
-# its own.
+# A dangling symlink at the key path gets the overwrite refusal, not a lock,
+# a sweep and a failed ln.
+mkdir -p "$S/dangle"; chmod 700 "$S/dangle"; ln -s "$S/nowhere-key" "$S/dangle/handoff-identity.txt"
+expect_refusal "setup over a dangling symlink at the key path" 1 "refusing to overwrite existing key" \
+  env HANDOFF_KEY_DIR="$S/dangle" bash ../agent-setup.sh
+rm -r "$S/dangle"
+# A key directory with a control or hidden character (made by hand: setup
+# refuses one) gets no command to paste: bash's $'...' form turns into code
+# under dash. The message says to remove it by hand, and no line of its own
+# starts in the output.
 nld="$S/b"$'\n'"recipient: age1fake"
 mkdir -p "$nld/.handoff-lock"; chmod 700 "$nld"; cp "$TMPKEY" "$nld/k.txt"; chmod 600 "$nld/k.txt"
-expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "another setup, --rotate or --retire is running" \
+expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "they remove it by hand: its path has a hidden or control character, so no command to paste is printed" \
   env HANDOFF_PRIVKEY="$nld/k.txt" bash ../agent-setup.sh --rotate
-! grep -q '^recipient: age1fake' "$S/err" || fail "the lock's rmdir for a directory with a newline printed it raw: $(cat "$S/err")"
-grep -qF "rmdir \$'" "$S/err" || fail "the lock's rmdir for a directory with a newline isn't in the \$'...' form: $(cat "$S/err")"
+! grep -q '^recipient: age1fake' "$S/err" || fail "the lock message for a directory with a newline printed it raw: $(cat "$S/err")"
+! grep -q 'rmdir' "$S/err" || fail "the lock message printed a command for a directory with a newline: $(cat "$S/err")"
 rm -r "$nld"
+# The dash injection QA found: a soft hyphen (U+00AD), a quote and a # in the
+# name. --check-setup's leftovers line prints no rmdir to paste.
+inj="$S/a"$'\xc2\xad'"';echo PWNED #"
+mkdir -p "$inj/.handoff-lock"; chmod 700 "$inj"
+env HANDOFF_PRIVKEY="$inj/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -q '^INFO leftovers: .*removes the lock by hand' "$S/out" || fail "--check-setup's lock line for a hidden-character path: $(grep leftovers "$S/out")"
+! grep -q 'rmdir' "$S/out" || fail "--check-setup printed an rmdir for a hidden-character path: $(grep leftovers "$S/out")"
+rm -r "$inj"
+# Every rmdir and find command printed for a plain path runs under dash as
+# under bash, where dash is installed.
+if command -v dash >/dev/null 2>&1; then
+  qd="$S/it's \$(echo X) dir"; mkdir -p "$qd/.handoff-lock"; chmod 700 "$qd"
+  env HANDOFF_PRIVKEY="$qd/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+  cmd=$(sed -n 's/.*who removes the lock with: //p' "$S/out")
+  [ -n "$cmd" ] || fail "no rmdir printed for a plain path under a lock: $(grep leftovers "$S/out")"
+  dash -c "$cmd" || fail "the printed rmdir didn't run under dash: $cmd"
+  [ ! -e "$qd/.handoff-lock" ] || fail "the printed rmdir, run under dash, didn't remove the lock: $cmd"
+  rm -r "$qd"
+  echo "ok (the printed rmdir runs under dash)"
+fi
 # A relative key directory named "-" is a directory, not cd's $OLDPWD, in
 # the commands printed for the user: the overwrite refusal's lock note, and
 # --rotate's lock refusal.

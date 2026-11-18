@@ -121,7 +121,7 @@ expand_home() {  # PATH WHAT
   # shellcheck disable=SC2088  # matching a literal ~ is the point
   case "$1" in
     "~"|"~/"*) need_home "a ~ in $2"; printf '%s\n' "$HOME${1#\~}" ;;
-    "~"*) echo "agent-setup.sh: $2 '$1': only ~/ is expanded, not ~user; use an absolute path" >&2
+    "~"*) echo "agent-setup.sh: $2 $(sq "$1" || qp "$1"): only ~/ is expanded, not ~user; use an absolute path" >&2
           return 1 ;;
     *) printf '%s\n' "$1" ;;
   esac
@@ -151,14 +151,16 @@ qp() {
   printf '%q' "$1"
 }
 # A path single-quoted for a POSIX shell, for a command the user copies (and
-# may run as root, or under sh). The one exception: a path has_ctl flags gets
-# printf %q's $'...' form in C (every such byte escaped), which bash, zsh and
-# BusyBox read but dash doesn't. It can't pass for another line of output,
-# and a path like that comes only from a key directory made by hand.
+# may run as root, or under sh). A path has_ctl flags gets no command at all:
+# printf %q's $'...' form would turn into code when pasted into dash, which
+# reads $' as a $ and a plain quote. sq then prints nothing and fails, and
+# each caller prints by_hand_note instead (such a path comes only from a
+# directory made by hand: setup refuses one).
 sq() {
-  if has_ctl "$1"; then ( LC_ALL=C; printf '%q' "$1" ); return; fi
+  if has_ctl "$1"; then return 1; fi
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
+by_hand_note="by hand: its path has a hidden or control character, so no command to paste is printed (ls -b shows such a name)"
 
 # The PATH age-keygen is looked for on, in the words of consume.py's
 # age_missing (long ones cut at 300 characters).
@@ -356,10 +358,29 @@ no_symlinks() {
   local p
   for p in "$key" "$prev"; do
     if [ -L "$p" ]; then
-      echo "agent-setup.sh: $p is a symlink; set HANDOFF_PRIVKEY (or KEY) to the key file itself, not a link to it" >&2
+      echo "agent-setup.sh: $(qp "$p") is a symlink; set HANDOFF_PRIVKEY (or KEY) to the key file itself, not a link to it" >&2
       exit 1
     fi
   done
+}
+
+# Whether --rotate on KEY would get as far as its sweep: the checks it makes
+# before it, in brief. For the leftovers line, which names --rotate as the
+# remover only when it would run (a lock is the line's own subject).
+rotate_would_sweep() {  # KEY
+  local k=$1 d f
+  d=$(dirname -- "$k")
+  is_previous_name "$k" && return 1
+  if [ ! -f "$k" ] || [ -L "$k" ] || [ -L "$k.previous" ]; then return 1; fi
+  if [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then return 1; fi
+  if key_dir_unsafe_msg "$d" >/dev/null; then return 1; fi
+  recipient_of "$k" >/dev/null 2>&1 || return 1
+  for f in "$d"/.handoff-new.*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    if [ "$f" = "$d/${k##*/}" ] || [ "$f" = "$d/${k##*/}.previous" ]; then continue; fi
+    if [ ! -f "$f" ] || [ -L "$f" ]; then return 1; fi
+  done
+  return 0
 }
 
 # --rotate and --retire take the current key, never a rotation's old one: on
@@ -433,7 +454,7 @@ phys_dir() {  # DIR
 # (mkdir is atomic everywhere; flock isn't on macOS). An interrupted run
 # that couldn't remove it says so on the next run.
 lock_dir() {  # DIR
-  local l="$1/.handoff-lock" err abs
+  local l="$1/.handoff-lock" err abs hint
   if ! err=$(mkdir -- "$l" 2>&1); then
     if [ -L "$l" ] || { [ -e "$l" ] && [ ! -d "$l" ]; }; then
       # No run makes anything else by that name, and rmdir wouldn't remove it.
@@ -444,9 +465,10 @@ lock_dir() {  # DIR
       # $'...' form only for a path with a control character).
       abs=$(phys_dir "$1")/.handoff-lock || abs=$l
       echo "agent-setup.sh: another setup, --rotate or --retire is running ($(qp "$l") exists)." >&2
-      echo "Stop and report it to the user: if no run is going (one was killed), they remove it with: rmdir $(sq "$abs")" >&2
+      if has_ctl "$abs"; then hint="they remove it $by_hand_note"; else hint="they remove it with: rmdir $(sq "$abs")"; fi
+      echo "Stop and report it to the user: if no run is going (one was killed), $hint" >&2
     else
-      echo "agent-setup.sh: cannot create the lock in $1: $err" >&2
+      echo "agent-setup.sh: cannot create the lock in $(qp "$1"): ${err//$'\n'/ }" >&2
     fi
     exit 1
   fi
@@ -458,7 +480,7 @@ lock_dir() {  # DIR
 # the lock's rmdir, for a refusal that stops before the lock would; nothing
 # printed when there's neither. Only by the names this script makes.
 leftover_note() {  # DIR WHO (setup: no key, setup sweeps; rotate: a key --rotate can rotate; user: neither)
-  local d="$1" abs f nd=0 nf=0 tmps=
+  local d="$1" abs f nd=0 nf=0 tmps='' hint
   for f in "$d"/.handoff-tmp.??????; do
     if [ -d "$f" ] && [ ! -L "$f" ]; then nd=$((nd + 1)); fi
   done
@@ -485,7 +507,8 @@ leftover_note() {  # DIR WHO (setup: no key, setup sweeps; rotate: a key --rotat
     echo "note: $(qp "$d/.handoff-lock") exists but isn't a directory (no run makes one), and it stops setup, --rotate and --retire${tmps:+; also $tmps}. Report it to the user."
   elif [ -d "$d/.handoff-lock" ]; then
     abs=$(phys_dir "$d") || abs=$d
-    echo "note: $(qp "$d/.handoff-lock") exists: a setup, --rotate or --retire is running, or one was killed${tmps:+; also $tmps}. If none is running, report it to the user, who removes the lock with: rmdir $(sq "$abs/.handoff-lock")"
+    if has_ctl "$abs"; then hint="removes the lock $by_hand_note"; else hint="removes the lock with: rmdir $(sq "$abs/.handoff-lock")"; fi
+    echo "note: $(qp "$d/.handoff-lock") exists: a setup, --rotate or --retire is running, or one was killed${tmps:+; also $tmps}. If none is running, report it to the user, who $hint"
   elif [ -n "$tmps" ]; then
     echo "note: $(qp "$d") holds $tmps"
   fi
@@ -733,8 +756,7 @@ password: $pwn bytes"
       cs_out FAIL identity "$k.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)"
     elif recipient_of "$k" >/dev/null 2>"$newd/kerr"; then
       cs_out PASS identity "the key at $k passes the identity checks (owner-only, one plain age identity)"
-      # --rotate refuses a symlinked key.
-      [ -L "$k" ] || who=rotate
+      if rotate_would_sweep "$k"; then who=rotate; fi
     else
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null)
       cs_out FAIL identity "${kmsg:-the key at $k did not pass the identity checks}"
@@ -1039,8 +1061,19 @@ case "$mode" in
       # shellcheck disable=SC2012  # ls -di is the portable inode read (find -printf is GNU's)
       ino=$(ls -di -- "$q" 2>/dev/null | awk 'NR == 1 { print $1; exit }')
       case $ino in ''|*[!0-9]*) ino= ;; esac
-      # Each path single-quoted (sq; bash's $'...' form for a path with a
-      # control character): the user may run this as root.
+      # Each path single-quoted (sq): the user may run this as root. A path
+      # sq won't quote (a hidden or control character) gets no command.
+      if has_ctl "$abs" || has_ctl "$mnt"; then
+        # The -inum form names no path but the mount point's, so it stays
+        # when that one is plain.
+        if [ -n "$mnt" ] && [ -n "$ino" ] && ! has_ctl "$mnt"; then
+          alt="find $(sq "$mnt") -xdev -inum $ino), as root to see every directory"
+        else
+          alt="find's -samefile on the old key), as root"
+        fi
+        echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name (with: $alt, and removes that other name first, not the old key itself; the old key's own path has a hidden or control character, so no command names it (ls -b shows such a name) (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
+        exit 1
+      fi
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
       echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $(sq "$abs"), which the command lists too (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
@@ -1091,14 +1124,15 @@ if has_ctl "$kd_abs"; then
 fi
 PRIV="$KEY_DIR/handoff-identity.txt"
 
-if [ -e "$PRIV" ]; then
+if [ -e "$PRIV" ] || [ -L "$PRIV" ]; then  # a dangling symlink there too
   echo "refusing to overwrite existing key: $PRIV" >&2
   printf 'if a setup was cut short, this is its key: HANDOFF_PRIVKEY=%q agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation\n' "$PRIV" >&2
-  # --rotate sweeps only for a key it would rotate: a regular file, in a
-  # directory it accepts, that passes the identity checks, with no
-  # .previous.previous beside it. Anything else: the user.
-  if [ ! -L "$PRIV" ] && [ -f "$PRIV" ] && [ ! -e "$PRIV.previous.previous" ] && [ ! -L "$PRIV.previous.previous" ] \
-     && ! key_dir_unsafe_msg "$(dirname -- "$PRIV")" >/dev/null && recipient_of "$PRIV" >/dev/null 2>&1; then
+  # --rotate sweeps only for a key it would rotate, and only if it would
+  # rotate this one: HANDOFF_PRIVKEY names this key, or neither variable is
+  # set and this is the default. Anything else: the user.
+  if rotate_would_sweep "$PRIV" \
+     && { { [ -n "${HANDOFF_PRIVKEY-}" ] && [ "$HANDOFF_PRIVKEY" -ef "$PRIV" ]; } \
+          || { [ -z "${HANDOFF_PRIVKEY-}" ] && [ -z "${HANDOFF_KEY_DIR-}" ]; }; }; then
     leftover_note "$(dirname -- "$PRIV")" rotate >&2
   else leftover_note "$(dirname -- "$PRIV")" user >&2; fi
   exit 1
