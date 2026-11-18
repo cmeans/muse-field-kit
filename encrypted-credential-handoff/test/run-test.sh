@@ -560,6 +560,24 @@ done
 env SHELLOPTS=xtrace HANDOFF_PRIVKEY="$TMPKEY" bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" \
   || { cat "$S/out" "$S/err" >&2; fail "agent-setup.sh --check-setup failed under SHELLOPTS=xtrace"; }
 ! secret_in "$S/out" "$S/err" || fail "SHELLOPTS=xtrace agent-setup.sh --check-setup printed a secret key"
+# Its round trip compares the password's bytes, not only the length
+# --check reports (#66 F17).
+grep -qx 'PASS round trip: encrypted, then decrypted by consume.py: the 20-byte UTF-8 password came back unchanged, byte for byte' "$S/out" \
+  || fail "--check-setup's round trip didn't say it compared the bytes: $(grep 'round trip' "$S/out")"
+# Its "no key yet" advice fits the key path (#66): plain setup only for the
+# default path, HANDOFF_KEY_DIR for another directory's handoff-identity.txt,
+# and a warning for a name no setup makes.
+nk="$S/nokey dir"
+env -u HANDOFF_PRIVKEY -u HANDOFF_KEY_DIR HOME="$S/nokey-home" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qF "INFO identity: no key at $S/nokey-home/.config/handoff/handoff-identity.txt yet; agent-setup.sh with no argument makes it" "$S/out" \
+  || fail "--check-setup's no-key advice for the default path is wrong: $(grep identity "$S/out")"
+env HANDOFF_PRIVKEY="$nk/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qF "INFO identity: no key at $nk/handoff-identity.txt yet; HANDOFF_KEY_DIR=$(printf '%q' "$nk") agent-setup.sh makes it" "$S/out" \
+  || fail "--check-setup's no-key advice for another directory is wrong: $(grep identity "$S/out")"
+env HANDOFF_PRIVKEY="$nk/custom.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qF "no setup makes that name (setup names its key handoff-identity.txt): check HANDOFF_PRIVKEY" "$S/out" \
+  || fail "--check-setup's no-key advice for a custom name is wrong: $(grep identity "$S/out")"
+echo "ok (--check-setup's no-key advice fits the key path)"
 XT="$S/xtrace-key"
 env -u HANDOFF_PRIVKEY HANDOFF_KEY_DIR="$XT" bash -x ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "first setup failed under bash -x"; }
 ! secret_in "$S/out" "$S/err" || fail "bash -x agent-setup.sh (first setup) printed the secret key"
@@ -2547,6 +2565,23 @@ expect_refusal "--retire --yes KEY --yes" 2 "(--yes given twice)" \
   rk bash ../agent-setup.sh --retire --yes "$KEY" --yes
 expect_refusal "--retire KEY --yes (the reason)" 2 "--yes goes right after --retire, before KEY" \
   rk bash ../agent-setup.sh --retire "$KEY" --yes
+# A misspelled or misplaced confirmation in any position gets its reason,
+# not a bare usage line (issue #16 item 1); upper case too (item 5).
+for args in "-y $KEY" "$KEY -y" "$KEY -Y" "$KEY --YES" "--y $KEY"; do
+  # shellcheck disable=SC2086  # the words are separate arguments on purpose
+  expect_refusal "--retire $args" 2 "the confirmation is spelled --yes, right after --retire" \
+    rk bash ../agent-setup.sh --retire $args
+done
+expect_refusal "--retire --yes --yes KEY" 2 "(--yes given twice)" \
+  rk bash ../agent-setup.sh --retire --yes --yes "$KEY"
+# An unknown option after --retire is an option of --retire (item 4); after
+# --rotate, it says --rotate takes none; another mode is still "one mode".
+expect_refusal "--retire --force" 2 "--force isn't an option of --retire; its one option is the confirmation --yes" \
+  rk bash ../agent-setup.sh --retire --force
+expect_refusal "--rotate --force" 2 "--force isn't an option of --rotate, which takes none" \
+  rk bash ../agent-setup.sh --rotate --force
+expect_refusal "--retire --rotate" 2 "one mode at a time; --rotate isn't a KEY" \
+  rk bash ../agent-setup.sh --retire --rotate
 [ -e "$KEY.previous" ] || fail "a misplaced confirmation deleted the previous key"
 # --retire --yes deletes the previous key: an old blob stops opening, a
 # rewrapped one doesn't. (The key is put back afterward from the copy taken
@@ -2697,9 +2732,11 @@ rmdir "$KEY.previous"
 # One --rotate or --retire at a time: a held lock refuses, and a temporary key
 # a killed run left is removed by the next one.
 mkdir "$R/.handoff-lock"
-expect_refusal "--rotate while another holds the lock" 1 "another --rotate or --retire is running" \
+expect_refusal "--rotate while another holds the lock" 1 "another setup, --rotate or --retire is running" \
   rk bash ../agent-setup.sh --rotate
 grep -qF "Stop and report it to the user" "$S/err" || fail "the lock refusal doesn't say to report it"
+# The rmdir it gives is absolute and single-quoted (issue #9 item 9).
+grep -qF "they remove it with: rmdir '$(cd "$R" && pwd -P)/.handoff-lock'" "$S/err" || fail "the lock refusal's rmdir isn't absolute and quoted: $(cat "$S/err")"
 [ ! -e "$KEY.previous" ] || fail "a refused --rotate made a previous key"
 rmdir "$R/.handoff-lock"
 printf 'leftover\n' > "$R/.handoff-new.Leftov"
@@ -2708,6 +2745,11 @@ grep -qF "removed a temporary key a killed --rotate left behind: $R/.handoff-new
 [ ! -e "$R/.handoff-new.Leftov" ] || fail "the leftover temporary key wasn't removed"
 [ ! -e "$R/.handoff-lock" ] || fail "--rotate left its lock behind"
 rk bash ../agent-setup.sh --retire --yes >/dev/null 2>&1 || fail "--retire after the lock checks failed"
+# A caller's BASHOPTS can't change the script's globbing (issue #43 item 12):
+# with failglob, every unmatched cleanup glob was fatal.
+rk env BASHOPTS=failglob:nullglob:nocasematch bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" || fail "--rotate failed with BASHOPTS=failglob: $(cat "$R/err")"
+rk env BASHOPTS=failglob:nullglob:nocasematch bash ../agent-setup.sh --retire --yes >/dev/null 2>"$R/err" || fail "--retire --yes failed with BASHOPTS=failglob: $(cat "$R/err")"
+echo "ok (--rotate and --retire under a caller's BASHOPTS=failglob)"
 [ ! -e "$R/.handoff-lock" ] || fail "--retire left its lock behind"
 # A key path that starts with "-" is a path, not an option.
 mkdir -p "$R/dash"; cp "$TMPKEY" "$R/dash/-k.txt"
@@ -2729,7 +2771,7 @@ first=$!
 sleep 0.5
 rc=0; rk env PATH="$S/slowy:/usr/bin:/bin" bash ../agent-setup.sh --rotate >"$R/race-b" 2>&1 || rc=$?
 wait "$first" || fail "the first of two --rotate runs failed: $(cat "$R/race-a")"
-if [ "$rc" != 1 ] || ! grep -qF "another --rotate or --retire is running" "$R/race-b"; then
+if [ "$rc" != 1 ] || ! grep -qF "another setup, --rotate or --retire is running" "$R/race-b"; then
   fail "the second of two --rotate runs wasn't refused at the lock: exit $rc, $(cat "$R/race-b")"
 fi
 won=$(sed -n 's/^new recipient: //p' "$R/race-a")
@@ -2738,7 +2780,7 @@ won=$(sed -n 's/^new recipient: //p' "$R/race-a")
 # --retire takes the lock too, and the lock message is only for a lock: an
 # unwritable key directory is reported as that.
 mkdir "$R/.handoff-lock"
-expect_refusal "--retire --yes while another holds the lock" 1 "another --rotate or --retire is running" \
+expect_refusal "--retire --yes while another holds the lock" 1 "another setup, --rotate or --retire is running" \
   rk bash ../agent-setup.sh --retire --yes
 [ -e "$KEY.previous" ] || fail "a refused --retire deleted the previous key"
 rmdir "$R/.handoff-lock"
@@ -2809,14 +2851,45 @@ expect_refusal "first setup when the key path becomes a directory" 1 "it is now 
 if compgen -G "$S/dir-setup/handoff-identity.txt/*" >/dev/null || compgen -G "$S/dir-setup/handoff-identity.txt/.handoff-*" >/dev/null; then
   fail "a key was left inside the directory at the key path"
 fi
-# A temporary key a killed setup left is removed by the next one.
-mkdir -p "$S/stale-setup"; printf 'leftover\n' > "$S/stale-setup/.handoff-setup.Leftov"
-# A symlink with the same name isn't a temporary key: it stays.
-ln -s "$TMPKEY" "$S/stale-setup/.handoff-setup.Link"
-HANDOFF_KEY_DIR="$S/stale-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || fail "first setup with a leftover temporary key failed"
-grep -qF "removed a temporary key a killed (or concurrent) setup left behind" "$S/err" && [ ! -e "$S/stale-setup/.handoff-setup.Leftov" ] \
-  || fail "the leftover temporary key wasn't removed"
-[ -L "$S/stale-setup/.handoff-setup.Link" ] || fail "the stale cleanup removed a symlink, which no setup makes"
+# What a killed setup or --rotate left is removed by the next setup, at once
+# with one note, by mktemp's six-character shape only (issue #5 item 6).
+mkdir -p "$S/stale-setup"; chmod 700 "$S/stale-setup"
+printf 'leftover\n' > "$S/stale-setup/.handoff-setup.Leftov"
+mkdir "$S/stale-setup/.handoff-tmp.AbCdEf"; printf 'x\n' > "$S/stale-setup/.handoff-tmp.AbCdEf/AbCdEf.key"
+# Not mktemp's shape (seven characters), and a symlink with a matching name:
+# neither is something setup makes, so both stay.
+printf 'keep\n' > "$S/stale-setup/.handoff-setup.Longer7"
+ln -s "$TMPKEY" "$S/stale-setup/.handoff-setup.LinkAb"
+HANDOFF_KEY_DIR="$S/stale-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "first setup with leftover temporary files failed"; }
+grep -qxF "note: removed 2 temporary key file(s) or directory(ies) a killed setup or --rotate left in $S/stale-setup" "$S/err" \
+  || fail "the leftover temporary files weren't reported in one note: $(cat "$S/err")"
+[ ! -e "$S/stale-setup/.handoff-setup.Leftov" ] && [ ! -e "$S/stale-setup/.handoff-tmp.AbCdEf" ] || fail "the leftover temporary files weren't removed"
+[ -e "$S/stale-setup/.handoff-setup.Longer7" ] || fail "the stale cleanup removed a name mktemp doesn't make"
+[ -L "$S/stale-setup/.handoff-setup.LinkAb" ] || fail "the stale cleanup removed a symlink, which no setup makes"
+# The setup's own temporary copy (a second hard link to the new key) is gone
+# once it's linked, and the directory is 0700, so no note about it either.
+[ -z "$(find "$S/stale-setup" -name '.handoff-tmp.*' -print)" ] || fail "first setup left its temporary directory: $(find "$S/stale-setup" -name '.handoff-tmp.*')"
+[ -z "$(find "$S/stale-setup/handoff-identity.txt" -links +1 -print)" ] || fail "the new key has another hard link after setup"
+! grep -q 'already exists; its permissions were left unchanged' "$S/err" || fail "first setup noted an existing 0700 key directory"
+# First setup takes the lock too (issue #43 item 11): with another run's lock
+# held, it refuses and makes nothing.
+mkdir -p "$S/locked-setup"; chmod 700 "$S/locked-setup"; mkdir "$S/locked-setup/.handoff-lock"
+expect_refusal "first setup while another holds the lock" 1 "another setup, --rotate or --retire is running" \
+  env HANDOFF_KEY_DIR="$S/locked-setup" bash ../agent-setup.sh
+[ ! -e "$S/locked-setup/handoff-identity.txt" ] || fail "first setup made a key while another run held the lock"
+rmdir "$S/locked-setup/.handoff-lock"
+# An existing key directory that isn't 0700 (but isn't writable by others)
+# gets the note.
+mkdir -p "$S/note-setup"; chmod 750 "$S/note-setup"
+HANDOFF_KEY_DIR="$S/note-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "first setup into a 0750 directory failed"; }
+grep -qF "already exists; its permissions were left unchanged (setup makes it 0700)" "$S/err" || fail "first setup didn't note a 0750 key directory"
+# A key path a shell reads specially gets a note to quote it, and the path is
+# printed once, as written (issue #5 item 4).
+mkdir -p "$S/q dir"; chmod 700 "$S/q dir"
+HANDOFF_KEY_DIR="$S/q dir" bash ../agent-setup.sh >"$S/out" 2>"$S/err" || { cat "$S/err" >&2; fail "first setup into a directory with a space failed"; }
+grep -qxF "this key lives at: $S/q dir/handoff-identity.txt" "$S/out" || fail "first setup didn't print the key path as written"
+grep -qF "quote it in every wrapper" "$S/out" || fail "first setup didn't say to quote a path with a space"
+! grep -qF 'q\ dir' "$S/out" || fail "first setup printed the key path in a second, shell-quoted form"
 # --rotate under POSIX option parsing (as BSD chmod parses): chmod -- MODE,
 # through the chmod shim above (agent-setup.sh unsets POSIXLY_CORRECT).
 rk env PATH="$S/posixchmod:$PATH" POSIXLY_CORRECT=1 bash ../agent-setup.sh --rotate >/dev/null 2>"$R/err" \
@@ -2913,8 +2986,10 @@ expect_refusal "--retire --yes with another link to the old key" 1 "has another 
 [ -f "$S/tmpname/.handoff-new.txt.previous" ] || fail "a refused --retire --yes deleted the previous key"
 # The refusal says how to find the other name: find from the disk's mount point.
 grep -qF -- "-xdev -samefile '$(cd "$S/tmpname" && pwd -P)/.handoff-new.txt.previous'" "$S/err" || fail "the link refusal doesn't give the find command: $(cat "$S/err")"
-# It says to remove the other name, not .previous, which find lists too.
-grep -qF "removes that other name first, not " "$S/err" || fail "the link refusal doesn't say to keep .previous: $(cat "$S/err")"
+# It says to remove the other name, not .previous, which find lists too, and
+# names .previous by the physical path find prints (issue #21 item 4).
+grep -qF "removes that other name first, not '$(cd "$S/tmpname" && pwd -P)/.handoff-new.txt.previous', which the command lists too" "$S/err" \
+  || fail "the link refusal doesn't name .previous as find lists it: $(cat "$S/err")"
 grep -qF "(SETUP.md, Rotation: A hard-link refusal at the retire)" "$S/err" || fail "the link refusal doesn't point at SETUP's rule: $(cat "$S/err")"
 grep -qF "**A hard-link refusal at the retire.**" ../SETUP.md || fail "SETUP.md has no rule named as the link refusal says"
 # SETUP's Current-key probe counts two fixed strings of consume.py's run-mode
@@ -2951,7 +3026,7 @@ env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.txt" bash ../agent-setup.sh --retir
 expect_refusal "--rotate --fingerprint" 2 "one mode at a time" \
   bash ../agent-setup.sh --rotate --fingerprint
 mkdir "$S/tmpname/.handoff-lock"
-expect_refusal "the lock message's rmdir" 1 "rmdir $S/tmpname/.handoff-lock" \
+expect_refusal "the lock message's rmdir" 1 "rmdir '$(cd "$S/tmpname" && pwd -P)/.handoff-lock'" \
   env HANDOFF_PRIVKEY="$S/tmpname/.handoff-new.txt" bash ../agent-setup.sh --rotate
 rmdir "$S/tmpname/.handoff-lock"
 echo "ok"

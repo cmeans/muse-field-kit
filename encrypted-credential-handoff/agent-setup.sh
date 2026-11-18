@@ -61,6 +61,10 @@ set +a
 # way; chmod is called as BSD's needs either way.)
 set +o posix
 set -euo pipefail
+# Glob behavior a caller's BASHOPTS could change: failglob would make every
+# unmatched cleanup glob fatal (--rotate's .handoff-new.*), nullglob and
+# dotglob would change what the sweeps match. This script's own settings.
+shopt -u failglob nullglob dotglob nocaseglob nocasematch extglob 2>/dev/null || true
 umask 077
 
 MAX_KEY_BYTES=16384   # equal to consume.py's MAX_KEY_FILE
@@ -265,10 +269,6 @@ key_recipient() {  # FILE
   rcpt=$(recipient_of "$1") || exit 1
 }
 
-# --rotate and --retire act on the names KEY and KEY.previous: through a
-# symlink, the hard link and rename would act on the link, not the key file
-# (leaving the new key off the volume the link points to, and the old key on
-# it after --retire). Refuse, and have the path name the file itself.
 # The key's directory (through a symlink, as the key is read) must be owned
 # by this user or root and writable by no group or other: anyone else who can
 # write there can rename another file over the key, or add one beside it.
@@ -305,6 +305,10 @@ key_dir_safe() {  # DIR
   fi
 }
 
+# --rotate and --retire act on the names KEY and KEY.previous: through a
+# symlink, the hard link and rename would act on the link, not the key file
+# (leaving the new key off the volume the link points to, and the old key on
+# it after --retire). Refuse, and have the path name the file itself.
 no_symlinks() {
   local p
   for p in "$key" "$prev"; do
@@ -366,11 +370,14 @@ show_recipient() {  # RECIPIENT
 # (mkdir is atomic everywhere; flock isn't on macOS). An interrupted run
 # that couldn't remove it says so on the next run.
 lock_dir() {  # DIR
-  local l="$1/.handoff-lock" err
+  local l="$1/.handoff-lock" err abs
   if ! err=$(mkdir -- "$l" 2>&1); then
     if [ -e "$l" ]; then
-      echo "agent-setup.sh: another --rotate or --retire is running ($l exists)." >&2
-      echo "Stop and report it to the user: if no run is going (one was killed), they remove it with: rmdir $l" >&2
+      # Absolute and single-quoted, so the command works from any directory
+      # and in a POSIX shell, as --retire's hard-link hint is.
+      abs=$(cd -- "$1" 2>/dev/null && pwd -P)/.handoff-lock || abs=$l
+      echo "agent-setup.sh: another setup, --rotate or --retire is running ($(qp "$l") exists)." >&2
+      echo "Stop and report it to the user: if no run is going (one was killed), they remove it with: rmdir '$(printf '%s' "$abs" | sed "s/'/'\\\\''/g")'" >&2
     else
       echo "agent-setup.sh: cannot create the lock in $1: $err" >&2
     fi
@@ -414,7 +421,7 @@ cs_out() {  # STATUS NAME DETAIL
 }
 check_setup() {
   local p v rc blob rcpt re have_age=0 have_keygen=0 have_py=0 here consume
-  local payload rt="" hdr="" b64="" want k kmsg kc
+  local payload rt="" hdr="" b64="" want k kmsg kc same got
   set +e
   # The traps first, so no signal can fall between the folder and its cleanup
   # (newd starts empty, and cleanup removes it only if set).
@@ -493,9 +500,19 @@ check_setup() {
         rc=$?
         want="svc: matches label 'check'
 password: 20 bytes"
+        # The bytes too, not only the length --check reports: the throwaway
+        # password (no secret) goes to a one-line program the way a wrapper's
+        # tool gets it, and is compared byte for byte with what was encrypted.
+        same=no
         if [ "$rc" -eq 0 ] && [ "$v" = "$want" ]; then
+          got=$(unset HANDOFF_BLOB HANDOFF_LABEL HANDOFF_PRIVKEY
+              HANDOFF_PRIVKEY="$newd/id.txt" python3 -I "$consume" --label check --blob-file "$newd/blob.txt" \
+                -- python3 -I -c 'import os, sys; sys.stdout.write(os.environb[b"SERVICE_PASSWORD"].hex())' </dev/null 2>/dev/null) || got=
+          [ "$got" = "$(printf '%s' 'pässwörd-ü-日本' | od -An -tx1 | tr -d ' \n')" ] && same=yes
+        fi
+        if [ "$same" = yes ]; then
           hdr="PASS|consume.py accepted the header: exactly one X25519 stanza"
-          rt="PASS|encrypted, then decrypted by consume.py --check: the 20-byte UTF-8 password came back unchanged"
+          rt="PASS|encrypted, then decrypted by consume.py: the 20-byte UTF-8 password came back unchanged, byte for byte"
         elif [ "$rc" -eq 0 ]; then
           hdr="PASS|consume.py accepted the header: exactly one X25519 stanza"
           rt="FAIL|consume.py --check decrypted something other than what was encrypted"
@@ -533,7 +550,15 @@ password: 20 bytes"
       case "$kc" in ''|*/) kc= ;; *) kc=", $kc" ;; esac
       cs_out FAIL identity "HANDOFF_PRIVKEY ($k) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$kc"
     elif [ ! -e "$k" ] && [ ! -L "$k" ]; then
-      cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
+      # Which setup makes it: plain setup only makes the default path, and
+      # any setup names its key handoff-identity.txt.
+      if [ -n "${HOME-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
+        cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"
+      elif [ "${k##*/}" = handoff-identity.txt ]; then
+        cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(qp "${k%/*}") agent-setup.sh makes it"
+      else
+        cs_out INFO identity "no key at $k yet, and no setup makes that name (setup names its key handoff-identity.txt): check HANDOFF_PRIVKEY"
+      fi
     elif kmsg=$(key_dir_unsafe_msg "$(dirname -- "$k")"); then
       # consume.py refuses such a directory: every wrapper would fail.
       cs_out FAIL identity "$kmsg"
@@ -569,10 +594,20 @@ case "${1-}" in
       if [ "${1-}" = --yes ]; then yes=1; shift; fi
     fi
     if [ $# -gt 1 ]; then
-      if [ "$mode" = --retire ] && [ "$2" = --yes ] && [ $# -eq 2 ] && [ -n "$yes" ]; then
-        echo "usage: agent-setup.sh $syntax (--yes given twice)" >&2
-      elif [ "$mode" = --retire ] && [ "$2" = --yes ] && [ $# -eq 2 ]; then
-        echo "usage: agent-setup.sh $syntax (--yes goes right after --retire, before KEY)" >&2
+      # For --retire, say what's wrong with a confirmation in any position,
+      # not only the second (issue #16 item 1): --yes twice, --yes after KEY,
+      # or a misspelling of it.
+      why=
+      if [ "$mode" = --retire ]; then
+        for a in "$@"; do
+          case "$a" in
+            (--yes) if [ -n "$yes" ]; then why="--yes given twice"; else why="--yes goes right after --retire, before KEY"; fi; break ;;
+            (--yes=*|--[Yy][Ee][Ss]|--[Yy]|--[Yy][Ee]|-[Yy]|-[Yy][Ee]|-[Yy][Ee][Ss]) why="the confirmation is spelled --yes, right after --retire"; break ;;
+          esac
+        done
+      fi
+      if [ -n "$why" ]; then
+        echo "usage: agent-setup.sh $syntax ($why)" >&2
       else
         echo "usage: agent-setup.sh $syntax" >&2
       fi
@@ -598,7 +633,19 @@ case "${1-}" in
           echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2
         fi
         exit 2 ;;
-      (--*) echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2; exit 2 ;;
+      (--*)
+        # --retire --force reads as an option of --retire, not another mode
+        # (issue #16 item 4).
+        case "$1" in
+          (--fingerprint|--public-key|--rotate|--retire|--check-setup)
+            echo "usage: agent-setup.sh $syntax (one mode at a time; $1 isn't a KEY)" >&2 ;;
+          (*) if [ "$mode" = --retire ]; then
+                echo "usage: agent-setup.sh $syntax ($1 isn't an option of --retire; its one option is the confirmation --yes)" >&2
+              else
+                echo "usage: agent-setup.sh $syntax ($1 isn't an option of $mode, which takes none)" >&2
+              fi ;;
+        esac
+        exit 2 ;;
     esac
     if [ $# -eq 0 ] && [ -n "${HANDOFF_KEY_DIR-}" ] && [ -z "${HANDOFF_PRIVKEY-}" ]; then
       echo "agent-setup.sh: HANDOFF_KEY_DIR applies only to generating a key; for $mode, set HANDOFF_PRIVKEY=<dir>/handoff-identity.txt as the wrappers do" >&2
@@ -805,7 +852,7 @@ case "$mode" in
       sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
-      echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $(qp "$prev"), which the command lists too (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
+      echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $(sq "$abs"), which the command lists too (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
       exit 1
     fi
     # Last, so every other refusal comes first: a hard link to resolve shows
@@ -854,7 +901,12 @@ fi
 # its permissions would be a nasty surprise. Say so when that happens.
 if [ -d "$KEY_DIR" ]; then
   key_dir_safe "$KEY_DIR"
-  echo "note: key directory $(qp "$KEY_DIR") already exists; its permissions were left unchanged (expected 0700)" >&2
+  # Only worth a note when the mode isn't what setup would have made.
+  # shellcheck disable=SC2012  # ls -ld is the portable mode read (stat's flags differ)
+  case "$(ls -ld -- "$KEY_DIR/." 2>/dev/null | cut -c1-10)" in
+    drwx------) ;;
+    *) echo "note: key directory $(qp "$KEY_DIR") already exists; its permissions were left unchanged (setup makes it 0700)" >&2 ;;
+  esac
 else
   mkdir -p -- "$KEY_DIR"
   # `--` before the mode: BSD chmod stops reading options at the mode, so a
@@ -876,17 +928,27 @@ trap cleanup EXIT
 # age-keygen exits: without these, bash would die at once and the EXIT trap
 # would run before age-keygen wrote its file, leaving a private key behind.
 trap 'echo "agent-setup.sh: interrupted; run it again (if it then refuses, the key was written: --public-key shows it)" >&2; exit 1' INT TERM HUP
-for f in "$KEY_DIR"/.handoff-setup.*; do
-  # A temporary key a killed (SIGKILL) setup left behind: never a live key.
-  [ -f "$f" ] && [ ! -L "$f" ] || continue
-  rm -f -- "$f"
-  echo "note: removed a temporary key a killed (or concurrent) setup left behind: $(qp "$f")" >&2
+# The lock first, as --rotate and --retire take it: without it, two setups at
+# once (or a setup beside a --rotate) could sweep each other's temporary
+# directory (issue #43 item 11).
+lock_dir "$KEY_DIR"
+# What a killed run (SIGKILL) left: temporary keys and private directories,
+# by mktemp's shape only (six characters), removed at once with one note.
+# Never the key itself, which is named handoff-identity.txt.
+left=()
+for f in "$KEY_DIR"/.handoff-setup.?????? "$KEY_DIR"/.handoff-tmp.??????; do
+  if [ -L "$f" ] || [ ! -e "$f" ]; then continue; fi
+  case "$f" in
+    */.handoff-setup.*) [ -f "$f" ] || continue ;;
+    *) [ -d "$f" ] || continue ;;
+  esac
+  left+=("$f")
 done
-for f in "$KEY_DIR"/.handoff-tmp.*; do
-  [ -d "$f" ] && [ ! -L "$f" ] || continue
-  rm -rf -- "$f"
-  echo "note: removed a temporary key directory a killed (or concurrent) setup left behind: $(qp "$f")" >&2
-done
+if [ "${#left[@]}" -gt 0 ]; then
+  rm -rf -- "${left[@]}" \
+    || { echo "agent-setup.sh: cannot remove what a killed setup left in $(qp "$KEY_DIR") (${#left[@]} temporary files); nothing was written. Report it to the user." >&2; exit 1; }
+  echo "note: removed ${#left[@]} temporary key file(s) or directory(ies) a killed setup or --rotate left in $(qp "$KEY_DIR")" >&2
+fi
 # A private directory holds the new key until it is checked (see --rotate).
 newd=$(mktemp -d -- "$KEY_DIR/.handoff-tmp.XXXXXX") || { echo "cannot write a key in $(qp "$KEY_DIR")" >&2; exit 1; }
 new="$newd/${newd##*/}.key"
@@ -898,12 +960,21 @@ ln -- "$new" "$PRIV" || {
   echo "could not link the new key into place at $PRIV; nothing was written (the key directory needs hard links, SETUP.md step 1, or a key appeared meanwhile)" >&2
   exit 1
 }
-if [ ! "$PRIV" -ef "$new" ]; then
+if [ -d "$PRIV" ]; then
   # $PRIV became a directory meanwhile, and ln put the key inside it.
   rm -f -- "$PRIV/${new##*/}"
   echo "could not link the new key into place at $PRIV (it is now a directory); nothing was written" >&2
   exit 1
 fi
+if [ ! "$PRIV" -ef "$new" ]; then
+  # Linked, then the temporary copy went (the lock should prevent that):
+  # the key at $PRIV may be this run's, or another run's.
+  echo "agent-setup.sh: linked the new key into place at $PRIV, but its temporary copy has gone (another run?): don't trust this run's recipient. Run HANDOFF_PRIVKEY=$(qp "$PRIV") agent-setup.sh --public-key to see the key that is there, and report it to the user." >&2
+  exit 1
+fi
+# The temporary name is a second hard link to the live key: removed at once,
+# not left for the EXIT trap (a kill before it would leave it).
+rm -rf -- "$newd"; newd=""; new=""
 
 echo "identity written to $PRIV (mode 600) — never copy it off this machine"
 echo
@@ -915,6 +986,11 @@ echo
 echo "consume side: the decrypt helper reads \$HANDOFF_PRIVKEY"
 echo "(default ~/.config/handoff/handoff-identity.txt)."
 echo "this key lives at: $PRIV"
+# One form of the path, the one above (issue #5 item 4): the wrappers set
+# HANDOFF_PRIVKEY to it as written, quoted if the shell needs it.
 if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-identity.txt" ]; then
-  printf 'non-default location: set HANDOFF_PRIVKEY=%q wherever the helper runs\n' "$PRIV"
+  echo "non-default location: set HANDOFF_PRIVKEY to that path wherever the helper runs"
+fi
+if [ "$(qp "$PRIV")" != "$PRIV" ]; then
+  echo "note: that path has characters a shell reads specially: quote it in every wrapper (HANDOFF_PRIVKEY='…')"
 fi

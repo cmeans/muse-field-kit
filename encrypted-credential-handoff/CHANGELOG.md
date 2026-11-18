@@ -10,6 +10,7 @@
 ### Fixed
 
 - **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".
+- **`agent-setup.sh` follow-ups** (#75): first setup takes the key directory's lock before sweeping a killed run's leftovers, removes its own temporary copy of the new key at once, and says the right thing when that copy goes; `--check-setup` compares the round trip's bytes and gives "no key yet" advice that fits the key path; clearer refusals for misplaced or misspelled `--retire` confirmations; a caller's `BASHOPTS` no longer changes globbing (also in `handoff.sh`).
 
 ## 0.2.0 — 2026-11-18 — `age` replaces RSA
 
