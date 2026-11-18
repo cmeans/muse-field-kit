@@ -1102,7 +1102,7 @@ grep -qF "CREDENTIAL_WORDS_UNSEPARATED\`, $setup_words, may also end a name" ../
 # Credential names are accepted, with the value under that name.
 for v in PGPASSWORD PGUSER MYSQL_PWD GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
          OPENAI_API_KEY JIRA_EMAIL SNOWFLAKE_ACCOUNT AZURE_DEVOPS_PAT APP_PASS NAS_LOGIN db_password \
-         KEY SECRET REDISCLI_AUTH SHODAN_APIKEY MINIO_SECRETKEY MINIO_ACCESSKEY; do
+         KEY SECRET REDISCLI_AUTH SHODAN_APIKEY MINIO_SECRETKEY MINIO_ACCESSKEY TS_AUTHKEY WG_PRIVATEKEY; do
   consume --label example --blob-file blob-age.txt --env "password=$v" -- sh -c "[ \"\${$v}\" = \"\$1\" ]" sh "$P" \
     >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--env password=$v was refused, or the value didn't arrive under it"; }
 done
@@ -1132,9 +1132,10 @@ echo "ok (run mode passes UTF-8 bytes whatever the locale's encoding)"
 # latin-1 can encode came through as latin-1 bytes, with no error. (Nothing
 # is printed where there's none: CI fails on a skip line, and the ASCII case
 # above covers the code path.)
-if [ "$(LC_ALL=en_US.ISO-8859-1 python3 -I -c 'import sys; print(sys.getfilesystemencoding())' 2>/dev/null)" = iso8859-1 ]; then
+# (-X utf8=0: Python 3.15 is in UTF-8 mode by default, which would hide it.)
+if [ "$(LC_ALL=en_US.ISO-8859-1 python3 -X utf8=0 -I -c 'import sys; print(sys.getfilesystemencoding())' 2>/dev/null)" = iso8859-1 ]; then
   b=$(enc '{"svc":"loc","password":"pässwörd"}')
-  got=$(LC_ALL=en_US.ISO-8859-1 python3 -I ../consume.py --label loc --blob "$b" \
+  got=$(LC_ALL=en_US.ISO-8859-1 python3 -X utf8=0 -I ../consume.py --label loc --blob "$b" \
     -- python3 -I -c 'import os, sys; sys.stdout.write(os.environb[b"SERVICE_PASSWORD"].hex())' 2>"$S/err") \
     || { cat "$S/err" >&2; fail "run mode under a Latin-1 locale failed"; }
   [ "$got" = "$(printf '%s' 'pässwörd' | od -An -tx1 | tr -d ' \n')" ] || fail "run mode under a Latin-1 locale passed latin-1 bytes ($got)"

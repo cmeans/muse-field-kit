@@ -89,7 +89,9 @@ own --env or -- would otherwise pick where the credential goes. An empty
 credential value is refused.
 A target must be a plain variable name that reads as a credential's (it
 ends in USER, PASSWORD, TOKEN, KEY, SECRET, ID and the like, after a _ or
-as the whole name: CREDENTIAL_WORDS below), never one that changes what the command runs or where it connects
+as the whole name, and some of them with no _ too, as in PGPASSWORD:
+CREDENTIAL_WORDS below), never the shell's own USER, USERNAME or PWD, never
+one that changes what the command runs or where it connects
 (PATH, LD_*, PYTHON*, GIT_*, BASH_ENV, the proxy and CA-bundle variables, ...;
 a partial list, in any case),
 and two fields can't share one target, the default mappings included.
@@ -180,7 +182,7 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # The allowlist (issue #43 item 13): the name ends in a credential word, as a
 # whole word (after "_", or the whole name). The words in
 # CREDENTIAL_WORDS_UNSEPARATED may also end a name without the "_"
-# (PGPASSWORD, PGUSER); the short ones may not, so OLDPWD, SSH_AGENT_PID and
+# (PGPASSWORD, PGUSER); the others need the "_", so OLDPWD, SSH_AGENT_PID and
 # PROXY_BYPASS stay refused. So no list of every runtime's
 # variables is needed: NODE_TLS_REJECT_UNAUTHORIZED, AWS_CA_BUNDLE, SHELL,
 # TMPDIR, GODEBUG and LUA_CPATH aren't credential names, so they're refused,
@@ -194,7 +196,7 @@ CREDENTIAL_WORDS = (
     "USER", "USERNAME", "LOGIN", "EMAIL", "ACCOUNT", "ID",
     "PASS", "PASSWORD", "PASSWD", "PASSPHRASE", "PWD",
     "TOKEN", "PAT", "KEY", "SECRET", "AUTH",
-    "APIKEY", "ACCESSKEY", "SECRETKEY",
+    "APIKEY", "ACCESSKEY", "SECRETKEY", "AUTHKEY", "PRIVATEKEY",
 )
 CREDENTIAL_WORDS_UNSEPARATED = (
     "USER", "USERNAME", "PASSWORD", "PASSWD", "PASSPHRASE", "TOKEN", "SECRET",
@@ -910,12 +912,13 @@ def check_env_name(name: str) -> None:
     if not ENV_NAME_RE.fullmatch(name):
         raise fail(f"--env target {name!r} is not a valid variable name")
     upper = name.upper()
-    # The refused list first: its message says what such a name does.
+    # The shell's own names and the refused list first: their messages say
+    # what such a name does.
     if upper in SHELL_OWN_NAMES:
         raise fail(
             f"--env target {name!r} is the shell's own (who runs, or where): it isn't "
-            "a credential's variable; refusing (a tool's username goes in a name of "
-            "its own, such as APP_USER)"
+            "a credential's variable; refusing (a tool's credential goes in a name of "
+            "its own, such as APP_USER or APP_PWD)"
         )
     if upper in REFUSED_ENV_NAMES or upper.startswith(REFUSED_ENV_PREFIXES):
         raise fail(
