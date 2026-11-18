@@ -1,8 +1,10 @@
 # Changelog — encrypted-credential-handoff
 
-## Unreleased
+## 0.2.0 — 2026-11-18 — `age` replaces RSA
 
 Version 0.2.0 (#42). **`age` replaces RSA, and a 0.1.0 install sets up again from scratch:** 0.2.0 reads neither 0.1.0's RSA keys nor its blobs, so an install makes a new identity, the user saves its recipient, and each credential is staged again. Closes #37 (whether to adopt OpenSSL CMS for payloads over RSA's 190 bytes: decided against, for `age`; see README, Choosing the suite); see also #39.
+
+PR #42 went through two QA review rounds, with Dev's own pre-QA reviews, and was reviewed by Muse, the agent the folder is written for. It merged only once the author had applied the `QA Approved` label, which only the author applies. The PR records each round's findings and what was fixed or declined, in its body and its review comments; the non-blocking findings left open are #43 and #44. One QA step, typing a payload into a real Windows console with an AltGr keyboard layout, was left to the author and was not run; CI runs `handoff.ps1` with no console. As with 0.1.0, the reviewers were AI agent sessions in the author's setup, plus the author: peer review inside one shop, not a third-party audit.
 
 ### Changed
 

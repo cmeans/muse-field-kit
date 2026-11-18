@@ -232,13 +232,16 @@ jobs:
           cd "$RUNNER_TEMP/sh-only"
           bash -euo pipefail -c "$cmd"
       - name: release-notes.sh on the real CHANGELOG
-        # release.yml uses this script; 0.1.0 has a dated heading with a
-        # suffix, 9.9.9 has none.
+        # release.yml uses this script; each released version has a dated
+        # heading with a suffix, 9.9.9 has none. A new release adds its
+        # version here, so a malformed heading fails CI before the tag.
         run: |
-          v=$(.github/scripts/release-notes.sh v0.1.0 encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes-real.md")
-          [ "$v" = 0.1.0 ]
-          [ -s "$RUNNER_TEMP/notes-real.md" ]
-          if grep -q '^## ' "$RUNNER_TEMP/notes-real.md"; then echo "notes run past the section"; exit 1; fi
+          for want in 0.1.0 0.2.0; do
+            v=$(.github/scripts/release-notes.sh "v$want" encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes-real.md")
+            [ "$v" = "$want" ]
+            [ -s "$RUNNER_TEMP/notes-real.md" ]
+            if grep -q '^## ' "$RUNNER_TEMP/notes-real.md"; then echo "notes for $want run past the section"; exit 1; fi
+          done
           if .github/scripts/release-notes.sh v9.9.9 encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes-none.md" 2>/dev/null; then
             echo "release-notes.sh accepted a version with no heading"
             exit 1
