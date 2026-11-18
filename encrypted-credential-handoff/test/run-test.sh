@@ -812,7 +812,11 @@ chmod 755 "$SW/bad"; rm -rf "$SW/safe" "$SW/bad"
 # directory owned by another account (making one needs root), the
 # /proc/self/fd fallback, and the refusal with neither fd directory.
 python3 -I check-key-dir.py "$SW/k/id.txt" blob-age.txt >"$S/out" 2>"$S/err" || { cat "$S/out" "$S/err" >&2; fail "check-key-dir.py failed"; }
-for c in other-owner shared-dir no-fd; do
+cks="other-owner shared-dir no-fd"
+# Linux has /proc/self/fd, so the fallback must run there (CI fails on a
+# skip, and check-key-dir.py's "skipped:" line wouldn't read as one).
+[ ! -d /proc/self/fd ] || cks="$cks proc-fd"
+for c in $cks; do
   grep -qx "ok: $c" "$S/out" || fail "check-key-dir.py didn't run its $c check: $(cat "$S/out")"
 done
 sed 's/^/ok (consume.py: /; s/$/)/' "$S/out"
