@@ -27,7 +27,7 @@ agent-setup.sh's, for making a key), verifies the payload's purpose binding, and
               too, so never run --check on a real credential, or
   --rewrap    rewrites its --blob-file in place: the same payload, byte for
               byte, encrypted to the current key, written atomically and
-              checked (SETUP.md, Rotation). Only during a rotation (refused
+              checked (ROTATION.md). Only during a rotation (refused
               with no <key path>.previous), only with --blob-file, never a
               file under the key's directory, and nothing is written for a
               blob that's already for the current key. Its stderr line names
@@ -120,7 +120,7 @@ Usage:
     consume.py --label example --blob-file blob.txt -- my-tool --serve
     consume.py --label test --check --blob-file blob.txt
     consume.py --label example --rewrap --blob-file store/example
-    (during a rotation only: SETUP.md, Rotation step 4)
+    (during a rotation only: ROTATION.md step 4)
 """
 # Run as ./consume.py, the helper is isolated (python3 -I, see the top of
 # the docstring): the caller's PYTHON* variables and user site-packages don't
@@ -628,7 +628,7 @@ def decrypt(blob_b64: str, current: str, previous: str) -> "tuple[bytes, str]":
         # to 0.2.0 allowed: the old key may be there, with or without a
         # .previous beside the current key (issue #46).
         tried += (f", and {previous + '.previous'!r} exists "
-                  "(SETUP.md, Rotation: A .previous.previous file)")
+                  "(ROTATION.md: A .previous.previous file)")
     # One fixed message, whichever key failed and however, without age's
     # own text, which depends on the blob. It names the key files it tried
     # (paths, never payload data) and the age that ran. It's a stop condition:
@@ -745,8 +745,8 @@ def check_blob_file(path: str) -> os.stat_result:
                        f"(mode {stat.S_IMODE(dst.st_mode):04o}); {fix}")
     if BLOB_FILE_READ is not None and file_identity(st) != BLOB_FILE_READ:
         raise fail(f"the blob file {shown(path)!r} changed since it was read (a blob staged "
-                   "meanwhile?); it is left as it is now: probe the label (SETUP.md, "
-                   "Rotation step 4)")
+                   "meanwhile?); it is left as it is now: probe the label (ROTATION.md "
+                   "step 4)")
     return st
 
 
@@ -792,7 +792,7 @@ def write_atomically(path: str, data: bytes) -> None:
         if BLOB_FILE_READ is not None and file_identity(os.stat(path)) != BLOB_FILE_READ:
             raise fail(f"the blob file {shown(path)!r} changed while it was being rewrapped (a "
                        "blob staged meanwhile?); it is left as it is now: probe the label "
-                       "(SETUP.md, Rotation step 4)")
+                       "(ROTATION.md step 4)")
         # TERM, HUP and INT blocked around the rename and the two flags, where
         # the platform can (not Windows): a signal then lands after them, so
         # what an interrupt reports always matches the file.
@@ -830,7 +830,7 @@ def write_atomically(path: str, data: bytes) -> None:
             tmp = None
             WRITTEN = path
             raise fail(f"interrupted after the rename; {shown(path)!r} holds the new blob "
-                       "(probe the label: SETUP.md, Rotation step 4)") from None
+                       "(probe the label: ROTATION.md step 4)") from None
         raise fail(f"interrupted; {shown(path)!r} is unchanged") from None
     finally:
         if tmp is not None:
@@ -876,7 +876,7 @@ def rewrap(plaintext: bytes, current: str) -> str:
 
     Checked before it's returned: the new blob must open with the current
     key to exactly this payload, since it replaces the old blob in the store
-    with no copy kept (SETUP.md, Rotation).
+    with no copy kept (ROTATION.md).
     """
     recipient, identity = load_key(current)
     blob = age_encrypt(plaintext, recipient)
@@ -1036,8 +1036,8 @@ def parse_args(argv):
         raise fail("--rewrap takes no --env; it re-encrypts the payload as it is")
     if do_rewrap and blob_file is None:
         raise fail("--rewrap rewrites its --blob-file in place, so it needs --blob-file "
-                   "(the label's own stored blob, or a fetched copy of it: SETUP.md, "
-                   "Rotation step 4)")
+                   "(the label's own stored blob, or a fetched copy of it: ROTATION.md "
+                   "step 4)")
     if not (check or do_rewrap) and (not cmd or not cmd[0]):
         raise fail("no command given after -- (or use --check or --rewrap)")
     sources = [s for s, given in (
@@ -1183,7 +1183,7 @@ def main() -> int:
         raise fail(
             f"--rewrap: no rotation under way at {current!r} (no {previous!r}). "
             "Run it with HANDOFF_PRIVKEY as the label's wrappers set it, during "
-            "a rotation (SETUP.md, Rotation); anything else, stop and report it."
+            "a rotation (ROTATION.md); anything else, stop and report it."
         )
     if do_rewrap:
         check_age()
@@ -1194,7 +1194,7 @@ def main() -> int:
         # key: a blob "for the current key" then is for the key being retired.
         raise fail(
             f"--rewrap: {previous!r} holds the same key as {current!r}: the rotation "
-            "didn't finish. Run agent-setup.sh --rotate again (SETUP.md, Rotation step 1)."
+            "didn't finish. Run agent-setup.sh --rotate again (ROTATION.md step 1)."
         )
     if do_rewrap:
         # TERM and HUP end a --rewrap as INT does: a clean line, the file as it
@@ -1251,7 +1251,7 @@ def main() -> int:
     if slot == "previous":
         # Nothing from the payload: which key file opened it.
         print(f"consume.py: label {label!r} decrypted with the previous key; "
-              "rewrap it once Rotation step 3 is done (SETUP.md)", file=sys.stderr)
+              "rewrap it once ROTATION.md step 3 is done", file=sys.stderr)
     # Built from bytes: each value goes to the command as its UTF-8 bytes, the
     # bytes the user encrypted, whatever this process's locale. With str
     # values, os.execvpe encodes them in the locale's encoding, so a non-UTF-8
@@ -1312,7 +1312,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         if WRITTEN is not None:
             print(f"consume.py: interrupted after the rename; {shown(WRITTEN)!r} holds the new "
-                  "blob (probe the label: SETUP.md, Rotation step 4)", file=sys.stderr)
+                  "blob (probe the label: ROTATION.md step 4)", file=sys.stderr)
         else:
             print("consume.py: interrupted; nothing written", file=sys.stderr)
         sys.exit(1)
