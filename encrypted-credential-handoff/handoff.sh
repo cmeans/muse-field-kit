@@ -50,7 +50,10 @@ set +C
 set +k
 shopt -u failglob nullglob dotglob nocaseglob nocasematch extglob xpg_echo 2>/dev/null || true
 # A SECRET_JSON exported by the caller would sit in every child's environment:
-unset SECRET_JSON blob
+unset SECRET_JSON blob raw
+# No core file: a crash or a Ctrl-\ (SIGQUIT) at the hidden prompt would write
+# this shell's or a reader's memory, the secret in it, to disk.
+ulimit -c 0 2>/dev/null || true
 
 # Kept equal to consume.py's MAX_KEY_FILE and agent-setup.sh's MAX_KEY_BYTES
 # (a recipient file is 63 bytes; the same bound keeps the three alike):
@@ -67,9 +70,29 @@ MAX_NAME=64
 # run-test.sh checks this arithmetic against consume.py and a real blob.
 MAX_PAYLOAD=48696
 
+# Whether a string has a control character, or a UTF-8 character that breaks,
+# reorders or hides part of a line where it's shown: U+0085, U+2028, U+2029,
+# the bidi marks, embeddings, overrides and isolates (U+061C, U+200E-F,
+# U+202A-E, U+2066-9), and the invisible ones (U+00AD, U+200B-D, U+2060-4,
+# U+FEFF). Checked in C, by bytes (agent-setup.sh's has_ctl).
+has_ctl() {
+  ( LC_ALL=C
+    [[ "$1" =~ [[:cntrl:]] ]] && exit 0
+    case "$1" in
+      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xc2\xad'*|*$'\xd8\x9c'*) exit 0 ;;
+      *$'\xe2\x80'[$'\x8b'-$'\x8f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*) exit 0 ;;
+      *$'\xe2\x81'[$'\xa0'-$'\xa4']*|*$'\xe2\x81'[$'\xa6'-$'\xa9']*|*$'\xef\xbb\xbf'*) exit 0 ;;
+    esac
+    exit 1 )
+}
 # A path in a message, quoted as the shell would (printf %q): a name with a
-# newline or other control character can't pass for a line of output.
-qp() { printf '%q' "$1"; }
+# newline or other control character can't pass for a line of output. One
+# has_ctl flags is quoted in C, so every such byte is escaped (in a UTF-8
+# locale, %q leaves a bidi override as it is).
+qp() {
+  if has_ctl "$1"; then ( LC_ALL=C; printf '%q' "$1" ); return; fi
+  printf '%q' "$1"
+}
 
 usage() {
   cat >&2 <<'USAGE'
@@ -82,6 +105,10 @@ Usage:
 NAME (default muse; up to 64 letters, digits, _ and -, not starting with -)
 picks the agent's recipient file, handoff-NAME.age, in this script's
 directory.
+FILE is read as UTF-8. At the prompt, one line can hold about 4 KB on Linux
+and 1 KB on macOS: Linux cuts a longer line, and macOS beeps and ignores
+the rest of it, Enter and Ctrl-D too (press Ctrl-C). For a long payload, use
+a pipe (or FILE, which leaves the payload on disk).
 stdout is ONLY the base64 ciphertext; all prompts go to stderr.
 USAGE
 }
@@ -117,7 +144,7 @@ while [ $# -gt 0 ]; do
         file=$1; file_given=1; shift
       fi
       break ;;
-    -?*) usage_error "unknown option $(printf '%q' "$1")" ;;
+    -?*) usage_error "unknown option $(qp "$1")" ;;
     *)
       [ "$file_given" = 0 ] || usage_error "at most one FILE"
       file=$1; file_given=1 ;;
@@ -131,9 +158,9 @@ done
 # can't name another directory; not starting with -, so it never reads as an
 # option.
 case "$to" in
-  -*) usage_error "--to NAME can't start with - (got $(printf '%q' "$to"))" ;;
+  -*) usage_error "--to NAME can't start with - (got $(qp "$to"))" ;;
   ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*)
-    usage_error "--to NAME takes only letters, digits, _ and - (got $(printf '%q' "$to"))" ;;
+    usage_error "--to NAME takes only letters, digits, _ and - (got $(qp "$to"))" ;;
 esac
 [ "${#to}" -le "$MAX_NAME" ] || usage_error "--to NAME is at most $MAX_NAME characters"
 
@@ -386,8 +413,15 @@ no_key() { echo "handoff.sh: $1" >&2; exit 1; }
 # a refusal is no_key (exit 1). --check-setup runs it in a subshell when
 # there is no age to ask about the checksum.
 load_recipient() {
+  # A symlink is refused, resolving or not: whoever can repoint it changes the
+  # recipient without touching the file the user checked.
+  if [ -L "$keyfile" ]; then
+    # The remedy says to remove the link first: saving "there" (> or cp)
+    # writes through it to its target and leaves the link in place.
+    [ -e "$keyfile" ] || no_key "$(qp "$keyfile") is a symlink that doesn't resolve to a file: remove the link itself (rm), then save the agent's recipient there as a plain file"
+    no_key "$(qp "$keyfile") is a symlink: remove the link itself (rm, which leaves its target alone), then save the agent's recipient there as a plain file (a link can be repointed without its target changing)"
+  fi
   if [ ! -e "$keyfile" ]; then
-    [ ! -L "$keyfile" ] || no_key "$(qp "$keyfile") is a symlink that doesn't resolve to a file"
     # A near miss beside it is named, from a short allow-list only: a _ or . in
     # place of the -, another case (handoff_muse.age, handoff-Muse.age), or an
     # editor's extra extension (handoff-muse.age.txt, handoff-muse.age.age). Anything
@@ -397,17 +431,34 @@ load_recipient() {
     restore=$(shopt -p nullglob nocaseglob || true)
     shopt -s nullglob nocaseglob
     for f in "${dir%/}"/handoff[-_.]"$to".age "${dir%/}"/handoff[-_.]"$to".age.txt "${dir%/}"/handoff[-_.]"$to".age.age; do
+      # ASCII names only: in a UTF-8 locale bash folds case with towlower, so
+      # a look-alike such as the KELVIN SIGN would pass for k.
+      case "${f##*/}" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) continue ;; esac
       if [ "$f" != "$keyfile" ] && [ -f "$f" ] && [ ! -L "$f" ]; then near=${f##*/}; break; fi
     done
     eval "$restore"
-    # Only NAME's case differs (--to Muse, with handoff-muse.age there): the
-    # remedy is the other --to, not a rename the default run would then miss.
-    nm=${near#handoff-}; nm=${nm%.age}
     lc() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
-    if [ -n "$near" ] && [ "$near" = "handoff-$nm.age" ] && [ "$nm" != "$to" ] && [ "$(lc "$nm")" = "$(lc "$to")" ]; then
-      no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(printf '%q' "$near") does. Names are case-sensitive: did you mean --to $(printf '%q' "$nm")?"
+    # The NAME in the near miss's own spelling: handoff and its separator off
+    # the front, the .age (and an editor's extra extension) off the end.
+    nm=${near:8}
+    case "$(lc "$nm")" in
+      *.age.txt|*.age.age) nm=${nm:0:${#nm}-8} ;;
+      *.age) nm=${nm:0:${#nm}-4} ;;
+    esac
+    # For a NAME given with --to (other than the default) whose case differs
+    # from the file's: the remedy keeps the file's own NAME, which --to then
+    # names. With no --to, or --to naming the default, the rename below to the
+    # default name is the one a run with no --to needs (a "did you mean --to
+    # Muse" would have the user add --to to every run).
+    if [ -n "$near" ] && [ "$nm" != "$to" ] && [ "$to_given" = 1 ] && [ "$to" != muse ]; then
+      # Only NAME's case differs (--to Muse, with handoff-muse.age there): the
+      # remedy is the other --to, not a rename the default run would then miss.
+      [ "$near" != "handoff-$nm.age" ] \
+        || no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(qp "$near") does. Names are case-sensitive: did you mean --to $nm?"
+      # The case and something else differ (handoff_muse.age for --to Muse).
+      no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(qp "$near") does. If that file is the agent's current recipient, rename it to handoff-$nm.age and run with --to $nm (names are case-sensitive), then compare --fingerprint with the recipient the agent reports"
     fi
-    [ -z "$near" ] || no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(printf '%q' "$near") does. If that file is the agent's current recipient, rename it to handoff-$to.age, then compare --fingerprint with the recipient the agent reports"
+    [ -z "$near" ] || no_key "no recipient file for '$to': $(qp "$keyfile") doesn't exist, but $(qp "$near") does. If that file is the agent's current recipient, rename it to handoff-$to.age, then compare --fingerprint with the recipient the agent reports"
     # A 0.1.0 install: the RSA public key is beside it, the age recipient isn't.
     if [ -f "${dir%/}/handoff-$to.pem" ]; then
       no_key "found handoff-$to.pem but no $(qp "$keyfile"). Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$to.age beside handoff.sh"
@@ -429,21 +480,29 @@ load_recipient() {
   RECIPIENT=${RECIPIENT#$'\xef\xbb\xbf'}   # a UTF-8 byte-order mark, as some Windows editors save
   # A copy saved on Windows or by an editor, or copied from an indented block,
   # can carry CRLF line endings, leading or trailing blanks or blank lines: drop
-  # them before the checks.
-  RECIPIENT=$(printf '%s\n' "$RECIPIENT" | tr -d '\r' | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' | grep -v '^$' || true)
+  # them before the checks. In C, by bytes: BSD tr and sed (macOS) stop at a
+  # byte sequence that isn't valid in a UTF-8 locale.
+  RECIPIENT=$(printf '%s\n' "$RECIPIENT" | LC_ALL=C tr -d '\r' | LC_ALL=C sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' | LC_ALL=C grep -v '^$' || true)
+  # Copied with more than the recipient: the "recipient: " agent-setup.sh
+  # prints before it, or quotes or backticks around it. Said in the refusals
+  # below (the file is the user's to fix; nothing is stripped).
+  extra=
+  case "$RECIPIENT" in
+    *[Rr]ecipient:*|*\"*|*\'*|*\`*|*$'\xe2\x80\x98'*|*$'\xe2\x80\x99'*|*$'\xe2\x80\x9c'*|*$'\xe2\x80\x9d'*) extra=". Keep only the age1... text, without \"recipient:\", quotes or backticks" ;;
+  esac
   # An identity (private key) here means it left the agent's machine.
-  if printf '%s\n' "$RECIPIENT" | grep -q -e '^AGE-SECRET-KEY-' -e '^AGE-PLUGIN-'; then
+  if printf '%s\n' "$RECIPIENT" | LC_ALL=C grep -q -e '^AGE-SECRET-KEY-' -e '^AGE-PLUGIN-'; then
     no_key "$(qp "$keyfile") holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
   fi
   case "$RECIPIENT" in
-    ''|*$'\n'*) no_key "$(qp "$keyfile") must hold exactly one age recipient line (age1...), as agent-setup.sh prints it" ;;
+    ''|*$'\n'*) no_key "$(qp "$keyfile") must hold exactly one age recipient line (age1...), as agent-setup.sh prints it$extra" ;;
   esac
   # An X25519 recipient exactly: HRP age, separator 1, then 58 lowercase
   # characters of the bech32 alphabet, 62 in all. That refuses age1pq1... and
   # age1tag1... and every plugin recipient, which also begin age1.
   recipient_re='^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$'
   [[ "$RECIPIENT" =~ $recipient_re ]] \
-    || no_key "$(qp "$keyfile") is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it"
+    || no_key "$(qp "$keyfile") is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it$extra"
 }
 [ "$mode" != check-setup ] || check_setup
 load_recipient
@@ -472,34 +531,103 @@ fi
 # NULs (with only a warning), so a raw NUL, a NUL between tokens or a BOM-less
 # UTF-16 file would otherwise be encrypted shortened. \001 is a control byte,
 # which no JSON text holds raw: the check after the read refuses it.
+#
+# Every read is bounded: READ_CAP bytes and one more, so an endless FILE
+# (/dev/zero) or pipe ends, and nothing larger reaches the pattern work below,
+# whose time grows with the square of the input. The cap leaves room for what
+# is dropped before the count: a byte-order mark and trailing line feeds. The
+# x keeps $(...) from dropping trailing line feeds before they're counted; the
+# printf after it drops them, as a plain $(...) read did.
+READ_CAP=$((MAX_PAYLOAD + 4096))
+too_big() {  # SIZE-TEXT
+  echo "handoff.sh: payload is $1 bytes; the most handoff.sh sends is ${MAX_PAYLOAD} bytes." >&2
+  echo "Shorten the JSON. (Larger payloads need a larger limit on both sides;" >&2
+  echo "see README.md.)" >&2
+  exit 1
+}
+read_capped() { LC_ALL=C head -c "$((READ_CAP + 1))" | LC_ALL=C tr '\000' '\001'; printf x; }
+over_cap() { [ "$(( $(printf '%s' "$raw" | LC_ALL=C wc -c) - 1 ))" -gt "$READ_CAP" ]; }
+from_tty=0
 if [ "$file_given" = 1 ]; then
+  [ ! -d "$file" ] || { echo "handoff.sh: $(qp "$file") is a directory, not a payload file" >&2; exit 1; }
   [ -r "$file" ] || { echo "handoff.sh: cannot read $(qp "$file")" >&2; exit 1; }
-  SECRET_JSON=$(LC_ALL=C tr '\000' '\001' <"$file")   # note: plaintext is already on disk in this path
+  raw=$(read_capped <"$file")   # note: plaintext is already on disk in this path
 elif [ -t 0 ]; then
   {
     echo "Paste or type the JSON, then press Enter and Ctrl-D."
     echo 'Example: {"svc": "example", "username": "u", "password": "p"}  or  {"svc": "example", "api_key_id": "k", "api_key_secret": "s"}'
     echo "(input is hidden and is not written to shell history)"
+    # Said before the paste: on macOS a line past 1 KB can't be ended at all
+    # (the kernel drops every later byte, Enter and Ctrl-D too), so no
+    # message after the read could reach the user.
+    echo "(one line can hold about 4 KB, 1 KB on macOS: for a longer one, such as a private_key on one line, press Ctrl-C and use a pipe or a FILE)"
   } >&2
   tty_saved=$(stty -g)
   trap 'stty "$tty_saved"' EXIT          # always give the terminal its echo back
   trap 'exit 130' INT TERM
   stty -echo
-  SECRET_JSON=$(LC_ALL=C tr '\000' '\001')
+  raw=$(read_capped)
+  # Over the cap, the rest of a paste is still in the terminal's input, where
+  # the shell would run it after this script exits: read it to the Ctrl-D and
+  # drop it, with echo still off.
+  if over_cap; then LC_ALL=C cat >/dev/null || true; fi
   stty "$tty_saved"
   trap - EXIT INT TERM
   echo >&2
+  from_tty=1
 else
-  SECRET_JSON=$(LC_ALL=C tr '\000' '\001')   # piped input: no terminal to manage
+  raw=$(read_capped)   # piped input: no terminal to manage
 fi
-
-# A UTF-8 byte-order mark, as some Windows editors save: dropped, as
-# handoff.ps1 does (consume.py would refuse the payload with one).
-SECRET_JSON=${SECRET_JSON#$'\xef\xbb\xbf'}
-[ -n "${SECRET_JSON//[[:space:]]/}" ] || { echo "handoff.sh: empty, aborting" >&2; exit 1; }
+if over_cap; then raw=; too_big "over $READ_CAP"; fi
+SECRET_JSON=$(printf '%s' "${raw%x}")
+raw=
 
 # --- validate ---------------------------------------------------------
-bad_json() { echo "handoff.sh: input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2; exit 1; }
+# The refusal for a payload that isn't the JSON object asked for, with a hint
+# for the likeliest causes it can see (fixed text, nothing from the payload).
+bad_json() {
+  echo "handoff.sh: input must be a single JSON object with a string \"svc\" and string values only, aborting" >&2
+  case "$SECRET_JSON" in
+    $'\xef\xbb\xbf'*) echo "handoff.sh: it starts with a second byte-order mark (U+FEFF): save the file as UTF-8 without them" >&2 ;;
+  esac
+  case "$SECRET_JSON" in
+    *$'\xe2\x80\x98'*|*$'\xe2\x80\x99'*|*$'\xe2\x80\x9c'*|*$'\xe2\x80\x9d'*) echo "handoff.sh: it has typographic quotes (U+2018, U+2019, U+201C or U+201D): JSON takes only straight quotes (\") around a name or a value, so retype any that are meant as those (some editors and chat apps change them); inside a value, they're part of it" >&2 ;;
+  esac
+  # A line Linux's terminal cut arrives at its cap, 4095 bytes; on macOS the
+  # line can't be ended past 1023 bytes (MAX_INPUT 1024), so one arrives here
+  # only if the user deleted a character first. Only a line about that long
+  # can have been cut. (awk reads the payload on a pipe, as jq does.)
+  # 4095 off macOS, 1000 on it: a shorter line with an unrelated JSON error
+  # wasn't cut, and the hint would send the user to a FILE for nothing.
+  cut_at=4095
+  [ "$(uname -s 2>/dev/null)" != Darwin ] || cut_at=1000
+  if [ "$from_tty" = 1 ] && printf '%s\n' "$SECRET_JSON" | LC_ALL=C awk -v n="$cut_at" 'length >= n { f = 1 } END { exit !f }'; then
+    echo "handoff.sh: a line reached the terminal's line limit (about 4 KB, 1 KB on macOS), so it may have been cut: for a long payload, use a pipe (or a FILE)" >&2
+  fi
+  exit 1
+}
+# A UTF-16 file (Windows PowerShell 5.1's > and Out-File write it): a
+# byte-order mark, or NULs (read as \001) alternating with the first two
+# characters, the first a { or blank. Said before the control-byte check,
+# which would give only the JSON message. (One raw NUL beside the { alone is
+# a control byte, and gets that check's message.)
+utf16_lead=$'{ \t\r\n'
+case "$SECRET_JSON" in
+  $'\xff\xfe'*|$'\xfe\xff'*|["$utf16_lead"]$'\001'?$'\001'*|$'\001'["$utf16_lead"]$'\001'?*)
+    echo "handoff.sh: the payload is saved as UTF-16: save it as UTF-8 (handoff.sh reads UTF-8 only), aborting" >&2; exit 1 ;;
+esac
+# A UTF-8 byte-order mark, as some Windows editors save: dropped, as
+# handoff.ps1 does (consume.py would refuse the payload with one). A second
+# one is refused: jq would skip it too, and consume.py would not.
+SECRET_JSON=${SECRET_JSON#$'\xef\xbb\xbf'}
+case "$SECRET_JSON" in $'\xef\xbb\xbf'*) bad_json ;; esac
+# The cap (MAX_PAYLOAD, above) keeps the blob within consume.py's limit:
+# checked first, before the pattern work. $(( )) drops the padding BSD wc
+# (macOS) puts before the count.
+n=$(( $(printf '%s' "$SECRET_JSON" | LC_ALL=C wc -c) ))
+[ "$n" -le "$MAX_PAYLOAD" ] || too_big "$n"
+[ -n "${SECRET_JSON//[[:space:]]/}" ] || { echo "handoff.sh: empty, aborting" >&2; exit 1; }
+
 # No raw control byte (a NUL arrives as \001, above): JSON allows only tab, LF
 # and CR, and only between tokens, which jq checks next. Checked here too, in
 # this shell, so it doesn't rest on each jq version's parser. The bytes are
@@ -559,15 +687,42 @@ case "$fields" in
   none) echo "handoff.sh: no known credential field (one of: ${KNOWN_FIELDS// /, }), aborting" >&2; exit 1 ;;
   *) bad_json ;;
 esac
-
-# The cap (MAX_PAYLOAD, above) keeps the blob within consume.py's limit.
-# $(( )) drops the padding BSD wc (macOS) puts before the count.
-n=$(( $(printf '%s' "$SECRET_JSON" | wc -c) ))
-if [ "$n" -gt "$MAX_PAYLOAD" ]; then
-  echo "handoff.sh: payload is ${n} bytes; the most handoff.sh sends is ${MAX_PAYLOAD} bytes." >&2
-  echo "Shorten the JSON. (Larger payloads need a larger limit on both sides;" >&2
-  echo "see README.md.)" >&2
-  exit 1
+# Fields consume.py doesn't know are ignored there (it counts them, no more),
+# so a misspelled one (usrename) never reaches the agent: counted here,
+# before encrypting, where the user can fix it. Nothing from the payload is
+# printed, its names included: a value typed in a name's place can be a
+# secret, and common passwords are a few edits from "password". So the note
+# names the KNOWN field each likely misspelling is close to (within two
+# edits, ignoring ASCII case; the closest, the first in KNOWN_FIELDS on a
+# tie), never the payload's name. (A name longer than the longest known
+# field plus 2 can't be within two edits, so the distance isn't computed for
+# it: that only saves time.) jq prints [count, close, [known names]], the
+# names from KNOWN_FIELDS alone.
+unknown=$(printf '%s' "$SECRET_JSON" | jq -c -s --arg known "$KNOWN_FIELDS" '
+  def lev($a; $b): ($a | explode) as $s | ($b | explode) as $t
+    | reduce range(0; $s | length) as $i ([range(0; ($t | length) + 1)];
+        . as $prev
+        | reduce range(0; $t | length) as $j ([$i + 1];
+            . + [[$prev[$j + 1] + 1, .[$j] + 1, $prev[$j] + (if $s[$i] == $t[$j] then 0 else 1 end)] | min]))
+    | .[-1];
+  ($known | split(" ")) as $k
+  | (($k | map(length) | max) + 2) as $longest
+  | [.[0] | keys_unsorted[] | select(. != "svc") | select(. as $n | any($k[]; . == $n) | not)]
+  | if length == 0 then empty
+    else [.[] | select(length <= $longest) | ascii_downcase as $n
+          | [$k | to_entries[] | {i: .key, f: .value, d: lev($n; .value)} | select(.d <= 2)]
+          | select(length > 0) | min_by([.d, .i])] as $close
+      | [length, ($close | length), ($close | map(.i) | unique | map($k[.]))] end' 2>/dev/null) || unknown=
+if [ -n "$unknown" ]; then
+  # [count,close,[names]]: the two counts are digits, so the first two commas
+  # end them; the names (known field names, plain ASCII) follow the second.
+  u_rest=${unknown#"["}
+  u_count=${u_rest%%,*}; u_rest=${u_rest#*,}
+  u_close=${u_rest%%,*}; u_rest=${u_rest#*,}
+  u_names=${u_rest#"["}; u_names=${u_names%"]]"}; u_names=${u_names//\",\"/\", \"}
+  u_text="consume.py ignores $u_count field(s) it doesn't know"
+  [ "$u_close" = 0 ] || u_text="$u_text, $u_close of them close to $u_names (misspelled?)"
+  echo "handoff.sh: note: $u_text. It uses: ${KNOWN_FIELDS// /, }. If one is misspelled, fix it and run again: an ignored field never reaches the agent" >&2
 fi
 
 # --- encrypt (no plaintext ever touches disk) -------------------------

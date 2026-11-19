@@ -1839,6 +1839,44 @@ else
     bash "$S/hn/handoff.sh" --to Muse --fingerprint
 fi
 rm -f "$S/hn/handoff-muse.age"
+# The case and the separator both differ, for a NAME given with --to: the
+# rename keeps the file's own NAME and --to names it, so a run with no --to
+# still finds it (issue #27 item 2). With no --to, the rename is to the default.
+cp handoff-test.age "$S/hn/handoff_muse.age"
+expect_refusal "handoff.sh --to Muse with handoff_muse.age beside it" 1 "but handoff_muse.age does. If that file is the agent's current recipient, rename it to handoff-muse.age and run with --to muse (names are case-sensitive)" \
+  bash "$S/hn/handoff.sh" --to Muse --fingerprint
+rm -f "$S/hn/handoff_muse.age"
+# --to naming the default gets the rename to the default name, as no --to does.
+cp handoff-test.age "$S/hn/handoff_Muse.age"
+expect_refusal "handoff.sh --to muse with handoff_Muse.age beside it" 1 "but handoff_Muse.age does. If that file is the agent's current recipient, rename it to handoff-muse.age, then compare --fingerprint" \
+  bash "$S/hn/handoff.sh" --to muse --fingerprint
+rm -f "$S/hn/handoff_Muse.age"
+# A look-alike that a UTF-8 locale folds to ASCII (U+212A KELVIN SIGN lowers
+# to k) isn't a near miss: it would show as handoff-Kim.age (issue #27 item 1).
+# The first of these names that this system takes as a UTF-8 locale (asked of
+# the locale itself: locale -a's list didn't match on macOS's runner).
+utf8_loc=
+for l in C.UTF-8 en_US.UTF-8 C.utf8 en_US.utf8; do
+  if [ "$(LC_ALL=$l locale charmap 2>/dev/null)" = UTF-8 ]; then utf8_loc=$l; break; fi
+done
+if [ -n "$utf8_loc" ]; then
+  kelvin="handoff-"$'\xe2\x84\xaa'"im.age"
+  cp handoff-test.age "$S/hn/$kelvin"
+  if [ -e "$S/hn/handoff-Kim.age" ]; then
+    # A file system that normalizes and folds names (macOS's APFS): the
+    # look-alike is handoff-Kim.age itself there, so --to Kim opens it.
+    out=$(env LC_ALL="$utf8_loc" bash "$S/hn/handoff.sh" --to Kim --fingerprint 2>"$S/err") \
+      || { cat "$S/err" >&2; fail "--to Kim on a name-folding file system was refused"; }
+    [ "$out" = "recipient: $(cat handoff-test.age)" ] || fail "--to Kim on a name-folding file system: $out"
+    echo "ok (--to Kim opens the KELVIN SIGN name here: a file system that folds names)"
+  else
+    expect_refusal "handoff.sh --to Kim with a KELVIN SIGN look-alike beside it" 1 "handoff-Kim.age doesn't exist. Save the agent's recipient there" \
+      env LC_ALL="$utf8_loc" bash "$S/hn/handoff.sh" --to Kim --fingerprint
+  fi
+  rm -f "$S/hn/$kelvin"
+else
+  echo "skip: no UTF-8 locale, the KELVIN SIGN near-miss check not tested"
+fi
 # With the allow-list, a near-miss name can only be a case or separator
 # variant of handoff-NAME.age: a newline in place of the - isn't offered.
 nl_name=$'handoff\nmuse.age'
@@ -1904,6 +1942,26 @@ expect_refusal "handoff.sh recipient file that is a dangling symlink" 1 "handoff
 ln -s handoff-loop.age "$K/handoff-loop.age"
 expect_refusal "handoff.sh recipient file that is a symlink loop" 1 "handoff-loop.age is a symlink that doesn't resolve to a file" \
   bash "$K/handoff.sh" --to loop --fingerprint
+# A symlink that resolves to a valid recipient file is refused too: whoever
+# can repoint it changes the recipient (issue #27, the maintainer's call).
+ln -s "$PWD/handoff-test.age" "$K/handoff-linked.age"
+expect_refusal "handoff.sh recipient file that is a symlink to a valid one" 1 "handoff-linked.age is a symlink: remove the link itself (rm, which leaves its target alone), then save the agent's recipient there as a plain file" \
+  bash "$K/handoff.sh" --to linked --fingerprint
+expect_refusal "handoff.sh encrypting to a recipient file that is a symlink" 1 "handoff-linked.age is a symlink" \
+  bash "$K/handoff.sh" --to linked <<<"$pay"
+env -i PATH="$PATH" bash "$K/handoff.sh" --to linked --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed a symlinked recipient file"
+grep -q '^FAIL recipient: .*handoff-linked.age is a symlink' "$S/out" || fail "--check-setup didn't fail a symlinked recipient file: $(grep recipient "$S/out")"
+echo "ok (refused: a symlinked recipient file, in --check-setup too)"
+# A directory with a bidi override in its name: the key file line quotes the
+# path in C, so the override shows as an escape, never raw (in a UTF-8 locale
+# printf %q alone leaves it).
+if [ -n "${utf8_loc-}" ]; then
+  bd="$S/u"$'\xe2\x80\xae'"x"; mkdir -p "$bd"; cp ../handoff.sh "$bd/handoff.sh"; cp handoff-test.age "$bd/handoff-muse.age"
+  env LC_ALL="$utf8_loc" bash "$bd/handoff.sh" --fingerprint >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "handoff.sh in a directory with a bidi override failed"; }
+  ! LC_ALL=C grep -q $'\xe2\x80\xae' "$S/err" || fail "handoff.sh printed a raw bidi override: $(cat -v "$S/err")"
+  grep -qF 'key file: $' "$S/err" || fail "handoff.sh's key file line isn't C-quoted: $(cat -v "$S/err")"
+  echo "ok (a bidi override in the script's directory shows escaped)"
+fi
 # Run through a symlink, it reads the recipient beside the link, not the target.
 mkdir -p "$S/hl"; ln -s "$K/handoff.sh" "$S/hl/handoff.sh"
 expect_refusal "handoff.sh through a symlink, recipient only beside the target" 1 "$S/hl/handoff-other.age doesn't exist" \
@@ -2020,7 +2078,14 @@ while time.time() < end:
         out += chunk
     if not sent and b"Paste or type" in out:
         time.sleep(0.3)  # let stty -echo take effect
-        os.write(fd, data + b"\n")
+        os.write(fd, data)
+        # macOS drops every byte past 1023 in a line (MAX_INPUT), Enter and
+        # Ctrl-D too: a Backspace (VERASE, still handled) frees one place,
+        # so the Enter after it ends the line, as a user would have to.
+        if sys.platform == "darwin" and len(data) > 1000:
+            time.sleep(0.2)
+            os.write(fd, b"\x7f")
+        os.write(fd, b"\n")
         time.sleep(0.2)
         os.write(fd, b"\x04")
         sent = True
@@ -2040,6 +2105,170 @@ case "$out" in
 esac
 ! printf '%s' "$out" | grep -q -e '--- end ---' || fail "a raw NUL typed at the terminal: a blob was printed"
 echo "ok (refused: a raw NUL typed at the terminal)"
+# A line over the terminal's line cap (4095 bytes on Linux; on macOS 1023,
+# past which every byte is dropped, so pty_type deletes one first) typed or
+# pasted at the prompt is cut: refused, with the hint to use a FILE or a pipe
+# (issue #64). The prompt says the limit before anything is typed. The same
+# payload as FILE is accepted.
+python3 -I -c 'print("{\"svc\":\"example\",\"password\":\"" + "a" * 4970 + "\"}", end="")' >"$S/pty-long.json"
+out=$(pty_type "$S/pty-long.json" "$BASH_BIN" "$S/hd/handoff.sh")
+[ "${out%%$'\n'*}" = 1 ] || fail "a 5,000-byte line at the terminal: exit ${out%%$'\n'*}, expected 1: ${out:0:300}"
+case "$out" in
+  *"one line can hold about 4 KB, 1 KB on macOS: for a longer one"*) ;;
+  *) fail "the prompt doesn't say the terminal's line limit: ${out:0:300}" ;;
+esac
+case "$out" in
+  *"a line reached the terminal's line limit (about 4 KB, 1 KB on macOS), so it may have been cut: for a long payload, use a pipe (or a FILE)"*) ;;
+  *) fail "a 5,000-byte line at the terminal: no hint about the terminal's line cap: ${out:0:300}" ;;
+esac
+bash "$S/hd/handoff.sh" "$S/pty-long.json" </dev/null >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "the 5,000-byte payload as FILE was refused"; }
+echo "ok (refused, with the line-cap hint: a 5,000-byte line at the terminal; accepted as FILE)"
+# A paste over the read cap at the prompt: refused on size, and the rest of
+# the paste is read to the Ctrl-D and dropped, so the shell that runs next
+# reads only what was typed after it (a sentinel line), never payload text.
+python3 -I - "$BASH_BIN" "$S/hd/handoff.sh" >"$S/pty-drain" <<'PY'
+import os, pty, select, sys, time
+bash, script = sys.argv[1], sys.argv[2]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(bash, [bash, "-c", 'bash "$1"; echo "RC=$?"; IFS= read -r line; echo "AFTER=[$line]"', "_", script])
+paste = (b"x" * 99 + b"\n") * 600   # 60,000 bytes, over the cap, in short lines
+out, sent, end = b"", 0, time.time() + 30
+def pump(t):
+    global out
+    r, _, _ = select.select([fd], [], [], t)
+    if r:
+        try:
+            out += os.read(fd, 65536)
+        except OSError:
+            return False
+    return True
+while time.time() < end and b"Paste or type" not in out:
+    pump(0.2)
+time.sleep(0.3)
+while sent < len(paste) and time.time() < end:
+    _, w, _ = select.select([], [fd], [], 0.1)
+    if w:
+        sent += os.write(fd, paste[sent:sent + 1024])
+    pump(0)
+time.sleep(0.3)
+os.write(fd, b"\x04")
+while time.time() < end and b"RC=" not in out:
+    pump(0.2)
+time.sleep(0.3)
+os.write(fd, b"LEFTOVER-SENTINEL\n")
+while time.time() < end and b"AFTER=" not in out:
+    if not pump(0.2):
+        break
+try:
+    os.kill(pid, 9)
+except ProcessLookupError:
+    pass
+os.waitpid(pid, 0)
+sys.stdout.write(out.decode("utf-8", "replace"))
+PY
+grep -q 'RC=1' "$S/pty-drain" || fail "a paste over the cap at the terminal: no exit 1: $(tail -c 300 "$S/pty-drain")"
+grep -q "the most handoff.sh sends is" "$S/pty-drain" || fail "a paste over the cap at the terminal: no size refusal: $(tail -c 300 "$S/pty-drain")"
+grep -q 'AFTER=\[LEFTOVER-SENTINEL\]' "$S/pty-drain" || fail "a paste over the cap at the terminal: the shell read leftover input: $(grep -a 'AFTER=' "$S/pty-drain" | cut -c1-80)"
+echo "ok (a paste over the cap at the terminal: refused, and none of it left for the shell)"
+# One raw NUL beside the { is a control byte, not UTF-16: the JSON message.
+printf '{\000"svc":"example","password":"mk-Zq9"}' >"$S/nul-lead.json"
+expect_refusal "handoff.sh a raw NUL right after {" 1 "must be a single JSON object" bash "$S/hd/handoff.sh" "$S/nul-lead.json"
+! grep -q "UTF-16" "$S/err" || fail "a raw NUL after { was called UTF-16"
+# A bidi override in --to or an unknown option is shown escaped (qp in C).
+if [ -n "${utf8_loc-}" ]; then
+  expect_refusal "handoff.sh --to with a bidi override" 2 "--to NAME takes only letters" \
+    env LC_ALL="$utf8_loc" bash "$S/hd/handoff.sh" --to "a"$'\xe2\x80\xae'"b" --fingerprint
+  ! LC_ALL=C grep -q $'\xe2\x80\xae' "$S/err" || fail "a bidi override in --to was printed raw"
+  expect_refusal "handoff.sh an unknown option with a bidi override" 2 "unknown option" \
+    env LC_ALL="$utf8_loc" bash "$S/hd/handoff.sh" "--x"$'\xe2\x80\xae'"y"
+  ! LC_ALL=C grep -q $'\xe2\x80\xae' "$S/err" || fail "a bidi override in an unknown option was printed raw"
+fi
+# The hint is for a long line at the terminal only: the same refusal from a
+# pipe has none, and nor does a short line typed at the prompt.
+expect_refusal "handoff.sh not JSON, piped" 1 "must be a single JSON object" bash "$S/hd/handoff.sh" <<<'not json'
+! grep -q "the terminal's line limit" "$S/err" || fail "a piped refusal gave the terminal's line-cap hint"
+printf '{"svc":"x" "password":"p"}' >"$S/pty-short.json"
+out=$(pty_type "$S/pty-short.json" "$BASH_BIN" "$S/hd/handoff.sh")
+case "$out" in *"must be a single JSON object"*) ;; *) fail "a short bad line at the terminal: no JSON refusal: $out" ;; esac
+case "$out" in *"the terminal's line limit"*) fail "a short bad line at the terminal gave the line-cap hint" ;; esac
+# Off macOS, a 2,000-byte line with an unrelated JSON error (a trailing
+# comma) wasn't cut by the terminal (4,095 bytes there): no hint either.
+if [ "$(uname -s)" != Darwin ]; then
+  python3 -I -c 'print("{\"svc\":\"x\",\"password\":\"" + "a" * 1960 + "\",}", end="")' >"$S/pty-2k.json"
+  out=$(pty_type "$S/pty-2k.json" "$BASH_BIN" "$S/hd/handoff.sh")
+  case "$out" in *"must be a single JSON object"*) ;; *) fail "a 2,000-byte bad line at the terminal: no JSON refusal: ${out:0:300}" ;; esac
+  case "$out" in *"the terminal's line limit"*) fail "a 2,000-byte bad line at the terminal gave the line-cap hint off macOS" ;; esac
+fi
+echo "ok (no line-cap hint: a piped refusal, a short line at the terminal, a 2,000-byte one off macOS)"
+# A payload with only known fields gets no note.
+bash "$S/hd/handoff.sh" <<<'{"svc":"example","username":"u","password":"mk-Zq9"}' >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "a known-fields payload was refused"; }
+! grep -q "note:" "$S/err" || fail "a payload with only known fields got a note: $(cat "$S/err")"
+echo "ok (no note: a payload with only known fields)"
+# The note never prints the payload's text: a password typed in a name's
+# place, two edits from "password", is named only as "close to password"
+# (QA r1 on #81). Common passwords, each within two edits of "password".
+for pw in 'P@ssw0rd' 'Passw0rd!' 'Password1' 'passw0rd'; do
+  printf '{"svc":"example","username":"me","%s":"password"}' "$pw" | bash "$S/hd/handoff.sh" >/dev/null 2>"$S/err" \
+    || { cat "$S/err" >&2; fail "a swapped field was refused"; }
+  grep -qF 'close to "password"' "$S/err" || fail "a swapped field didn't get the note: $(cat "$S/err")"
+  ! grep -qF -- "$pw" "$S/err" || fail "the note printed a password typed as a field name ($pw)"
+done
+echo "ok (the unknown-field note prints no payload text: four common passwords typed as names)"
+# A UTF-16 file with a byte-order mark, little- and big-endian: handoff.sh
+# reads UTF-8 only, and says so (handoff.ps1 reads one, so this isn't in the
+# shared table; issue #44).
+for enc in utf-16-le utf-16-be; do
+  python3 -I -c 'import sys; e = sys.argv[1]; sys.stdout.buffer.write("\ufeff{\"svc\":\"example\",\"password\":\"mk-Zq9\"}".encode(e))' "$enc" >"$S/u16bom.json"
+  expect_refusal "handoff.sh UTF-16 payload with a byte-order mark ($enc)" 1 "the payload is saved as UTF-16: save it as UTF-8" \
+    bash "$S/hd/handoff.sh" "$S/u16bom.json"
+done
+# A directory as FILE gets its own message, not tr's or head's (#65 F18).
+expect_refusal "handoff.sh a directory as FILE" 1 "is a directory, not a payload file" \
+  bash "$S/hd/handoff.sh" "$S"
+! grep -q -e 'tr:' -e 'head:' "$S/err" || fail "a directory as FILE leaked a tool's error: $(cat "$S/err")"
+# The read is bounded (#65 F12): an endless FILE or pipe, or a large one,
+# ends at once with the size refusal, before the pattern work, whose time
+# grows with the square of the input (unbounded, 1 MB of spaces took 21 s on
+# one machine and over 2 minutes under bash 5.3 on another).
+# (Read here, not from section 3b, so section 5b runs alone too.)
+cap5b=$(sed -n 's/^MAX_PAYLOAD=\([0-9]*\).*/\1/p' ../handoff.sh)
+[ -n "$cap5b" ] || fail "test setup: MAX_PAYLOAD not found in handoff.sh"
+if [ -e /dev/zero ]; then
+  t0=$SECONDS
+  expect_refusal "handoff.sh /dev/zero as FILE" 1 "the most handoff.sh sends is $cap5b bytes" \
+    run_to_n 20 bash "$S/hd/handoff.sh" /dev/zero
+  # shellcheck disable=SC2016  # $1 is the inner shell's argument
+  expect_refusal "handoff.sh /dev/zero piped" 1 "the most handoff.sh sends is $cap5b bytes" \
+    run_to_n 20 bash -c 'bash "$1" </dev/zero' _ "$S/hd/handoff.sh"
+  head -c 4000000 /dev/zero | LC_ALL=C tr '\000' ' ' >"$S/spaces.json"
+  expect_refusal "handoff.sh 4 MB of spaces" 1 "the most handoff.sh sends is $cap5b bytes" \
+    run_to_n 20 bash "$S/hd/handoff.sh" "$S/spaces.json"
+  [ $((SECONDS - t0)) -lt 15 ] || fail "the bounded reads took $((SECONDS - t0)) s"
+  rm -f "$S/spaces.json"
+  echo "ok (bounded: /dev/zero as FILE and piped, 4 MB of spaces)"
+fi
+# A payload at the cap with a byte-order mark and trailing line feeds: what's
+# dropped before the count fits in the read's margin, so it's accepted.
+{ printf '\xef\xbb\xbf'
+  python3 -I -c 'import json, sys; n = int(sys.argv[1]); head = json.dumps({"svc": "example", "private_key": ""}, separators=(",", ":")); sys.stdout.write(head[:-2] + "y" * (n - len(head)) + head[-2:])' "$cap5b"
+  printf '\n\n\n'; } >"$S/max-bom.json"
+[ "$(( $(wc -c <"$S/max-bom.json") ))" = "$(( cap5b + 6 ))" ] || fail "test setup: the at-cap payload with a mark is $(( $(wc -c <"$S/max-bom.json") )) bytes"
+bash "$S/hd/handoff.sh" "$S/max-bom.json" </dev/null >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "a payload at the cap with a byte-order mark and line feeds was refused"; }
+echo "ok (accepted: a payload at the cap with a byte-order mark and trailing line feeds)"
+# No core file (#65 F14): age, run by handoff.sh, inherits a core limit of 0.
+# Raised first where the hard limit allows, so the test can tell.
+mkdir -p "$S/corecheck"; real_age=$(command -v "$AGE")
+printf '#!/bin/sh\nulimit -c >"%s/limit"\nexec %s "$@"\n' "$S/corecheck" "$real_age" >"$S/corecheck/age"; chmod 755 "$S/corecheck/age"
+if bash -c 'ulimit -c 1024' 2>/dev/null; then
+  rm -f "$S/corecheck/limit"
+  bash -c 'ulimit -c 1024; exec env PATH="$1:$PATH" bash "$2" --fingerprint' _ "$S/corecheck" "$S/hd/handoff.sh" >/dev/null 2>"$S/err" \
+    || { cat "$S/err" >&2; fail "handoff.sh with a stub age failed"; }
+  [ "$(cat "$S/corecheck/limit" 2>/dev/null)" = 0 ] || fail "handoff.sh left the core limit at $(cat "$S/corecheck/limit" 2>/dev/null)"
+  echo "ok (core files off: age ran with ulimit -c 0)"
+else
+  echo "skip: the hard core limit here is 0, the core-file check not tested"
+fi
 # The tools, refused before any prompt. jq: absent, then too old, then 1.6 (the
 # floor, accepted). age: absent. Each runs under a pseudo-terminal when script(1)
 # is there, where a prompt would show; the refusal must come first.

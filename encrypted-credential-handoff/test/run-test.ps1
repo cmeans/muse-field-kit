@@ -92,7 +92,24 @@ function Invoke-Proc {
       if ($null -eq $EnvSet[$k]) { $psi.EnvironmentVariables.Remove($k) } else { $psi.EnvironmentVariables[$k] = [string]$EnvSet[$k] }
     }
   }
-  $p = [System.Diagnostics.Process]::Start($psi)
+  # On .NET Framework (Windows PowerShell 5.1), Start() wraps stdin in a
+  # writer in Console.InputEncoding, and under code page 65001 (GitHub's
+  # Windows runners) that writer writes a UTF-8 byte-order mark first: the
+  # child would get EF BB BF before STDIN's bytes (77 bytes for a 74-byte
+  # UTF-16 payload, CI run 44438815773). So around Start(), an encoding
+  # without a preamble, as handoff.ps1's own Invoke-Age does.
+  $savedIn = $null
+  if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    try {
+      if ([Console]::InputEncoding.GetPreamble().Length -gt 0) {
+        $savedIn = [Console]::InputEncoding
+        [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false
+      }
+    } catch { $savedIn = $null }
+  }
+  try { $p = [System.Diagnostics.Process]::Start($psi) } finally {
+    if ($null -ne $savedIn) { try { [Console]::InputEncoding = $savedIn } catch { } }
+  }
   $outMs = New-Object System.IO.MemoryStream
   $errMs = New-Object System.IO.MemoryStream
   $t1 = $p.StandardOutput.BaseStream.CopyToAsync($outMs)
@@ -250,6 +267,12 @@ foreach ($pair in @(@('MAX_PAYLOAD', '(?m)^MAX_PAYLOAD=(\d+)', '(?m)^[ ]*\$MAX_P
   if (-not $a.Success -or -not $b2.Success) { Fail "test setup: $($pair[0]) not found in handoff.sh or handoff.ps1" }
   if ($a.Groups[1].Value -ne $b2.Groups[1].Value) { Fail "$($pair[0]): handoff.ps1 has $($b2.Groups[1].Value), handoff.sh $($a.Groups[1].Value)" }
 }
+# The read cap's margin over MAX_PAYLOAD.
+$shCap = [regex]::Match($sh, '(?m)^READ_CAP=\$\(\(MAX_PAYLOAD \+ (\d+)\)\)')
+$psCap = [regex]::Match($ps, '(?m)^[ ]*\$READ_CAP = \$MAX_PAYLOAD \+ (\d+)')
+if (-not $shCap.Success -or -not $psCap.Success) { Fail 'test setup: READ_CAP not found in handoff.sh or handoff.ps1' }
+if ($shCap.Groups[1].Value -ne $psCap.Groups[1].Value) { Fail "READ_CAP's margin: handoff.ps1 has $($psCap.Groups[1].Value), handoff.sh $($shCap.Groups[1].Value)" }
+$ReadCap = [int]([regex]::Match($sh, '(?m)^MAX_PAYLOAD=(\d+)').Groups[1].Value) + [int]$shCap.Groups[1].Value
 $shKnown = [regex]::Match($sh, "(?m)^KNOWN_FIELDS='([a-z_ ]+)'$")
 $psKnown = [regex]::Match($ps, "(?m)^[ ]*\`$KNOWN_FIELDS = '([a-z_ ]+)'$")
 if (-not $shKnown.Success -or -not $psKnown.Success) { Fail 'test setup: KNOWN_FIELDS not found in handoff.sh or handoff.ps1' }
@@ -392,6 +415,20 @@ if ($caseFs) {
   Assert-Refusal '-To Muse with handoff-muse.age beside it' 1 'but handoff-muse.age does. Names are case-sensitive: did you mean -To muse?' $r
 }
 Clear-HN
+# The case and the separator both differ, for a NAME given with -To: the
+# rename keeps the file's own NAME and -To names it (issue #27 item 2).
+Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir 'handoff_muse.age')
+Assert-Refusal '-To Muse with handoff_muse.age beside it' 1 "but handoff_muse.age does. If that file is the agent's current recipient, rename it to handoff-muse.age and run with -To muse (names are case-sensitive)" (Invoke-Handoff -Script $hn -ArgText '-To Muse -Fingerprint')
+Clear-HN
+# -To naming the default gets the rename to the default name, as no -To does.
+Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir 'handoff_Muse.age')
+Assert-Refusal '-To muse with handoff_Muse.age beside it' 1 "but handoff_Muse.age does. If that file is the agent's current recipient, rename it to handoff-muse.age, then compare -Fingerprint" (Invoke-Handoff -Script $hn -ArgText '-To muse -Fingerprint')
+Clear-HN
+# A look-alike that a case-blind match folds to ASCII (U+212A KELVIN SIGN to
+# k) isn't a near miss (issue #27 item 1).
+Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir ('handoff-' + [char]0x212A + 'im.age'))
+Assert-Refusal '-To Kim with a KELVIN SIGN look-alike beside it' 1 "handoff-Kim.age doesn't exist. Save the agent's recipient there" (Invoke-Handoff -Script $hn -ArgText '-To Kim -Fingerprint')
+Clear-HN
 if (-not $OnWindows) {
   Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $NearDir "handoff`nmuse.age")
   Assert-Refusal 'a newline in place of the -' 1 "handoff-muse.age doesn't exist. Save the agent's recipient there" (Invoke-Handoff -Script $hn -ArgText '-Fingerprint')
@@ -416,9 +453,13 @@ New-Link (Join-Path $K 'handoff-dangling.age') (Join-Path $K 'nowhere.age')
 Assert-Refusal 'a dangling link' 1 "handoff-dangling.age is a symlink that doesn't resolve to a file" (Invoke-Handoff -Script $hk -ArgText '-To dangling -Fingerprint')
 New-Link (Join-Path $K 'handoff-loop.age') (Join-Path $K 'handoff-loop.age')
 Assert-Refusal 'a link loop' 1 "handoff-loop.age is a symlink that doesn't resolve to a file" (Invoke-Handoff -Script $hk -ArgText '-To loop -Fingerprint')
+# A link that resolves to a valid recipient file is refused too, as in
+# handoff.sh: whoever can repoint it changes the recipient (issue #27).
 New-Link (Join-Path $K 'handoff-linked.age') $RcptFile
-$r = Invoke-Handoff -Script $hk -ArgText '-To linked -Fingerprint'
-Assert-True ($r.Exit -eq 0 -and $r.Out.TrimEnd("`r", "`n") -ceq $Want) "a link to a recipient file was refused: $($r.Err)"
+Assert-Refusal 'a link to a valid recipient file' 1 "handoff-linked.age is a symlink: remove the link itself (Remove-Item, which leaves its target alone), then save the agent's recipient there as a plain file" (Invoke-Handoff -Script $hk -ArgText '-To linked -Fingerprint')
+Assert-Refusal 'encrypting to a linked recipient file' 1 'handoff-linked.age is a symlink' (Invoke-Handoff -Script $hk -ArgText '-To linked' -Pipe $PayFile)
+$r = Invoke-Handoff -Script $hk -ArgText '-To linked -CheckSetup'
+Assert-True ($r.Exit -eq 1 -and $r.Out -cmatch '(?m)^FAIL recipient: .*handoff-linked\.age is a symlink') "-CheckSetup didn't fail a linked recipient file: $($r.Out)"
 Say 'ok (links and directories)'
 
 # The shared table: the recipient-file cases that are a file's contents.
@@ -449,6 +490,30 @@ foreach ($c in $cases) {
 Say '== 5b-ps. the payload: checks, cap, -File and pipeline input =='
 Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $K 'handoff-muse.age')
 $jsonMsg = 'input must be a single JSON object with a string "svc" and string values only, aborting'
+# The stdin cases get exactly the bytes they send: a script with
+# handoff.ps1's param block, handed a UTF-16 file's bytes the way the payload
+# table's stdin cases are, reads them from stdin, all of them and nothing
+# more. (Windows PowerShell 5.1 under code page 65001 put a UTF-8 byte-order
+# mark in front, 77 bytes for 74, until Invoke-Proc guarded Start().)
+$probe = Join-Path $S 'stdin-probe.ps1'
+[IO.File]::WriteAllText($probe, @'
+[CmdletBinding(PositionalBinding = $false)]
+param([Parameter(ValueFromPipeline = $true)][AllowNull()][AllowEmptyString()][string]$InputObject)
+begin { $got = New-Object System.Collections.Generic.List[string] }
+process { if ($PSBoundParameters.ContainsKey('InputObject') -and $null -ne $InputObject) { $got.Add($InputObject) } }
+end {
+  $text = [string]::Join("`n", $got.ToArray())
+  $codes = (@($text.ToCharArray() | Select-Object -First 8 | ForEach-Object { '{0:x}' -f [int]$_ })) -join ' '
+  $n = -1
+  if ([Console]::IsInputRedirected) { $ms = New-Object IO.MemoryStream; $in = [Console]::OpenStandardInput(); $in.CopyTo($ms); $in.Dispose(); $n = $ms.Length }
+  [Console]::Out.WriteLine("redirected=$([Console]::IsInputRedirected) expecting=$($MyInvocation.ExpectingInput) piped=$($got.Count) chars=$($text.Length) first=[$codes] stdinbytes=$n")
+}
+'@, (New-Object System.Text.UTF8Encoding $true))
+$u16probe = (New-Object System.Text.UnicodeEncoding $false, $false).GetBytes('{"svc":"example","password":"mk-Zq9"}')
+$pr = Invoke-Handoff -Script $probe -Stdin $u16probe
+Say "stdin route ($($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)): $($pr.Out.Trim())"
+Assert-True ($pr.Out -match "redirected=True .* stdinbytes=$($u16probe.Length)\b") "the stdin cases don't get exactly their bytes: sent $($u16probe.Length), got: $($pr.Out.Trim()) $($pr.Err.Trim())"
+Say 'ok (the stdin cases get exactly their bytes)'
 # The payload shapes, one table shared with run-test.sh (payload-cases.json):
 # {name, payload or payload_base64 (bytes that aren't text), exit,
 # stderr_contains}. A text case runs piped in and with -File; a bytes case
@@ -493,10 +558,77 @@ foreach ($c in $pcases) {
 Assert-Refusal 'payload: a raw lone surrogate in a piped string' 1 $jsonMsg (Invoke-Handoff -Call "('{`"svc`":`"example`",`"password`":`"mk-Zq9' + [char]0xD800 + '`"}') | & $(Q $hk)")
 # Nothing piped and nothing on stdin: empty.
 Assert-Refusal 'an empty pipeline' 1 'empty, aborting' (Invoke-Handoff -Call "@() | & $(Q $hk)")
+# An empty pipeline is refused even with a payload waiting on the process's
+# stdin (a wrapper's, ssh's): that input isn't the user's, and isn't read.
+$emptyFile = Join-Path $S 'empty.json'
+[IO.File]::WriteAllText($emptyFile, '')
+Assert-Refusal 'an empty pipeline with a payload on stdin' 1 'empty, aborting' (Invoke-Handoff -Call "@() | & $(Q $hk)" -Stdin $Utf8.GetBytes($Pay))
+Assert-Refusal 'an empty Get-Content with a payload on stdin' 1 'empty, aborting' (Invoke-Handoff -Call "Get-Content -LiteralPath $(Q $emptyFile) | & $(Q $hk)" -Stdin $Utf8.GetBytes($Pay))
 Assert-Refusal 'no input at all' 1 'empty, aborting' (Invoke-Handoff -Script $hk)
 Assert-Refusal '-File that is not there' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File $(Q (Join-Path $S 'nothere.json'))")
 Assert-Refusal '-File with an empty path' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File ''")
-Assert-Refusal '-File that is a folder' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $S)")
+Assert-Refusal '-File that is a folder' 1 'is a directory, not a payload file' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $S)")
+# One raw NUL beside the { is a control character, not UTF-16.
+$nulLead = Join-Path $S 'nul-lead.json'
+[IO.File]::WriteAllBytes($nulLead, [byte[]](@(0x7B, 0x00) + [Text.Encoding]::ASCII.GetBytes('"svc":"example","password":"mk-Zq9"}')))
+$r = Invoke-Handoff -Script $hk -ArgText "-File $(Q $nulLead)"
+Assert-Refusal 'a raw NUL right after {' 1 $jsonMsg $r
+Assert-True (-not $r.Err.Contains('UTF-16')) 'a raw NUL after { was called UTF-16'
+Remove-Item -LiteralPath $nulLead
+# Run directly with -File and the payload on stdin (powershell -File
+# handoff.ps1 < payload.json, as from cmd): read as bytes
+# and encrypted. Windows PowerShell 5.1 used to read it as an empty pipeline.
+$direct = Invoke-Proc -Exe $PSExe -Argv (@('-NoProfile', '-NonInteractive') + $(if ($OnWindows) { @('-ExecutionPolicy', 'Bypass') } else { @() }) + @('-File', $hk)) -Stdin $Utf8.GetBytes($Pay)
+[void](Assert-Blob 'powershell -File handoff.ps1 with the payload on stdin' $direct)
+Say 'ok (accepted: powershell -File handoff.ps1 with the payload on stdin)'
+# Piped text with one leading byte-order mark: the mark is dropped, as for
+# bytes, and the payload is accepted; with two, the "second mark" hint.
+[void](Assert-Blob 'one leading U+FEFF, piped' (Invoke-Handoff -Call "(([string][char]0xFEFF) + '{`"svc`":`"example`",`"password`":`"mk-Zq9`"}') | & $(Q $hk)"))
+$r = Invoke-Handoff -Call "(([string][char]0xFEFF) + ([string][char]0xFEFF) + '{`"svc`":`"example`",`"password`":`"mk-Zq9`"}') | & $(Q $hk)"
+Assert-Refusal 'two leading U+FEFF, piped' 1 'a second byte-order mark' $r
+# A payload with only known fields gets no note.
+$r = Invoke-Handoff -Script $hk -Pipe $PayFile
+[void](Assert-Blob 'a payload with only known fields' $r)
+Assert-True (-not $r.Err.Contains('note:')) "a payload with only known fields got a note: $($r.Err)"
+# The note never prints the payload's text (handoff.sh's twin check).
+$swapFile = Join-Path $S 'swap.json'
+foreach ($pw in @('P@ssw0rd', 'Passw0rd!', 'Password1', 'passw0rd')) {
+  [IO.File]::WriteAllText($swapFile, '{"svc":"example","username":"me","' + $pw + '":"password"}', $Utf8)
+  $r = Invoke-Handoff -Script $hk -Pipe $swapFile
+  [void](Assert-Blob "a swapped field ($pw)" $r)
+  Assert-True ($r.Err.Contains('close to "password"')) "a swapped field didn't get the note: $($r.Err)"
+  Assert-True (-not $r.Err.Contains($pw)) "the note printed a password typed as a field name ($pw)"
+}
+Say 'ok (the unknown-field note prints no payload text: four common passwords typed as names)'
+# The read is bounded (#65 F12): a large file, stdin's bytes or a pipeline
+# ends at the cap with the size refusal, before the JSON check.
+$spaces = Join-Path $S 'spaces.json'
+[IO.File]::WriteAllBytes($spaces, [Text.Encoding]::ASCII.GetBytes(' ' * 4000000))
+$t0 = [DateTime]::UtcNow
+Assert-Refusal '-File of 4 MB of spaces' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $spaces)")
+Assert-Refusal 'stdin of 4 MB of spaces' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -Stdin ([IO.File]::ReadAllBytes($spaces)))
+Assert-Refusal 'a pipeline of 4 MB of spaces' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -Pipe $spaces)
+if (-not $OnWindows -and (Test-Path -LiteralPath '/dev/zero')) {
+  Assert-Refusal '-File /dev/zero' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -ArgText "-File '/dev/zero'")
+}
+Assert-True (([DateTime]::UtcNow - $t0).TotalSeconds -lt 120) "the bounded reads took $(([DateTime]::UtcNow - $t0).TotalSeconds) s"
+Remove-Item -LiteralPath $spaces
+# A UTF-16 payload with a byte-order mark is read as UTF-16 (handoff.sh
+# refuses it; only handoff.ps1 reads it).
+$u16 = Join-Path $S 'u16bom.json'
+[IO.File]::WriteAllText($u16, '{"svc":"example","password":"mk-Zq9"}', (New-Object System.Text.UnicodeEncoding $false, $true))
+[void](Assert-Blob 'a UTF-16 payload with a byte-order mark (-File)' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $u16)"))
+# One whose UTF-16 bytes are over the read cap but whose UTF-8 size is under
+# MAX_PAYLOAD is still read whole: the cap for UTF-16 is twice the bytes.
+$long = '{"svc":"example","password":"mk-Zq9' + ('a' * 30000) + '"}'
+[IO.File]::WriteAllText($u16, $long, (New-Object System.Text.UnicodeEncoding $false, $true))
+Assert-True ((Get-Item -LiteralPath $u16).Length -gt $ReadCap) 'test setup: the long UTF-16 payload is not over the read cap in bytes'
+[void](Assert-Blob 'a 30,000-character UTF-16 payload with a byte-order mark (-File)' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $u16)"))
+[void](Assert-Blob 'a 30,000-character UTF-16 payload with a byte-order mark (stdin)' (Invoke-Handoff -Script $hk -Stdin ([IO.File]::ReadAllBytes($u16))))
+# And past twice the cap, it's refused on size.
+[IO.File]::WriteAllText($u16, '{"svc":"example","password":"mk-Zq9' + ('a' * 60000) + '"}', (New-Object System.Text.UnicodeEncoding $false, $true))
+Assert-Refusal 'a 60,000-character UTF-16 payload' 1 'the most handoff.ps1 sends is 48696 bytes' (Invoke-Handoff -Script $hk -ArgText "-File $(Q $u16)")
+Remove-Item -LiteralPath $u16
 
 # Run in the caller's own session (& .\handoff.ps1 in-process), handoff.ps1
 # leaves the caller's $Error as it found it: nothing a run records (an input

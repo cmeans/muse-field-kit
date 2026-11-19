@@ -52,7 +52,9 @@ The fields `consume.py` knows, and the environment variable each goes into unles
 | `private_key` | `SERVICE_PRIVATE_KEY` (a PEM or similar multi-line secret, byte for byte) |
 | `app_id`, `installation_id` | `SERVICE_APP_ID`, `SERVICE_INSTALLATION_ID` (a GitHub App's, beside its `private_key`) |
 
-Every field stands alone; a payload carries the ones its tool needs. A field `consume.py` doesn't know is counted on stderr and injected nowhere, and a payload with no known field is refused, by `handoff.sh` and `handoff.ps1` before it is encrypted and by `consume.py`.
+Every field stands alone; a payload carries the ones its tool needs. A field `consume.py` doesn't know is counted on stderr and injected nowhere, and `handoff.sh` and `handoff.ps1` count them before encrypting, and name the known field a likely misspelling is close to (`note: consume.py ignores 1 field(s) it doesn't know, 1 of them close to "username" (misspelled?)`), so a misspelling shows before the blob is sent. Neither prints the payload's own names: a value typed in a name's place could be a secret. A payload with no known field is refused, by `handoff.sh` and `handoff.ps1` before it is encrypted and by `consume.py`.
+
+**Typing or pasting it.** `handoff.sh` reads a payload file as UTF-8 (a UTF-16 file, as Windows PowerShell 5.1's `>` writes, is refused with that reason; `handoff.ps1` reads one with a byte-order mark). At `handoff.sh`'s hidden prompt, one line can hold about 4 KB on Linux and 1 KB on macOS. Linux cuts a longer line (the script then says it may have been cut); macOS beeps and ignores the rest of the line, Enter and Ctrl-D included, so press Ctrl-C. A long payload on one line, such as a `private_key` JSON-escaped by hand, goes in through a pipe instead, as below (or as a file, which leaves it on disk); the prompt says so before you paste. Typographic quotes (“ ” ‘ ’), which some editors and chat apps put in place of `"`, aren't JSON quotes around a name or a value (inside a value, they're part of it): both scripts say so when they refuse a payload holding them.
 
 **Building a `private_key` payload.** A PEM's line breaks have to be JSON-escaped, which is no job for a hidden paste. Let `jq` build the payload from the key file you already hold and pipe it straight in (Linux, macOS):
 
@@ -198,7 +200,7 @@ This pattern fills that gap for programs that read the credential from their env
 
 ## Residual exposure (stated plainly)
 
-- On your machine, the plaintext lives in the handoff script's memory while it runs (the shell's, or PowerShell's), and could in principle be swapped out. No “shredding” is claimed.
+- On your machine, the plaintext lives in the handoff script's memory while it runs (the shell's, or PowerShell's), and could in principle be swapped out. No “shredding” is claimed. `handoff.sh` turns core dumps off for itself and the programs it runs (`ulimit -c 0`), so a crash or a Ctrl-\ at the prompt writes no core file; a system that collects crashes another way (Windows Error Reporting, for `handoff.ps1`) is outside the script's reach.
 - If you pass a file argument, or build a payload from a key file (“Payloads”), that file already contains plaintext on your disk; the script did not put it there, and deleting it is your call.
 - Whoever holds the private key can decrypt every blob ever made with its public key. Protect it like any private key; rotate on suspicion (below).
 - The host and the agent-account caveats in the threat model are real and accepted by this design, not footnotes to skip.
@@ -269,6 +271,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 - **`Unblock-File .\handoff.ps1`** removes the Mark of the Web, the note Windows adds to a downloaded file, which the `RemoteSigned` policy checks. Run it only after the file has passed its checksum (“Getting the scripts”); on its own it doesn't let a script run under `Restricted`. A `git clone` adds no Mark of the Web.
 - **`powershell -NoProfile -ExecutionPolicy Bypass -File .\handoff.ps1`** starts a new PowerShell for one run. Use it only for the interactive paste (or with `-File FILE` after it). Don't pipe a payload into it: the pipe into a new PowerShell process goes through your session's output encoding, which can change non-ASCII characters on the way.
+- **PowerShell 7.7 unpacked from its zip** (7.7 ships no MSI): under `Restricted`, PowerShell loads its own module files only from Program Files or `C:\Windows\System32`, so a zip copy kept anywhere else can't run `Set-ExecutionPolicy` at all (`…was found in the module 'Microsoft.PowerShell.Security', but the module could not be loaded…`). Install 7.7 from its MSIX package instead (`winget install Microsoft.PowerShell`, or the Store), which puts it under Program Files and runs the route above as usual; or keep the zip's folder under Program Files; or start that copy with `-ExecutionPolicy Bypass -File .\handoff.ps1`, as in the bullet above. (Tested 2026-11-18 on Windows 11 with 7.7.0's zip, MSIX and 7.6.9's MSI.)
 - **A `private_key` payload** is built with `ConvertTo-Json -Compress` and piped in, as “Payloads” shows.
 - **A payload in a file** goes in with `-File FILE` (`.\handoff.ps1 -File secrets.json`), which reads the file's bytes as UTF-8, or as UTF-16 with a byte-order mark. Piping the file in with `Get-Content` is the other way, and then it needs `-Encoding UTF8` (`Get-Content secrets.json -Encoding UTF8 | .\handoff.ps1`): without it, Windows PowerShell 5.1 reads a UTF-8 file that has no byte-order mark in the ANSI code page, and changes every non-ASCII character in the values without a word.
 
@@ -328,7 +331,7 @@ Only then remove the Mark of the Web with `Unblock-File .\handoff.ps1`, and run 
 
 **What the checksum proves, plainly:** `SHA256SUMS` comes from the same release page as the script, so it catches a damaged download and a copy swapped on the way (a chat attachment, a mirror), not a compromise of the GitHub account or repository. The attestation ties the file to the release workflow's run. Neither replaces the recipient comparison (invariant 6).
 
-Save the agent's recipient as `handoff-<name>.age` in the same directory as the script (`handoff-muse.age` for the default name): one line, `age1…`, as the agent gives it. The script reads it from there and nowhere else.
+Save the agent's recipient as `handoff-<name>.age` in the same directory as the script (`handoff-muse.age` for the default name): one line, `age1…`, as the agent gives it, without the `recipient: ` that `--fingerprint` prints before it, or any quotes. The script reads it from there and nowhere else, and it must be a plain file: a symlink there is refused, since whoever can repoint a link changes the recipient without touching the file you checked. To replace one, remove the link itself first (`rm`; `Remove-Item` on Windows): saving over it writes through to its target and leaves the link. (Only the file itself is checked: the directory it's in is the one in the path you run the script by, which may itself be a link, as SETUP step 3 says.)
 
 ### Check your setup
 

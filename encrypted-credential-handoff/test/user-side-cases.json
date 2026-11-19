@@ -257,5 +257,54 @@
   "to": "nbsp",
   "exit": 1,
   "stderr_contains": "is not an age X25519 recipient"
+ },
+ {
+  "name": "recipientprefix",
+  "file_bytes_b64": "cmVjaXBpZW50OiBhZ2UxbHE3N2xnZzl1cWZ2ZXplYXpuaGNoZ3NzeDU4eXEzNDd2Mjd1cjJ1MzQ2YzlyeDltOTk2cXBlcnhocwo=",
+  "to": "recipientprefix",
+  "exit": 1,
+  "stderr_contains": "Keep only the age1... text, without \"recipient:\", quotes or backticks"
+ },
+ {
+  "name": "doublequoted",
+  "file_bytes_b64": "ImFnZTFscTc3bGdnOXVxZnZlemVhem5oY2hnc3N4NTh5cTM0N3YyN3VyMnUzNDZjOXJ4OW05OTZxcGVyeGhzIgo=",
+  "to": "doublequoted",
+  "exit": 1,
+  "stderr_contains": "Keep only the age1... text, without \"recipient:\", quotes or backticks"
+ },
+ {
+  "name": "backticks",
+  "file_bytes_b64": "YGFnZTFscTc3bGdnOXVxZnZlemVhem5oY2hnc3N4NTh5cTM0N3YyN3VyMnUzNDZjOXJ4OW05OTZxcGVyeGhzYAo=",
+  "to": "backticks",
+  "exit": 1,
+  "stderr_contains": "Keep only the age1... text, without \"recipient:\", quotes or backticks"
+ },
+ {
+  "name": "keyfileandrecipient",
+  "file_bytes_b64": "a2V5IGZpbGU6IC4vaGFuZG9mZi1tdXNlLmFnZQpyZWNpcGllbnQ6IGFnZTFscTc3bGdnOXVxZnZlemVhem5oY2hnc3N4NTh5cTM0N3YyN3VyMnUzNDZjOXJ4OW05OTZxcGVyeGhzCg==",
+  "to": "keyfileandrecipient",
+  "exit": 1,
+  "stderr_contains": "must hold exactly one age recipient line (age1...), as agent-setup.sh prints it. Keep only"
+ },
+ {
+  "name": "latin1line",
+  "file_bytes_b64": "YWdlMWxxNzdsZ2c5dXFmdmV6ZWF6bmhjaGdzc3g1OHlxMzQ3djI3dXIydTM0NmM5cng5bTk5NnFwZXJ4aHMKIyBub3RlOiBjYWbpCg==",
+  "to": "latin1line",
+  "exit": 1,
+  "stderr_contains": "must hold exactly one age recipient line (age1...), as agent-setup.sh prints it"
+ },
+ {
+  "name": "softhyphenline",
+  "file_bytes_b64": "YWdlMWxxNzdsZ2c5dXFmdmV6ZWF6bmhjaGdzc3g1OHlxMzQ3djI3dXIydTM0NmM5cng5bTk5NnFwZXJ4aHMKrQo=",
+  "to": "softhyphenline",
+  "exit": 1,
+  "stderr_contains": "must hold exactly one age recipient line (age1...), as agent-setup.sh prints it"
+ },
+ {
+  "name": "smartquotedrecipient",
+  "file_bytes_b64": "4oCcYWdlMWxxNzdsZ2c5dXFmdmV6ZWF6bmhjaGdzc3g1OHlxMzQ3djI3dXIydTM0NmM5cng5bTk5NnFwZXJ4aHPigJ0K",
+  "to": "smartquotedrecipient",
+  "exit": 1,
+  "stderr_contains": "Keep only the age1... text, without \"recipient:\", quotes or backticks"
  }
 ]

@@ -261,7 +261,7 @@
   "name": "utf16lenobom",
   "payload_base64": "ewAiAHMAdgBjACIAOgAiAGUAeABhAG0AcABsAGUAIgAsACIAcABhAHMAcwB3AG8AcgBkACIAOgAiAG0AawAtAFoAcQA5ACIAfQA=",
   "exit": 1,
-  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+  "stderr_contains": "saved as UTF-16"
  },
  {
   "name": "rawctl",
@@ -400,5 +400,77 @@
   "payload": "  \n\t \n",
   "exit": 1,
   "stderr_contains": "empty, aborting"
+ },
+ {
+  "name": "doublebom",
+  "payload_base64": "77u/77u/eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay1acTkifQ==",
+  "exit": 1,
+  "stderr_contains": "a second byte-order mark"
+ },
+ {
+  "name": "utf16benobom",
+  "payload_base64": "AHsAIgBzAHYAYwAiADoAIgBlAHgAYQBtAHAAbABlACIALAAiAHAAYQBzAHMAdwBvAHIAZAAiADoAIgBtAGsALQBaAHEAOQAiAH0=",
+  "exit": 1,
+  "stderr_contains": "saved as UTF-16"
+ },
+ {
+  "name": "smartquotes",
+  "payload": "{\u201csvc\u201d:\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "typographic quotes (U+2018, U+2019, U+201C or U+201D)"
+ },
+ {
+  "name": "smartquotesinvalue",
+  "payload": "{\"svc\":\"example\",\"password\":\"\u201cmk-Zq9\u201d\"}",
+  "exit": 0,
+  "stderr_contains": "recipient: age1"
+ },
+ {
+  "name": "unknownfield",
+  "payload": "{\"svc\":\"example\",\"usrename\":\"u\",\"password\":\"mk-Zq9\"}",
+  "exit": 0,
+  "stderr_contains": "ignores 1 field(s) it doesn't know, 1 of them close to \"username\" (misspelled?)"
+ },
+ {
+  "name": "unknownfieldbidi",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"pass\u202eword\":\"z\"}",
+  "exit": 0,
+  "stderr_contains": "ignores 1 field(s) it doesn't know, 1 of them close to \"password\" (misspelled?)"
+ },
+ {
+  "name": "unknownfieldsmany",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"usernam\":\"1\",\"passwor\":\"2\",\"token_i\":\"3\",\"app_i\":\"4\",\"api_key_i\":\"5\",\"usrname\":\"6\"}",
+  "exit": 0,
+  "stderr_contains": "ignores 6 field(s) it doesn't know, 6 of them close to \"username\", \"password\", \"api_key_id\", \"token_id\", \"app_id\" (misspelled?)"
+ },
+ {
+  "name": "unknownfieldsecret",
+  "payload": "{\"svc\":\"example\",\"username\":\"me\",\"mk-Zq9-Tr0ub4dor&3\":\"password\"}",
+  "exit": 0,
+  "stderr_contains": "ignores 1 field(s) it doesn't know. It uses:"
+ },
+ {
+  "name": "bidisvc",
+  "payload": "{\"s\u202evc\":\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object"
+ },
+ {
+  "name": "unknownfieldastral",
+  "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"passw\ud835\udc28\ud835\udc2bd\":\"z\"}",
+  "exit": 0,
+  "stderr_contains": "ignores 1 field(s) it doesn't know, 1 of them close to \"password\" (misspelled?)"
+ },
+ {
+  "name": "unknownfieldswap",
+  "payload": "{\"svc\":\"example\",\"username\":\"me\",\"Passw0rd!\":\"password\"}",
+  "exit": 0,
+  "stderr_contains": "ignores 1 field(s) it doesn't know, 1 of them close to \"password\" (misspelled?)"
+ },
+ {
+  "name": "smartsinglequotes",
+  "payload": "{\u2018svc\u2019:\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "typographic quotes (U+2018, U+2019, U+201C or U+201D)"
  }
 ]
