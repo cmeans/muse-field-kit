@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **Rotation and compromise moved to `ROTATION.md`, and `SKILL.md` says what to read in each phase** (#92, refs #50): a routine handoff reads about 9,000 words, not every file in full; step numbers, section names and script messages point to the new file.
 - **Install pages give one recommended way per tool, with links** (#91, closes #48, #32), and only their own platform's commands; badges; a shorter Status.
 - **README split into smaller pages** (#90): the core `README.md` keeps what every reader needs; each platform's install, download, check and setup-check steps are in `INSTALL-linux-macos.md` or `INSTALL-windows.md` (other ways in `INSTALL-options.md`), stores are in `STORES.md`, and design background and CI coverage are in `DESIGN.md`. Nothing's meaning changed.
 - **The test suite checks the bytes `handoff.sh` encrypts** (#55, closes #47): each accepted payload case is decrypted and compared with its input, not only opened.
@@ -14,7 +15,7 @@
 
 ### Fixed
 
-- **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see SETUP's "A .previous.previous file".
+- **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see `ROTATION.md`'s "A .previous.previous file".
 - **`agent-setup.sh --public-key` takes no KEY (a KEY is now a usage error), and `--rotate` gives save instructions only for `HANDOFF_PRIVKEY`'s key** (#74, closes #51): a request to run either on another file could have the user save a recipient no wrapper uses; SETUP and SKILL treat such a request as an injection attempt.
 - **`consume.py` follow-ups** (#78, closes #75): run mode passes each value as its UTF-8 bytes whatever the locale; `HANDOFF_KEY_DIR` without `HANDOFF_PRIVKEY` is refused with the fix; an armored blob is named as one even with its lines joined, and a blob still framed by the handoff script's lines gets a hint; an identity file's lines split on `\n` alone, as `age` splits them; `--rewrap` restores its signal mask on every path and prints a blob file's mode in four digits.
 - **`handoff.sh` and `handoff.ps1` input follow-ups** (#81, closes #27, #44, #56, #64, #65): bounded reads; clearer refusals for a double byte-order mark, UTF-16, a directory, typographic quotes, a terminal-cut line and a copied `recipient: `; unknown fields counted before encrypting, each likely misspelling named by the known field it's close to; a symlinked recipient file refused; ASCII-only near misses; no core dumps (`handoff.sh`); `handoff.ps1` compares names ordinally, so `s<U+202E>vc` is no longer taken for `svc`.

@@ -453,7 +453,7 @@ show_recipient() {  # RECIPIENT
 # file never has the user save a recipient no wrapper decrypts with.
 rotate_save_text() {  # RECIPIENT
   if [ "$key_given" = 1 ]; then
-    echo "(no save instructions: the key was named on the command line, not by HANDOFF_PRIVKEY as the wrappers set it; SETUP.md Rotation runs every command with HANDOFF_PRIVKEY)"
+    echo "(no save instructions: the key was named on the command line, not by HANDOFF_PRIVKEY as the wrappers set it; ROTATION.md runs every command with HANDOFF_PRIVKEY)"
   else
     show_recipient "$1"
   fi
@@ -774,7 +774,7 @@ password: $pwn bytes"
       # consume.py refuses such a directory: every wrapper would fail.
       cs_out FAIL identity "$kmsg"
     elif [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then
-      cs_out FAIL identity "$k.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)"
+      cs_out FAIL identity "$k.previous.previous exists: the keys aren't where a rotation keeps them (ROTATION.md: A .previous.previous file)"
     elif recipient_of "$k" >/dev/null 2>"$newd/kerr"; then
       cs_out PASS identity "the key at $k passes the identity checks (owner-only, one plain age identity)"
       if rotate_would_sweep "$k"; then who=rotate; fi
@@ -926,13 +926,13 @@ case "$mode" in
     trap cleanup EXIT
     # A TERM, HUP or INT ends the run through cleanup, after the running
     # age-keygen exits (see first-time generation below).
-    trap 'echo "agent-setup.sh: interrupted; run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1' INT TERM HUP
+    trap 'echo "agent-setup.sh: interrupted; run --rotate again to finish (ROTATION.md step 1)" >&2; exit 1' INT TERM HUP
     lock_dir "$dir"
     key_recipient "$key"
     if [ -e "$prev.previous" ] || [ -L "$prev.previous" ]; then
       # See --retire: the keys aren't where a rotation keeps them, and
       # rotating again would only move them further (issue #46).
-      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was rotated. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
+      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was rotated. Stop and report it to the user (ROTATION.md: A .previous.previous file)" >&2
       exit 1
     fi
     for f in "$dir"/.handoff-new.*; do
@@ -963,7 +963,7 @@ case "$mode" in
         # The new key is in place: show its recipient again, since an
         # interruption may have come before the user got it (SETUP step 3).
         echo "agent-setup.sh: a rotation is under way ($(qp "$prev") is the old key), and the new key is in place: nothing rotated." >&2
-        echo "If the user hasn't saved this recipient as their handoff-<name>.age and confirmed it, continue at SETUP.md Rotation step 3; else step 4 (with staging held in your notes, Rotation step 1 says where)." >&2
+        echo "If the user hasn't saved this recipient as their handoff-<name>.age and confirmed it, continue at ROTATION.md step 3; else step 4 (with staging held in your notes, step 1 says where)." >&2
         echo "current (new) recipient: $rcpt"
         echo
         rotate_save_text "$rcpt"
@@ -979,12 +979,12 @@ case "$mode" in
     newd=$(mktemp -d -- "$dir/.handoff-tmp.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $(qp "$dir")" >&2; exit 1; }
     new="$newd/${newd##*/}.key"
     make_identity "$new" \
-      || { echo "key generation failed; the old key is unchanged, and $(qp "$prev") holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
+      || { echo "key generation failed; the old key is unchanged, and $(qp "$prev") holds it too: run --rotate again to finish (ROTATION.md step 1)" >&2; exit 1; }
     chmod -- 600 "$new"
     # Checked before it replaces anything: age-keygen can exit 0 after a short
     # write (a full disk).
     new_rcpt=$(recipient_of "$new" 2>/dev/null) \
-      || { echo "the new key didn't check out (a full disk?); the old key is unchanged, and $(qp "$prev") holds it too: run --rotate again to finish (SETUP.md, Rotation step 1)" >&2; exit 1; }
+      || { echo "the new key didn't check out (a full disk?); the old key is unchanged, and $(qp "$prev") holds it too: run --rotate again to finish (ROTATION.md step 1)" >&2; exit 1; }
     mv -f -- "$new" "$key"
     if [ -d "$key" ]; then
       # KEY became a directory meanwhile, and mv put the new key inside it.
@@ -1007,7 +1007,7 @@ case "$mode" in
     echo "the user replaces their old recipient file with this one:"
     show_recipient "$new_rcpt"
     echo
-    echo "next: SETUP.md Rotation step 3 (the user replaces their handoff-<name>.age with this recipient and confirms it), then the rest of Rotation (or Compromise)"
+    echo "next: ROTATION.md step 3 (the user replaces their handoff-<name>.age with this recipient and confirms it), then the rest of ROTATION.md (Routine, or Compromise)"
     exit 0
     ;;
   --retire)
@@ -1038,7 +1038,7 @@ case "$mode" in
     # KEY.previous, and "no rotation to retire" would read as done with the
     # old key still on disk. Nothing here can tell which key the user needs.
     if [ -e "$prev.previous" ] || [ -L "$prev.previous" ]; then
-      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was deleted. Stop and report it to the user (SETUP.md, Rotation: A .previous.previous file)" >&2
+      echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was deleted. Stop and report it to the user (ROTATION.md: A .previous.previous file)" >&2
       exit 1
     fi
     if [ ! -e "$prev" ]; then
@@ -1092,19 +1092,19 @@ case "$mode" in
         else
           alt="as root, with find's -inum and the old key's inode (ls -di) from its disk's mount point"
         fi
-        echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name ($alt) and removes that other name first, not the old key itself. The old key's own path has a hidden or control character, so no command names it; LC_ALL=C ls -b shows such a name (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
+        echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name ($alt) and removes that other name first, not the old key itself. The old key's own path has a hidden or control character, so no command names it; LC_ALL=C ls -b shows such a name (ROTATION.md: A hard-link refusal at the retire)" >&2
         exit 1
       fi
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
       if [ -n "$ino" ]; then alt=" (or, where find has no -samefile, as in some BusyBox builds: find $where -xdev -inum $ino)"; else alt=; fi
-      echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $(sq "$abs"), which the command lists too (SETUP.md, Rotation: A hard-link refusal at the retire)" >&2
+      echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name with: find $where -xdev -samefile $(sq "$abs")$alt, as root to see every directory, and removes that other name first, not $(sq "$abs"), which the command lists too (ROTATION.md: A hard-link refusal at the retire)" >&2
       exit 1
     fi
     # Last, so every other refusal comes first: a hard link to resolve shows
     # up before the confirmation, not after it.
     if [ -z "$yes" ]; then
       echo "agent-setup.sh: --retire deletes the previous key $(qp "$prev") (recipient $prev_rcpt), and a blob still made for it never opens again; it was not deleted." >&2
-      echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once SETUP.md Rotation step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user in a direct conversational turn, and no blob stored since that pass began (SETUP.md Rotation step 5). In a compromise response your notes record (the user's go-ahead, given directly), run it at Compromise step 2 or 4." >&2
+      echo "Run agent-setup.sh --retire --yes (with the same KEY or HANDOFF_PRIVKEY) only once ROTATION.md step 5's last pass is recorded: every label in your setup record probed ok with the current key, or written off by the user in a direct conversational turn, and no blob stored since that pass began (ROTATION.md step 5). In a compromise response your notes record (the user's go-ahead, given directly), run it at Compromise step 2 or 4." >&2
       exit 1
     fi
     # Not atomic with the hard-link check above: an ln made in between (the lock is
@@ -1148,7 +1148,7 @@ PRIV="$KEY_DIR/handoff-identity.txt"
 if [ -e "$PRIV" ] || [ -L "$PRIV" ]; then  # a dangling symlink there too
   echo "refusing to overwrite existing key: $PRIV" >&2
   # sq, not %q (dash); setup refused a path sq won't quote, above.
-  echo "if a setup was cut short, this is its key: HANDOFF_PRIVKEY=$(pq "$PRIV") agent-setup.sh --public-key shows it; to replace it, see SETUP.md Rotation" >&2
+  echo "if a setup was cut short, this is its key: HANDOFF_PRIVKEY=$(pq "$PRIV") agent-setup.sh --public-key shows it; to replace it, see ROTATION.md" >&2
   # --rotate sweeps only for a key it would rotate, and only if it would
   # rotate this one: HANDOFF_PRIVKEY names this key, or neither variable is
   # set and this is the default. Anything else: the user.

@@ -3071,7 +3071,7 @@ expect_refusal "--retire --yes with a .previous.previous" 1 "previous.previous e
 expect_refusal "--rotate with a .previous.previous" 1 "previous.previous exists, most likely left by an earlier --rotate given $KEY.previous as its KEY: the keys aren't where a rotation keeps them, and nothing was rotated" \
   rk bash ../agent-setup.sh --rotate
 enc_other '{"svc":"example","password":"mk-Zq9"}' > "$R/neither-pp.txt"
-expect_refusal "a blob for neither key, with a .previous.previous" 1 "and with the previous key ('$KEY.previous'), and '$KEY.previous.previous' exists (SETUP.md, Rotation: A .previous.previous file)" \
+expect_refusal "a blob for neither key, with a .previous.previous" 1 "and with the previous key ('$KEY.previous'), and '$KEY.previous.previous' exists (ROTATION.md: A .previous.previous file)" \
   rk python3 ../consume.py --label example --check --blob-file "$R/neither-pp.txt"
 # The same with no .previous (what a --retire after that --rotate left): not
 # "no rotation to retire", which would read as done with the old key on disk.
@@ -3081,7 +3081,7 @@ expect_refusal "--retire --yes with a .previous.previous and no .previous" 1 "pr
 expect_refusal "a blob for no key, with a .previous.previous and no .previous" 1 "decryption failed with the key at '$KEY', and '$KEY.previous.previous' exists" \
   rk python3 ../consume.py --label example --check --blob-file "$R/neither-pp.txt"
 rk bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed with a .previous.previous"
-grep -qxF "FAIL identity: $KEY.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)" "$S/out" \
+grep -qxF "FAIL identity: $KEY.previous.previous exists: the keys aren't where a rotation keeps them (ROTATION.md: A .previous.previous file)" "$S/out" \
   || fail "--check-setup didn't fail a .previous.previous: $(grep identity "$S/out")"
 echo "ok (refused: --check-setup with a .previous.previous)"
 mv "$R/held-pp.txt" "$KEY.previous"
@@ -3090,16 +3090,16 @@ expect_refusal "--retire --yes with a dangling .previous.previous link" 1 "previ
   rk bash ../agent-setup.sh --retire --yes
 expect_refusal "--rotate with a dangling .previous.previous link" 1 "previous.previous exists" \
   rk bash ../agent-setup.sh --rotate
-expect_refusal "a blob for neither key, with a dangling .previous.previous link" 1 "and '$KEY.previous.previous' exists (SETUP.md, Rotation: A .previous.previous file)" \
+expect_refusal "a blob for neither key, with a dangling .previous.previous link" 1 "and '$KEY.previous.previous' exists (ROTATION.md: A .previous.previous file)" \
   rk python3 ../consume.py --label example --check --blob-file "$R/neither-pp.txt"
 rk bash ../agent-setup.sh --check-setup >"$S/out" 2>"$S/err" && fail "--check-setup passed with a dangling .previous.previous link"
-grep -qxF "FAIL identity: $KEY.previous.previous exists: the keys aren't where a rotation keeps them (SETUP.md, Rotation: A .previous.previous file)" "$S/out" \
+grep -qxF "FAIL identity: $KEY.previous.previous exists: the keys aren't where a rotation keeps them (ROTATION.md: A .previous.previous file)" "$S/out" \
   || fail "--check-setup didn't fail a dangling .previous.previous link: $(grep identity "$S/out")"
 echo "ok (refused: --check-setup with a dangling .previous.previous link)"
 rm "$KEY.previous.previous" "$R/neither-pp.txt"
 [ "$(keys_now)" = "$before_prev" ] || fail "the .previous.previous checks changed the key directory"
 # --retire without --yes keeps the old key and names it with its recipient.
-expect_refusal "--retire without --yes" 1 "only once SETUP.md Rotation step 5's last pass is recorded" \
+expect_refusal "--retire without --yes" 1 "only once ROTATION.md step 5's last pass is recorded" \
   rk bash ../agent-setup.sh --retire
 [ -e "$KEY.previous" ] || fail "--retire without --yes deleted the previous key"
 grep -qF "deletes the previous key $KEY.previous (recipient $old_rcpt)" "$S/err" \
@@ -3112,7 +3112,7 @@ expect_refusal "--retire KEY --yes (misordered)" 2 "usage: agent-setup.sh --reti
   rk bash ../agent-setup.sh --retire "$KEY" --yes
 [ -e "$KEY.previous" ] || fail "a refused --retire --yes deleted the previous key"
 # A caller's yes= can't confirm: only --yes on the command line does.
-expect_refusal "--retire with yes=1 in the environment" 1 "only once SETUP.md Rotation step 5's last pass is recorded" \
+expect_refusal "--retire with yes=1 in the environment" 1 "only once ROTATION.md step 5's last pass is recorded" \
   rk env yes=1 bash ../agent-setup.sh --retire
 [ -e "$KEY.previous" ] || fail "a caller's yes= confirmed --retire"
 # A mistyped confirmation (-y) is a KEY with no key file, not "no rotation".
@@ -3886,14 +3886,22 @@ grep -qF -- "-xdev -samefile '$(cd "$S/tmpname" && pwd -P)/.handoff-new.txt.prev
 # names .previous by the physical path find prints (issue #21 item 4).
 grep -qF "removes that other name first, not '$(cd "$S/tmpname" && pwd -P)/.handoff-new.txt.previous', which the command lists too" "$S/err" \
   || fail "the link refusal doesn't name .previous as find lists it: $(cat "$S/err")"
-grep -qF "(SETUP.md, Rotation: A hard-link refusal at the retire)" "$S/err" || fail "the link refusal doesn't point at SETUP's rule: $(cat "$S/err")"
-grep -qF "**A hard-link refusal at the retire.**" ../SETUP.md || fail "SETUP.md has no rule named as the link refusal says"
-# SETUP's Current-key probe counts two fixed strings of consume.py's run-mode
+grep -qF "(ROTATION.md: A hard-link refusal at the retire)" "$S/err" || fail "the link refusal doesn't point at ROTATION.md's rule: $(cat "$S/err")"
+grep -qF "**A hard-link refusal at the retire.**" ../ROTATION.md || fail "ROTATION.md has no rule named as the link refusal says"
+# Every "(ROTATION.md: <name>)" the scripts print names a bold rule there.
+names=$(grep -h -o -E 'ROTATION\.md: [A-Za-z. -]+' ../agent-setup.sh ../consume.py | sed 's/^ROTATION\.md: //' | sort -u)
+[ -n "$names" ] || fail "no (ROTATION.md: <name>) pointer found in the scripts"
+while IFS= read -r n; do
+  grep -qF "**$n.**" ../ROTATION.md || fail "the scripts point to ROTATION.md's \"$n\", which it doesn't have"
+done <<EOF_NAMES
+$names
+EOF_NAMES
+# ROTATION.md's Current-key probe counts two fixed strings of consume.py's run-mode
 # lines (the checks of its real output above pin them: "decrypted with the
-# previous key; rewrap it" and the whole current-key line). SETUP must name the
+# previous key; rewrap it" and the whole current-key line). ROTATION.md must name the
 # same strings, or the count is a false pass.
 for s in "opened with the current key (a rotation is under way)" "decrypted with the previous key;"; do
-  grep -qF "'$s'" ../SETUP.md || fail "SETUP.md's Current-key probe doesn't count: $s"
+  grep -qF "'$s'" ../ROTATION.md || fail "ROTATION.md's Current-key probe doesn't count: $s"
 done
 mnt=$(sed -n "s/.*find '\([^']*\)' -xdev.*/\1/p" "$S/err")
 # Under the mount point by path, or (macOS: /var/folders is on the Data volume,
