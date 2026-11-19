@@ -29,10 +29,10 @@ jobs:
   # NOTE: pr-labels.yml and pr-labels-ci.yml find this workflow by its name
   # ("CI") and file (ci.yml). If either is renamed, update them too.
   # main's ruleset requires QA Gate and one CI check: "ci-ok" (the last job,
-  # which needs all the others) once the maintainer swaps it in, and this
-  # job ("encrypted-credential-handoff") until then. If a required job is
-  # renamed, update the ruleset, or every PR waits on a check that never
-  # comes.
+  # which needs all the others). If a required job is renamed, update the
+  # ruleset, or every PR waits on a check that never comes; and release.yml,
+  # which refuses a tag whose commit has no successful "ci-ok" run
+  # (.github/scripts/ci-ok-state.sh), or every release is refused.
   encrypted-credential-handoff:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -312,6 +312,14 @@ jobs:
             fi
             [ ! -e "$RUNNER_TEMP/nf.md" ] || { echo "release-notes.sh wrote notes for '$t'"; exit 1; }
           done
+          # A kit name with "-v" in it: the kit is everything before the last
+          # "-v" (release.yml takes it the same way, ${TAG%-v*}).
+          mkdir -p "$RUNNER_TEMP/demo-vault-kit"
+          cp "$cl" "$RUNNER_TEMP/demo-vault-kit/CHANGELOG.md"
+          v=$($rn demo-vault-kit-v0.1.1 "$RUNNER_TEMP/demo-vault-kit/CHANGELOG.md" "$RUNNER_TEMP/n3.md")
+          [ "$v" = 0.1.1 ] || { echo "demo-vault-kit-v0.1.1 gave version '$v'"; exit 1; }
+          tag=demo-vault-kit-v0.1.1
+          [ "${tag%-v*}" = demo-vault-kit ] || { echo "release.yml's kit expression gave '${tag%-v*}'"; exit 1; }
       - name: ci-ok-state.sh on stub check-run replies
         # release.yml refuses a tag whose commit's newest ci-ok check run
         # (from GitHub Actions) isn't a success.

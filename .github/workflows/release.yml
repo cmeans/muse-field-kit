@@ -220,7 +220,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.build.outputs.tag }}
         run: |
-          now=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          # refs/tags/, so a branch of the same name can't be resolved instead.
+          now=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha)
           if [ "$now" != "$GITHUB_SHA" ]; then
             echo "$TAG now points at $now, not the built commit $GITHUB_SHA; not attesting or publishing"
             exit 1
