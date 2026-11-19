@@ -473,6 +473,28 @@ foreach ($c in $cases) {
 Say '== 5b-ps. the payload: checks, cap, -File and pipeline input =='
 Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $K 'handoff-muse.age')
 $jsonMsg = 'input must be a single JSON object with a string "svc" and string values only, aborting'
+# Diagnostic (prints, never fails): what a script with handoff.ps1's param
+# block gets when the suite hands it a UTF-16 file's bytes on stdin, the way
+# the payload table's stdin cases do. GitHub's Windows PowerShell 5.1 runner
+# refused utf16lenobom there with the JSON message while a local 5.1 gave the
+# UTF-16 one; this line shows which route the runner takes.
+$probe = Join-Path $S 'stdin-probe.ps1'
+[IO.File]::WriteAllText($probe, @'
+[CmdletBinding(PositionalBinding = $false)]
+param([Parameter(ValueFromPipeline = $true)][AllowNull()][AllowEmptyString()][string]$InputObject)
+begin { $got = New-Object System.Collections.Generic.List[string] }
+process { if ($PSBoundParameters.ContainsKey('InputObject') -and $null -ne $InputObject) { $got.Add($InputObject) } }
+end {
+  $text = [string]::Join("`n", $got.ToArray())
+  $codes = (@($text.ToCharArray() | Select-Object -First 8 | ForEach-Object { '{0:x}' -f [int]$_ })) -join ' '
+  $n = -1
+  if ([Console]::IsInputRedirected) { $ms = New-Object IO.MemoryStream; $in = [Console]::OpenStandardInput(); $in.CopyTo($ms); $in.Dispose(); $n = $ms.Length }
+  [Console]::Out.WriteLine("redirected=$([Console]::IsInputRedirected) expecting=$($MyInvocation.ExpectingInput) piped=$($got.Count) chars=$($text.Length) first=[$codes] stdinbytes=$n")
+}
+'@, (New-Object System.Text.UTF8Encoding $true))
+$u16probe = (New-Object System.Text.UnicodeEncoding $false, $false).GetBytes('{"svc":"example","password":"mk-Zq9"}')
+$pr = Invoke-Handoff -Script $probe -Stdin $u16probe
+Say "diag: stdin route for UTF-16 bytes ($($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)): $($pr.Out.Trim()) $($pr.Err.Trim())"
 # The payload shapes, one table shared with run-test.sh (payload-cases.json):
 # {name, payload or payload_base64 (bytes that aren't text), exit,
 # stderr_contains}. A text case runs piped in and with -File; a bytes case

@@ -1853,9 +1853,13 @@ expect_refusal "handoff.sh --to muse with handoff_Muse.age beside it" 1 "but han
 rm -f "$S/hn/handoff_Muse.age"
 # A look-alike that a UTF-8 locale folds to ASCII (U+212A KELVIN SIGN lowers
 # to k) isn't a near miss: it would show as handoff-Kim.age (issue #27 item 1).
-# (ERE: BSD grep, on macOS, takes no \? or \| in a basic expression.)
-if locale -a 2>/dev/null | grep -qiEx 'c\.utf-?8|en_us\.utf-?8'; then
-  utf8_loc=$(locale -a | grep -iEx 'c\.utf-?8|en_us\.utf-?8' | head -n 1)
+# The first of these names that this system takes as a UTF-8 locale (asked of
+# the locale itself: locale -a's list didn't match on macOS's runner).
+utf8_loc=
+for l in C.UTF-8 en_US.UTF-8 C.utf8 en_US.utf8; do
+  if [ "$(LC_ALL=$l locale charmap 2>/dev/null)" = UTF-8 ]; then utf8_loc=$l; break; fi
+done
+if [ -n "$utf8_loc" ]; then
   kelvin="handoff-"$'\xe2\x84\xaa'"im.age"
   cp handoff-test.age "$S/hn/$kelvin"
   if [ -e "$S/hn/handoff-Kim.age" ]; then
