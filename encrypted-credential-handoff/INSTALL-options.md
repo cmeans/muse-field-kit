@@ -1,6 +1,6 @@
 # Other ways to install
 
-The recommended way for each platform is in `INSTALL-linux-macos.md` and `INSTALL-windows.md`. These are the alternatives.
+The recommended way for each platform is in [`INSTALL-linux-macos.md`](INSTALL-linux-macos.md) and [`INSTALL-windows.md`](INSTALL-windows.md). These are the alternatives.
 
 ## Phones (untested)
 
@@ -14,7 +14,7 @@ Cautions specific to a phone, whichever way you run it:
 
 ## WSL, or Git Bash (untested), on Windows
 
-In [WSL](https://learn.microsoft.com/en-us/windows/wsl/install), you can run `handoff.sh` instead of `handoff.ps1`: follow `INSTALL-linux-macos.md` inside the WSL distribution. In [Git Bash](https://gitforwindows.org/), which nothing here has been tested on, `handoff.sh` would need `age.exe` and `jq.exe` on `PATH` (`winget install --id FiloSottile.age` and `winget install --id jqlang.jq`), since the package managers in `INSTALL-linux-macos.md` don't exist there.
+In [WSL](https://learn.microsoft.com/en-us/windows/wsl/install), you can run `handoff.sh` instead of `handoff.ps1`: follow [`INSTALL-linux-macos.md`](INSTALL-linux-macos.md) inside the WSL distribution. In [Git Bash](https://gitforwindows.org/), which nothing here has been tested on, `handoff.sh` would need `age.exe` and `jq.exe` on `PATH` (`winget install --id FiloSottile.age` and `winget install --id jqlang.jq`), since the package managers in `INSTALL-linux-macos.md` don't exist there.
 
 ## A release binary of age, and checking it
 

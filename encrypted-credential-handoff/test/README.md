@@ -18,7 +18,7 @@ Known-answer vectors for the encrypted credential handoff reference protocol (`a
 - `run-test.sh` — runs the full check against the reference implementation in this folder. `HANDOFF_TEST_AGE` and `HANDOFF_TEST_AGE_KEYGEN` name the `age` binaries to test against; `HANDOFF_TEST_ONLY="3b 5a"` runs only the named sections (`1a 1b 1c 1d 2a 2b 3a 3b 4a 4b 5 5a 5b 6 7 8`) and prints `ran: <ids>` (an unknown id, or an empty list, fails instead of running nothing). It needs `age`, `age-keygen`, `bash`, `python3` and `jq`; nothing else crypto-related.
 - `check-key-dir.py` — run by `run-test.sh`: the `consume.py` checks that need a faked system call (a key directory owned by another account; a root-owned world-writable one, refused with advice to move the key, not `chmod`; the `/proc/self/fd` fallback; and the refusal when neither fd directory exists). `--rewrap`'s owner checks on the blob file and its directory fake `os.stat` too, inline in `run-test.sh` section 6 (`rk_stat`), since they need that section's rotation state.
 - `check-interop.py` — CI only: opens the blobs `run-test.ps1` wrote on Windows (5.1 and 7) with the reference `consume.py` and checks the values byte for byte.
-- `run-test.ps1` — the same checks for the Windows side (`handoff.ps1`), on Windows PowerShell 5.1 and PowerShell 7, including the forms README shows: the `private_key` payload built with `[IO.File]::ReadAllText` and `ConvertTo-Json -Compress` (with a CRLF PEM, opened byte for byte on Linux by `check-interop.py`), and, on Windows, `INSTALL-windows.md`'s Mark of the Web and execution-policy routes.
+- `run-test.ps1` — the same checks for the Windows side (`handoff.ps1`), on Windows PowerShell 5.1 and PowerShell 7, including the forms [`README.md`](../README.md#payloads)'s “Payloads” shows: the `private_key` payload built with `[IO.File]::ReadAllText` and `ConvertTo-Json -Compress` (with a CRLF PEM, opened byte for byte on Linux by `check-interop.py`), and, on Windows, [`INSTALL-windows.md`](../INSTALL-windows.md)'s Mark of the Web and execution-policy routes.
 
 0.1.0 detection is tested with made-up PEM-shaped text written inline by the tests (a `-----BEGIN RSA PRIVATE KEY-----` or `-----BEGIN PUBLIC KEY-----` block with a nonsense body): the scripts look only at the header line, so no real RSA key exists in the repo.
 
@@ -40,4 +40,4 @@ An implementation is interoperable with the reference when:
 - **6:** a whole rotation on a copy of the dummy identity: `agent-setup.sh --rotate`, old blobs opening through the previous key, `consume.py --rewrap --blob-file`, `--retire` and its guards, locks, interruptions and cleanup.
 - **7, 8:** the `HANDOFF_LABEL` nesting refusal, and `--check-setup` in `handoff.sh` and `agent-setup.sh`.
 
-Passing both directions is the minimum bar before a port touches a real credential (see `../SETUP.md`).
+Passing both directions is the minimum bar before a port touches a real credential (see [`../SETUP.md`](../SETUP.md)).

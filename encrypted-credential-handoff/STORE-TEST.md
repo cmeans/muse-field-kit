@@ -1,6 +1,6 @@
 # Test a new store for the credential handoff
 
-Use this prompt to test a remote store that `STORES.md` doesn't list as tested. Give the whole prompt to your agent, and name the store you want tested where it says `[store]`.
+Use this prompt to test a remote store that [`STORES.md`](STORES.md) doesn't list as tested. Give the whole prompt to your agent, and name the store you want tested where it says `[store]`.
 
 ---
 
