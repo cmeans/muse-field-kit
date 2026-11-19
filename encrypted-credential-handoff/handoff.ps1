@@ -366,7 +366,7 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     $extra = ''
     # (Typographic quotes in UTF-8, as a chat app pastes them, read byte for
     # character here: E2 80 then 98, 99, 9C or 9D.)
-    if ($text -cmatch '[Rr]ecipient:|["''`]|â\u0080[\u0098\u0099\u009C\u009D]') { $extra ='. Keep only the age1... text, without "recipient:", quotes or backticks' }
+    if ($text -cmatch '[Rr]ecipient:|["''`]|\xE2\u0080[\u0098\u0099\u009C\u009D]') { $extra ='. Keep only the age1... text, without "recipient:", quotes or backticks' }
     if ($lines.Count -ne 1) { Stop-Key "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it$extra" }
     $RECIPIENT = $lines[0]
     if ($RECIPIENT -cnotmatch $RECIPIENT_RE) {
