@@ -440,7 +440,10 @@ def check_key_dir(path: str) -> None:
     if dst.st_mode & 0o022:
         # chmod is the fix only for this account's own directory: on a shared
         # one (/tmp, owned by root) it would break the directory for everyone.
-        if dst.st_uid == os.geteuid():
+        # A sticky, world-writable directory is a shared one even when this
+        # account is root and so owns it.
+        shared = dst.st_mode & stat.S_ISVTX and dst.st_mode & 0o002
+        if dst.st_uid == os.geteuid() and not shared:
             fix = f"stop and report it to the user, who runs: chmod -- go-w {shell_quote(directory)}"
         else:
             fix = move

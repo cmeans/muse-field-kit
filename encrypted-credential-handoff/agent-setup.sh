@@ -343,8 +343,10 @@ key_dir_unsafe_msg() {  # DIR
   writable=$(find "$q/." -prune \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || writable=
   [ -n "$writable" ] || return 1
   # chmod is the fix only for this account's own directory: on a shared one
-  # (/tmp, owned by root) it would break the directory for everyone.
-  mine=$(find "$q/." -prune -user "$me" -print 2>/dev/null) || mine=
+  # (/tmp, owned by root) it would break the directory for everyone. A sticky,
+  # world-writable directory is a shared one even when this account is root
+  # and so owns it.
+  mine=$(find "$q/." -prune -user "$me" ! -perm -1002 -print 2>/dev/null) || mine=
   if [ -n "$mine" ] && has_ctl "$d"; then
     # No command to paste for such a path (sq refuses one).
     printf "the key's directory %s is writable by others; stop and report it to the user, who removes group and other write access with chmod go-w %s" "$(qp "$d")" "$by_hand_note"
