@@ -2500,7 +2500,11 @@ def fake_stat(p, *a, **k):
         f = list(st)
         f[0] = stat.S_IFMT(st.st_mode) | mode
         f[4] = uid
-        return os.stat_result(f)
+        # The named fields too (st_mtime_ns and the rest), or file_identity
+        # sees a changed file.
+        named = {k: getattr(st, k) for k in dir(st) if k.startswith("st_")
+                 and k not in ("st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size")}
+        return os.stat_result(f, named)
     return st
 os.stat = fake_stat
 sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
@@ -2523,7 +2527,12 @@ if [ "$(id -u)" != 0 ]; then
     rk_stat "$RST/own" 0 770 "$ST/own/b.txt"
   ! grep -qF chmod "$S/err" || fail "--rewrap advised a chmod of a root-owned directory: $(cat "$S/err")"
 fi
-# A root-owned 0755 directory is accepted (the rewrap goes ahead).
+# A root-owned 0644 blob file and a root-owned 0755 directory are accepted
+# (the rewrap goes ahead).
+cp blob-age.txt "$ST/own/b.txt"
+rk_stat "$RST/own/b.txt" 0 644 "$ST/own/b.txt" >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--rewrap refused a root-owned 0644 blob file"; }
+grep -qF rewrapped "$S/err" || fail "--rewrap of a root-owned 0644 blob file didn't rewrap: $(cat "$S/err")"
+cp blob-age.txt "$ST/own/b.txt"
 rk_stat "$RST/own" 0 755 "$ST/own/b.txt" >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--rewrap refused a root-owned 0755 directory"; }
 grep -qF rewrapped "$S/err" || fail "--rewrap in a root-owned 0755 directory didn't rewrap: $(cat "$S/err")"
 echo "ok (--rewrap: the blob file's and directory's owner checked, chmod advised only for this account's own)"
