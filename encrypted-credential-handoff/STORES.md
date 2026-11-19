@@ -1,6 +1,6 @@
 # Choosing a store
 
-Step 4's store is a function, not a product: any place that holds an opaque text blob under a service label and hands that exact blob back later. Only ciphertext is ever written to it or read from it. The obvious choice is a trap: **most agents' built-in memory is files on the agent's own machine, on the same disk as the private key**, and a blob stored there sits beside the key (invariant 5 fails). The author's setup works because its store is a remote service, fetched over the network at use time. Whatever you use has to meet the same requirements.
+The store in `README.md`'s “How it works”, step 4, is a function, not a product: any place that holds an opaque text blob under a service label and hands that exact blob back later. Only ciphertext is ever written to it or read from it. The obvious choice is a trap: **most agents' built-in memory is files on the agent's own machine, on the same disk as the private key**, and a blob stored there sits beside the key (invariant 5 in `README.md` fails). The author's setup works because its store is a remote service, fetched over the network at use time. Whatever you use has to meet the same requirements.
 
 ## What a store must provide
 

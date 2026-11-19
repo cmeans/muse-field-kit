@@ -4,7 +4,7 @@ The recommended way for each platform is in `INSTALL-linux-macos.md` and `INSTAL
 
 ## Phones (untested)
 
-nothing here has been run on a phone. What should work: on Android, [Termux](https://termux.dev) with `pkg install age jq`, then `handoff.sh` as on Linux; on iOS, [iSH](https://ish.app) (an Alpine Linux shell, slow) with `apk add age bash jq`. A third-party `age` app (AgePony on iOS is one) is another way, and it is the app's code, not this folder's: it skips `handoff.sh`'s checks, so you build the payload yourself (one JSON object, a string `svc`, string values) and compare the recipient yourself, and its output must be the binary format, base64 on one line, not armored text.
+Nothing here has been run on a phone. What should work: on Android, [Termux](https://termux.dev) with `pkg install age jq`, then `handoff.sh` as on Linux; on iOS, [iSH](https://ish.app) (an Alpine Linux shell, slow) with `apk add age bash jq`. A third-party `age` app (AgePony on iOS is one) is another way, and it is the app's code, not this folder's: it skips `handoff.sh`'s checks, so you build the payload yourself (one JSON object, a string `svc`, string values) and compare the recipient yourself, and its output must be the binary format, base64 on one line, not armored text.
 
 ## A release binary of age, and checking it
 
