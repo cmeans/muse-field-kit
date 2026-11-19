@@ -414,8 +414,9 @@ jobs:
   # consume.py refuses, so there handoff.sh's own control-byte check is the
   # only guard; the 1.7 and newer jq the other jobs have refuse it
   # themselves, and would pass with that check gone. The sections that run
-  # handoff.sh's input rules: 3a the round trip, 3b and 5b the payload
-  # checks (payload-cases.json's rawunitsep row is that case). Run as a
+  # handoff.sh's input rules: 3a the round trip, 3b the maximum payload's
+  # bytes, 5b the payload table (payload-cases.json's rawunitsep row is that
+  # case). Run as a
   # plain user, as the suite expects, in a container pinned by digest.
   linux-jq-1-6:
     runs-on: ubuntu-latest
