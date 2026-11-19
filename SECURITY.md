@@ -28,7 +28,7 @@ Guides and patterns without scripts (documentation problems) can be reported as 
 - Steps to reproduce, or a proof of concept. Use the published test keys under a folder's `test/` directory, never a real key or credential.
 - The folder and its version (the release tag, or the commit you used).
 - Your platform and tool versions. For `encrypted-credential-handoff`, the operating system, the `bash`, `python3` and `jq` versions (on Windows, the PowerShell version, `$PSVersionTable.PSVersion`), and `age --version`. The output of `handoff.sh --check-setup` (or `handoff.ps1 -CheckSetup`) or `agent-setup.sh --check-setup` gives these; it holds no secret.
-- Whether it reproduces with the folder's scripts used exactly as its `SETUP.md` says, or only with a changed setup.
+- Whether it reproduces with the folder's scripts used exactly as its instructions say (`SETUP.md`, and for `encrypted-credential-handoff` also `ROTATION.md`), or only with a changed setup.
 
 ## What to expect
 
@@ -45,7 +45,7 @@ Each security-relevant folder's own `SECURITY.md` says what its pattern claims t
 
 **In scope**
 
-- A way a folder's documented guarantees fail when its scripts are used as its `SETUP.md` says (for example, a credential reaching the chat, the agent's context or disk), or wording that overstates what is defended.
+- A way a folder's documented guarantees fail when its scripts are used as its instructions say (`SETUP.md`, and `ROTATION.md` where there is one) (for example, a credential reaching the chat, the agent's context or disk), or wording that overstates what is defended.
 - The scripts themselves: input that gets past a documented check, a credential in output or logs, a race by another account that defeats a check.
 - This repository's GitHub Actions workflows: injection through `${{ github.event.* }}` expressions in `run:` blocks, token permissions, and anything that lets a pull request's content run with more than read access.
 - The integrity of what a release publishes.

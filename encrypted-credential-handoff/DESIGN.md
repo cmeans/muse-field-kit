@@ -1,6 +1,6 @@
 # Design notes
 
-Background on the choices behind this folder: why it isn't a vault, what is fixed and what is a choice, how the encryption suite was chosen, and what CI tests. None of it is needed to set up or use the handoff (`README.md` and `SETUP.md` are).
+Background on the choices behind this folder: why it isn't a vault, what is fixed and what is a choice, how the encryption suite was chosen, and what CI tests. None of it is needed to set up or use the handoff (`README.md`, `SETUP.md`, `ROTATION.md` and `STORES.md` are).
 
 ## Why not a built-in vault?
 

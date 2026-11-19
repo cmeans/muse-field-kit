@@ -3888,6 +3888,14 @@ grep -qF "removes that other name first, not '$(cd "$S/tmpname" && pwd -P)/.hand
   || fail "the link refusal doesn't name .previous as find lists it: $(cat "$S/err")"
 grep -qF "(ROTATION.md: A hard-link refusal at the retire)" "$S/err" || fail "the link refusal doesn't point at ROTATION.md's rule: $(cat "$S/err")"
 grep -qF "**A hard-link refusal at the retire.**" ../ROTATION.md || fail "ROTATION.md has no rule named as the link refusal says"
+# Every "(ROTATION.md: <name>)" the scripts print names a bold rule there.
+names=$(grep -h -o -E 'ROTATION\.md: [A-Za-z. -]+' ../agent-setup.sh ../consume.py | sed 's/^ROTATION\.md: //' | sort -u)
+[ -n "$names" ] || fail "no (ROTATION.md: <name>) pointer found in the scripts"
+while IFS= read -r n; do
+  grep -qF "**$n.**" ../ROTATION.md || fail "the scripts point to ROTATION.md's \"$n\", which it doesn't have"
+done <<EOF_NAMES
+$names
+EOF_NAMES
 # ROTATION.md's Current-key probe counts two fixed strings of consume.py's run-mode
 # lines (the checks of its real output above pin them: "decrypted with the
 # previous key; rewrap it" and the whole current-key line). ROTATION.md must name the
