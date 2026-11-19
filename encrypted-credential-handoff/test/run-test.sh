@@ -878,10 +878,10 @@ expect_refusal "--rotate in a sticky group-writable key directory" 1 "is writabl
 # account owns it (as root owns /tmp, for an agent running as root), so the
 # advice is to move the key, never a chmod that would change it for everyone.
 chmod 1777 "$SW/k"
-expect_refusal "consume.py with a sticky world-writable key directory" 1 "is writable by others (mode 1777); stop and report it to the user: the key belongs in a directory of this account's own" \
+expect_refusal "consume.py with a sticky world-writable key directory" 1 "is writable by others (mode 1777); stop and report it to the user: the key belongs in a directory only this account can write" \
   env HANDOFF_PRIVKEY="$SW/k/id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 ! grep -qF chmod "$S/err" || fail "consume.py advised a chmod of a sticky world-writable key directory: $(cat "$S/err")"
-expect_refusal "--rotate in a sticky world-writable key directory" 1 "the key's directory $SW/k is writable by others; stop and report it to the user: the key belongs in a directory of this account's own" \
+expect_refusal "--rotate in a sticky world-writable key directory" 1 "the key's directory $SW/k is writable by others; stop and report it to the user: the key belongs in a directory only this account can write" \
   env HANDOFF_PRIVKEY="$SW/k/id.txt" bash ../agent-setup.sh --rotate
 ! grep -qF chmod "$S/err" || fail "--rotate advised a chmod of a sticky world-writable key directory: $(cat "$S/err")"
 chmod 700 "$SW/k"
@@ -1082,7 +1082,7 @@ fi
 # account's own 0600 copy of the dummy key.
 od=${HANDOFF_TEST_OTHER_OWNER_DIR-}; rd=${HANDOFF_TEST_ROOT_DIR-}
 if [ "$(id -u)" != 0 ] && [ -n "$od" ] && [ -n "$rd" ] && [ -f "$od/id.txt" ] && [ -f "$rd/id.txt" ]; then
-  expect_refusal "consume.py with a key directory owned by another account" 1 "the key's directory '$od' is owned by another account; stop and report it to the user: the key belongs in a directory of this account's own" \
+  expect_refusal "consume.py with a key directory owned by another account" 1 "the key's directory '$od' is owned by another account; stop and report it to the user: the key belongs in a directory only this account can write" \
     env HANDOFF_PRIVKEY="$od/id.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
   expect_refusal "--rotate in a key directory owned by another account" 1 "the key's directory $od is owned by another account" \
     env HANDOFF_PRIVKEY="$od/id.txt" bash ../agent-setup.sh --rotate
