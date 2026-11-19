@@ -326,7 +326,8 @@ key_recipient() {  # FILE
 # The key's directory (through a symlink, as the key is read) must be owned
 # by this user or root and writable by no group or other: anyone else who can
 # write there can rename another file over the key, or add one beside it.
-# No sticky exception (it stops renames, not new files). consume.py refuses
+# No sticky exception (it stops renames, not new files; it changes only the
+# advice: move the key, not chmod). consume.py refuses
 # the same directories. Prints the refusal (exit 0) when the directory fails;
 # returns 1 when it's fine. find's -perm -MODE and -user are POSIX, so this
 # reads the same on BSD and BusyBox; "$q/." makes find look at the directory
@@ -337,14 +338,16 @@ key_dir_unsafe_msg() {  # DIR
   me=$(id -u)
   other=$(find "$q/." -prune ! -user 0 ! -user "$me" -print 2>/dev/null) || other=
   if [ -n "$other" ]; then
-    printf "the key's directory %s is owned by another account; stop and report it to the user: the key belongs in a directory of this account's own (SETUP.md step 1)" "$(qp "$d")"
+    printf "the key's directory %s is owned by another account; stop and report it to the user: the key belongs in a directory only this account can write (SETUP.md step 1)" "$(qp "$d")"
     return 0
   fi
   writable=$(find "$q/." -prune \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || writable=
   [ -n "$writable" ] || return 1
   # chmod is the fix only for this account's own directory: on a shared one
-  # (/tmp, owned by root) it would break the directory for everyone.
-  mine=$(find "$q/." -prune -user "$me" -print 2>/dev/null) || mine=
+  # (/tmp, owned by root) it would break the directory for everyone. A sticky,
+  # world-writable directory is a shared one whoever owns it (root owns /tmp,
+  # so an agent running as root would own it).
+  mine=$(find "$q/." -prune -user "$me" ! -perm -1002 -print 2>/dev/null) || mine=
   if [ -n "$mine" ] && has_ctl "$d"; then
     # No command to paste for such a path (sq refuses one).
     printf "the key's directory %s is writable by others; stop and report it to the user, who removes group and other write access with chmod go-w %s" "$(qp "$d")" "$by_hand_note"
@@ -353,7 +356,7 @@ key_dir_unsafe_msg() {  # DIR
     # turns into code when pasted into dash.
     printf "the key's directory %s is writable by others; stop and report it to the user, who runs: chmod -- go-w %s" "$(qp "$d")" "$(pq "$d")"
   else
-    printf "the key's directory %s is writable by others; stop and report it to the user: the key belongs in a directory of this account's own (SETUP.md step 1)" "$(qp "$d")"
+    printf "the key's directory %s is writable by others; stop and report it to the user: the key belongs in a directory only this account can write (SETUP.md step 1)" "$(qp "$d")"
   fi
 }
 key_dir_safe() {  # DIR
