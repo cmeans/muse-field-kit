@@ -78,7 +78,7 @@ def main(identity, blob_file):
     finally:
         os.stat = real_stat
     if not msg or "is writable by others" not in msg or "chmod" in msg \
-            or "belongs in a directory of this account's own" not in msg:
+            or "belongs in a directory only this account can write" not in msg:
         fail("shared-dir: a root-owned 1777 key directory got the wrong refusal: %r" % msg)
     print("ok: shared-dir")
 
