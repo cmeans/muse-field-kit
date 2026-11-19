@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **Tables for label states, rotation marks and setup-check meanings** (#95, closes #50): the same rules; the rotation-record and mechanism-change restatements point to their one home.
 - **Rotation step 1's cases are a numbered list, and On a resume's outcomes a bulleted one** (#94, refs #50, #19): the same rules, with only the joining words between cases changed.
 - **The docs link the documents they name** (#93): the first mention in each section, to the section where one is named; `age` and `jq` link to their install pages; CI checks every relative link to a document.
 - **Rotation and compromise moved to `ROTATION.md`, and `SKILL.md` says what to read in each phase** (#92, refs #50): a routine handoff reads about 9,000 words, not every file in full; step numbers, section names and script messages point to the new file.
