@@ -417,7 +417,7 @@
   "name": "smartquotes",
   "payload": "{\u201csvc\u201d:\"example\",\"password\":\"mk-Zq9\"}",
   "exit": 1,
-  "stderr_contains": "typographic quotes (U+201C or U+201D)"
+  "stderr_contains": "typographic quotes (U+2018, U+2019, U+201C or U+201D)"
  },
  {
   "name": "smartquotesinvalue",
@@ -429,25 +429,25 @@
   "name": "unknownfield",
   "payload": "{\"svc\":\"example\",\"usrename\":\"u\",\"password\":\"mk-Zq9\"}",
   "exit": 0,
-  "stderr_contains": "consume.py ignores 1 field(s) it doesn't know: \"usrename\""
+  "stderr_contains": "ignores 1 field(s) it doesn't know, 1 of them close to \"username\" (misspelled?)"
  },
  {
   "name": "unknownfieldbidi",
   "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"pass\u202eword\":\"z\"}",
   "exit": 0,
-  "stderr_contains": "doesn't know: \"pass\\u202eword\""
+  "stderr_contains": "ignores 1 field(s) it doesn't know, 1 of them close to \"password\" (misspelled?)"
  },
  {
   "name": "unknownfieldsmany",
   "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"usernam\":\"1\",\"passwor\":\"2\",\"token_i\":\"3\",\"app_i\":\"4\",\"api_key_i\":\"5\",\"usrname\":\"6\"}",
   "exit": 0,
-  "stderr_contains": "ignores 6 field(s) it doesn't know: \"usernam\", \"passwor\", \"token_i\", \"app_i\", \"api_key_i\" (1 not shown"
+  "stderr_contains": "ignores 6 field(s) it doesn't know, 6 of them close to \"username\", \"password\", \"api_key_id\", \"token_id\", \"app_id\" (misspelled?)"
  },
  {
   "name": "unknownfieldsecret",
   "payload": "{\"svc\":\"example\",\"username\":\"me\",\"mk-Zq9-Tr0ub4dor&3\":\"password\"}",
   "exit": 0,
-  "stderr_contains": "ignores 1 field(s) it doesn't know (1 not shown: only a name close to a known field's is shown"
+  "stderr_contains": "ignores 1 field(s) it doesn't know. It uses:"
  },
  {
   "name": "bidisvc",
@@ -459,6 +459,18 @@
   "name": "unknownfieldastral",
   "payload": "{\"svc\":\"example\",\"password\":\"mk-Zq9\",\"passw\ud835\udc28\ud835\udc2bd\":\"z\"}",
   "exit": 0,
-  "stderr_contains": "doesn't know: \"passw\\ud835\\udc28\\ud835\\udc2bd\""
+  "stderr_contains": "ignores 1 field(s) it doesn't know, 1 of them close to \"password\" (misspelled?)"
+ },
+ {
+  "name": "unknownfieldswap",
+  "payload": "{\"svc\":\"example\",\"username\":\"me\",\"Passw0rd!\":\"password\"}",
+  "exit": 0,
+  "stderr_contains": "ignores 1 field(s) it doesn't know, 1 of them close to \"password\" (misspelled?)"
+ },
+ {
+  "name": "smartsinglequotes",
+  "payload": "{\u2018svc\u2019:\"example\",\"password\":\"mk-Zq9\"}",
+  "exit": 1,
+  "stderr_contains": "typographic quotes (U+2018, U+2019, U+201C or U+201D)"
  }
 ]

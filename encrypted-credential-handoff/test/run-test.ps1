@@ -456,7 +456,7 @@ Assert-Refusal 'a link loop' 1 "handoff-loop.age is a symlink that doesn't resol
 # A link that resolves to a valid recipient file is refused too, as in
 # handoff.sh: whoever can repoint it changes the recipient (issue #27).
 New-Link (Join-Path $K 'handoff-linked.age') $RcptFile
-Assert-Refusal 'a link to a valid recipient file' 1 "handoff-linked.age is a symlink: save the agent's recipient there as a plain file" (Invoke-Handoff -Script $hk -ArgText '-To linked -Fingerprint')
+Assert-Refusal 'a link to a valid recipient file' 1 "handoff-linked.age is a symlink: remove the link itself (Remove-Item, which leaves its target alone), then save the agent's recipient there as a plain file" (Invoke-Handoff -Script $hk -ArgText '-To linked -Fingerprint')
 Assert-Refusal 'encrypting to a linked recipient file' 1 'handoff-linked.age is a symlink' (Invoke-Handoff -Script $hk -ArgText '-To linked' -Pipe $PayFile)
 $r = Invoke-Handoff -Script $hk -ArgText '-To linked -CheckSetup'
 Assert-True ($r.Exit -eq 1 -and $r.Out -cmatch '(?m)^FAIL recipient: .*handoff-linked\.age is a symlink') "-CheckSetup didn't fail a linked recipient file: $($r.Out)"
@@ -558,6 +558,12 @@ foreach ($c in $pcases) {
 Assert-Refusal 'payload: a raw lone surrogate in a piped string' 1 $jsonMsg (Invoke-Handoff -Call "('{`"svc`":`"example`",`"password`":`"mk-Zq9' + [char]0xD800 + '`"}') | & $(Q $hk)")
 # Nothing piped and nothing on stdin: empty.
 Assert-Refusal 'an empty pipeline' 1 'empty, aborting' (Invoke-Handoff -Call "@() | & $(Q $hk)")
+# An empty pipeline is refused even with a payload waiting on the process's
+# stdin (a wrapper's, ssh's): that input isn't the user's, and isn't read.
+$emptyFile = Join-Path $S 'empty.json'
+[IO.File]::WriteAllText($emptyFile, '')
+Assert-Refusal 'an empty pipeline with a payload on stdin' 1 'empty, aborting' (Invoke-Handoff -Call "@() | & $(Q $hk)" -Stdin $Utf8.GetBytes($Pay))
+Assert-Refusal 'an empty Get-Content with a payload on stdin' 1 'empty, aborting' (Invoke-Handoff -Call "Get-Content -LiteralPath $(Q $emptyFile) | & $(Q $hk)" -Stdin $Utf8.GetBytes($Pay))
 Assert-Refusal 'no input at all' 1 'empty, aborting' (Invoke-Handoff -Script $hk)
 Assert-Refusal '-File that is not there' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File $(Q (Join-Path $S 'nothere.json'))")
 Assert-Refusal '-File with an empty path' 1 'cannot read' (Invoke-Handoff -Script $hk -ArgText "-File ''")
@@ -584,6 +590,16 @@ Assert-Refusal 'two leading U+FEFF, piped' 1 'a second byte-order mark' $r
 $r = Invoke-Handoff -Script $hk -Pipe $PayFile
 [void](Assert-Blob 'a payload with only known fields' $r)
 Assert-True (-not $r.Err.Contains('note:')) "a payload with only known fields got a note: $($r.Err)"
+# The note never prints the payload's text (handoff.sh's twin check).
+$swapFile = Join-Path $S 'swap.json'
+foreach ($pw in @('P@ssw0rd', 'Passw0rd!', 'Password1', 'passw0rd')) {
+  [IO.File]::WriteAllText($swapFile, '{"svc":"example","username":"me","' + $pw + '":"password"}', $Utf8)
+  $r = Invoke-Handoff -Script $hk -Pipe $swapFile
+  [void](Assert-Blob "a swapped field ($pw)" $r)
+  Assert-True ($r.Err.Contains('close to "password"')) "a swapped field didn't get the note: $($r.Err)"
+  Assert-True (-not $r.Err.Contains($pw)) "the note printed a password typed as a field name ($pw)"
+}
+Say 'ok (the unknown-field note prints no payload text: four common passwords typed as names)'
 # The read is bounded (#65 F12): a large file, stdin's bytes or a pipeline
 # ends at the cap with the size refusal, before the JSON check.
 $spaces = Join-Path $S 'spaces.json'

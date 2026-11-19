@@ -1945,7 +1945,7 @@ expect_refusal "handoff.sh recipient file that is a symlink loop" 1 "handoff-loo
 # A symlink that resolves to a valid recipient file is refused too: whoever
 # can repoint it changes the recipient (issue #27, the maintainer's call).
 ln -s "$PWD/handoff-test.age" "$K/handoff-linked.age"
-expect_refusal "handoff.sh recipient file that is a symlink to a valid one" 1 "handoff-linked.age is a symlink: save the agent's recipient there as a plain file" \
+expect_refusal "handoff.sh recipient file that is a symlink to a valid one" 1 "handoff-linked.age is a symlink: remove the link itself (rm, which leaves its target alone), then save the agent's recipient there as a plain file" \
   bash "$K/handoff.sh" --to linked --fingerprint
 expect_refusal "handoff.sh encrypting to a recipient file that is a symlink" 1 "handoff-linked.age is a symlink" \
   bash "$K/handoff.sh" --to linked <<<"$pay"
@@ -2118,7 +2118,7 @@ case "$out" in
   *) fail "the prompt doesn't say the terminal's line limit: ${out:0:300}" ;;
 esac
 case "$out" in
-  *"the terminal cuts a line at about 4 KB (macOS takes about 1 KB): for a long payload, use a FILE or a pipe"*) ;;
+  *"a line reached the terminal's line limit (about 4 KB, 1 KB on macOS), so it may have been cut: for a long payload, use a pipe (or a FILE)"*) ;;
   *) fail "a 5,000-byte line at the terminal: no hint about the terminal's line cap: ${out:0:300}" ;;
 esac
 bash "$S/hd/handoff.sh" "$S/pty-long.json" </dev/null >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "the 5,000-byte payload as FILE was refused"; }
@@ -2187,21 +2187,39 @@ fi
 # The hint is for a long line at the terminal only: the same refusal from a
 # pipe has none, and nor does a short line typed at the prompt.
 expect_refusal "handoff.sh not JSON, piped" 1 "must be a single JSON object" bash "$S/hd/handoff.sh" <<<'not json'
-! grep -q "the terminal cuts a line" "$S/err" || fail "a piped refusal gave the terminal's line-cap hint"
+! grep -q "the terminal's line limit" "$S/err" || fail "a piped refusal gave the terminal's line-cap hint"
 printf '{"svc":"x" "password":"p"}' >"$S/pty-short.json"
 out=$(pty_type "$S/pty-short.json" "$BASH_BIN" "$S/hd/handoff.sh")
 case "$out" in *"must be a single JSON object"*) ;; *) fail "a short bad line at the terminal: no JSON refusal: $out" ;; esac
-case "$out" in *"the terminal cuts a line"*) fail "a short bad line at the terminal gave the line-cap hint" ;; esac
-echo "ok (no line-cap hint: a piped refusal, a short line at the terminal)"
+case "$out" in *"the terminal's line limit"*) fail "a short bad line at the terminal gave the line-cap hint" ;; esac
+# Off macOS, a 2,000-byte line with an unrelated JSON error (a trailing
+# comma) wasn't cut by the terminal (4,095 bytes there): no hint either.
+if [ "$(uname -s)" != Darwin ]; then
+  python3 -I -c 'print("{\"svc\":\"x\",\"password\":\"" + "a" * 1960 + "\",}", end="")' >"$S/pty-2k.json"
+  out=$(pty_type "$S/pty-2k.json" "$BASH_BIN" "$S/hd/handoff.sh")
+  case "$out" in *"must be a single JSON object"*) ;; *) fail "a 2,000-byte bad line at the terminal: no JSON refusal: ${out:0:300}" ;; esac
+  case "$out" in *"the terminal's line limit"*) fail "a 2,000-byte bad line at the terminal gave the line-cap hint off macOS" ;; esac
+fi
+echo "ok (no line-cap hint: a piped refusal, a short line at the terminal, a 2,000-byte one off macOS)"
 # A payload with only known fields gets no note.
 bash "$S/hd/handoff.sh" <<<'{"svc":"example","username":"u","password":"mk-Zq9"}' >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "a known-fields payload was refused"; }
 ! grep -q "note:" "$S/err" || fail "a payload with only known fields got a note: $(cat "$S/err")"
 echo "ok (no note: a payload with only known fields)"
+# The note never prints the payload's text: a password typed in a name's
+# place, two edits from "password", is named only as "close to password"
+# (QA r1 on #81). Common passwords, each within two edits of "password".
+for pw in 'P@ssw0rd' 'Passw0rd!' 'Password1' 'passw0rd'; do
+  printf '{"svc":"example","username":"me","%s":"password"}' "$pw" | bash "$S/hd/handoff.sh" >/dev/null 2>"$S/err" \
+    || { cat "$S/err" >&2; fail "a swapped field was refused"; }
+  grep -qF 'close to "password"' "$S/err" || fail "a swapped field didn't get the note: $(cat "$S/err")"
+  ! grep -qF -- "$pw" "$S/err" || fail "the note printed a password typed as a field name ($pw)"
+done
+echo "ok (the unknown-field note prints no payload text: four common passwords typed as names)"
 # A UTF-16 file with a byte-order mark, little- and big-endian: handoff.sh
 # reads UTF-8 only, and says so (handoff.ps1 reads one, so this isn't in the
 # shared table; issue #44).
 for enc in utf-16-le utf-16-be; do
-  python3 -I -c 'import sys; e = sys.argv[1]; sys.stdout.buffer.write("﻿{\"svc\":\"example\",\"password\":\"mk-Zq9\"}".encode(e))' "$enc" >"$S/u16bom.json"
+  python3 -I -c 'import sys; e = sys.argv[1]; sys.stdout.buffer.write("\ufeff{\"svc\":\"example\",\"password\":\"mk-Zq9\"}".encode(e))' "$enc" >"$S/u16bom.json"
   expect_refusal "handoff.sh UTF-16 payload with a byte-order mark ($enc)" 1 "the payload is saved as UTF-16: save it as UTF-8" \
     bash "$S/hd/handoff.sh" "$S/u16bom.json"
 done
