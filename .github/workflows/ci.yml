@@ -87,20 +87,29 @@ jobs:
               env POSIXLY_CORRECT=1 bash agent-setup.sh --help >/dev/null'
       - name: ruff
         run: pipx run ruff==0.15.7 check encrypted-credential-handoff/ .github/scripts/md-links.py
-      - name: The docs link the documents they name, and every relative link works
+      - name: The docs link the documents they name, and every relative link to a document works
         # md-links.py: in each section, the first mention of another .md in the
         # repo is a link; every relative .md link names a file and heading that
-        # exist. The two fixtures must fail, or the check is a false green.
+        # exist. Each bad fixture must fail with its own message, and the good
+        # one must pass, or the check is a false green (or a false red).
         run: |
           python3 -I .github/scripts/md-links.py .
-          for bad in unlinked broken; do
-            d="$RUNNER_TEMP/md-$bad"; mkdir -p "$d"; printf '# T\n' > "$d/OTHER.md"
-            if [ "$bad" = unlinked ]; then printf '# A\n\nSee `OTHER.md`.\n' > "$d/A.md"
-            else printf '# A\n\nSee [it](OTHER.md#nope).\n' > "$d/A.md"; fi
-            if python3 -I .github/scripts/md-links.py "$d" > /dev/null; then
-              echo "md-links.py passed the $bad fixture"; exit 1
+          fx() { d="$RUNNER_TEMP/md-$1"; mkdir -p "$d/sub"; printf '# T\n\n## Two words\n' > "$d/OTHER.md"; printf '# S\n' > "$d/STORES.md"; printf '%b' "$2" > "$d/sub/A.md"; echo "$d"; }
+          for c in 'unlinked|See `OTHER.md`.\n|unlinked `OTHER.md`' \
+                   'broken|See [it](../OTHER.md#nope).\n|no heading #nope' \
+                   'missing|See [it](../GONE.md).\n|link to missing' \
+                   'stem|Then follow STORES.\n|unlinked STORES'; do
+            IFS='|' read -r name text want <<<"$c"
+            d=$(fx "$name" "# A\n\n$text")
+            if out=$(python3 -I .github/scripts/md-links.py "$d"); then
+              echo "md-links.py passed the $name fixture"; exit 1
             fi
+            grep -qF "$want" <<<"$out" || { echo "the $name fixture failed for another reason: $out"; exit 1; }
           done
+          # Not mentions: a generic one ("a `OTHER.md`"), a quoted one, a heading,
+          # a prompt to paste, a later mention in a linked section.
+          d=$(fx good '# A\n\nEach folder has a `OTHER.md`. "OTHER.md, step 2"\n\n## OTHER.md\n\n> Read OTHER.md.\n\nSee [`OTHER.md`](../OTHER.md#two-words), then `OTHER.md` again.\n')
+          python3 -I .github/scripts/md-links.py "$d"
       - name: A key file owned by another user, for the key-owner refusal
         # Ubuntu's /etc/shadow is group-readable, so run-test.sh finds no
         # owner-only file of another user's: give it a root-owned 0600 copy

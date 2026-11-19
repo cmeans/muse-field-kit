@@ -25,12 +25,14 @@ SKIP_DIRS = {'.git', '.claude', 'node_modules'}
 # A document named without ".md" ("SETUP step 3", "README's threat model").
 STEMS = re.compile(
     r'(?<![\w./\[-])(README|SETUP|ROTATION|STORES|DESIGN|CONTRIBUTING|STORE-TEST'
-    r'|INSTALL-linux-macos|INSTALL-windows|INSTALL-options)(?![\w.-])')
+    r'|INSTALL-linux-macos|INSTALL-windows|INSTALL-options)(?![\w-]|\.\w)')
 LINK = re.compile(r'!?\[(?:[^\]\\]|\\.)*\]\([^)]*\)')
 BARE = re.compile(r'(?<![\w/.`-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.md)(?![\w/`-])')
 CODE_NAME = re.compile(r'`([A-Za-z0-9_./-]+\.md)`')
 SECTION = re.compile(r'(?:\'s|’s)?,?\s+[“"]([^”"]{1,80})[”"]')
 MARK = re.compile('\0([^\0]*)\0([^\0]*)\0')
+# "a `SECURITY.md`", "its SETUP.md": any folder's file of that name, not one file.
+GENERIC = re.compile(r'(?:\b(?:a|an|its|their|each|every|that folder\'s|a folder\'s)\s+)$', re.I)
 
 
 def slug(heading):
@@ -68,10 +70,13 @@ def all_docs(root):
 def resolve(root, doc, name):
     """The repo path a mention of name in doc means, or None."""
     here = os.path.dirname(doc)
-    for cand in (os.path.normpath(os.path.join(here, name)), os.path.normpath(name)):
+    while True:
+        cand = os.path.normpath(os.path.join(here, name))
         if os.path.isfile(os.path.join(root, cand)):
             return cand
-    return None
+        if not here:
+            return None
+        here = os.path.dirname(here)
 
 
 def check_links(root, doc, lineno, line, linked, problems):
@@ -94,33 +99,40 @@ def check_links(root, doc, lineno, line, linked, problems):
 
 
 def mark_mentions(root, doc, lineno, text, problems):
-    """Text with each mention of another document wrapped as \\0label\\0target\\0."""
-    def marker(label, name):
+    """Text with each mention of another document wrapped as \\0label\\0target\\0.
+
+    Left alone: a name after "a", "its", "each" and the like (any folder's file of
+    that name), and anything inside straight double quotes (a quoted pointer or
+    message, as it is written elsewhere)."""
+    def marker(label, name, before):
+        if GENERIC.search(before):
+            return None
         tgt = resolve(root, doc, name)
         if tgt and tgt != os.path.normpath(doc):
             return '\0' + label + '\0' + tgt + '\0'
         return None
 
-    def stem(m):
-        tgt = resolve(root, doc, m.group(1) + '.md')
-        if tgt and tgt == os.path.normpath(doc):
-            problems.append(f'{doc}:{lineno}: {m.group(1)} may name this file or another: link it by hand')
-        return marker(m.group(1), m.group(1) + '.md') or m.group(0)
+    def stem(m):   # a name that resolves to this file itself is left alone
+        return marker(m.group(1), m.group(1) + '.md', m.string[:m.start()]) or m.group(0)
+
+    def prose(t):
+        t = BARE.sub(lambda m: marker(m.group(1), m.group(1), m.string[:m.start()]) or m.group(0), t)
+        parts = re.split('(\0[^\0]*\0[^\0]*\0)', t)
+        return ''.join(p if p.startswith('\0') else STEMS.sub(stem, p) for p in parts)
 
     out = ''
-    pos = 0
-    for cm in re.finditer(r'`[^`]*`', text):   # inline code: only a whole file name
-        out += prose(text[pos:cm.start()], marker, stem)
-        name = CODE_NAME.fullmatch(cm.group(0))
-        out += (name and marker(cm.group(0), name.group(1))) or cm.group(0)
-        pos = cm.end()
-    return out + prose(text[pos:], marker, stem)
-
-
-def prose(text, marker, stem):
-    text = BARE.sub(lambda m: marker(m.group(1), m.group(1)) or m.group(0), text)
-    parts = re.split('(\0[^\0]*\0[^\0]*\0)', text)
-    return ''.join(p if p.startswith('\0') else STEMS.sub(stem, p) for p in parts)
+    for i, chunk in enumerate(re.split(r'("[^"\n]*")', text)):
+        if i % 2:              # a quoted string: as it is
+            out += chunk
+            continue
+        pos = 0
+        for cm in re.finditer(r'`[^`]*`', chunk):   # inline code: only a whole file name
+            out += prose(chunk[pos:cm.start()])
+            name = CODE_NAME.fullmatch(cm.group(0))
+            out += (name and marker(cm.group(0), name.group(1), chunk[:cm.start()])) or cm.group(0)
+            pos = cm.end()
+        out += prose(chunk[pos:])
+    return out
 
 
 def process(root, doc, fix):
@@ -131,15 +143,28 @@ def process(root, doc, fix):
     problems = []
     fence = False
     linked = set()   # documents already linked in this section
+    comment = False  # inside an HTML comment
     for lineno, line in enumerate(text.split('\n'), 1):
         if line.lstrip().startswith('```'):
             fence = not fence
         if fence or line.lstrip().startswith('```'):
             out.append(line)
             continue
-        if re.match(r'#{1,6}\s', line):
+        heading = re.match(r'#{1,6}\s', line)
+        if heading:
             linked = set()
         check_links(root, doc, lineno, line, linked, problems)
+        # Left as written: headings, quoted prompts meant for pasting (> ...),
+        # HTML comments (to their closing -->), and lines with reference-style links.
+        was_comment = comment
+        if '<!--' in line:
+            comment = True
+        if comment and '-->' in line[line.find('<!--') + 4 if '<!--' in line else 0:]:
+            comment = False
+        if heading or was_comment or '<!--' in line or line.lstrip().startswith('>') \
+                or re.search(r'\]\[|^\s*\[[^\]]+\]:', line):
+            out.append(line)
+            continue
         new = ''
         pos = 0
         for lm in list(LINK.finditer(line)) + [None]:
@@ -153,8 +178,12 @@ def process(root, doc, fix):
                 linked.add(tgt)
                 anc = ''
                 sm = SECTION.match(buf[m.end():])
-                if sm and slug(sm.group(1)) in headings(os.path.join(root, tgt)):
-                    anc = '#' + slug(sm.group(1))
+                if sm:
+                    want = slug(sm.group(1))
+                    hits = sorted(h for h in headings(os.path.join(root, tgt))
+                                  if h == want or h.startswith(want + '-'))
+                    if want in hits or len(hits) == 1:
+                        anc = '#' + (want if want in hits else hits[0])
                 problems.append(f'{doc}:{lineno}: unlinked {label}')
                 return f'[{label}]({os.path.relpath(tgt, os.path.dirname(doc) or ".")}{anc})'
 

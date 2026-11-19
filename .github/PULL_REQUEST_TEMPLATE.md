@@ -1,5 +1,5 @@
 <!--
-  Pull requests in this repository are opened by collaborators ([CONTRIBUTING.md](../CONTRIBUTING.md)).
+  Pull requests in this repository are opened by collaborators (CONTRIBUTING.md).
   Replace the placeholders; remove a section only if it truly doesn't apply.
 -->
 
