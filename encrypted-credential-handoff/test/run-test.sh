@@ -1858,8 +1858,17 @@ if locale -a 2>/dev/null | grep -qiEx 'c\.utf-?8|en_us\.utf-?8'; then
   utf8_loc=$(locale -a | grep -iEx 'c\.utf-?8|en_us\.utf-?8' | head -n 1)
   kelvin="handoff-"$'\xe2\x84\xaa'"im.age"
   cp handoff-test.age "$S/hn/$kelvin"
-  expect_refusal "handoff.sh --to Kim with a KELVIN SIGN look-alike beside it" 1 "handoff-Kim.age doesn't exist. Save the agent's recipient there" \
-    env LC_ALL="$utf8_loc" bash "$S/hn/handoff.sh" --to Kim --fingerprint
+  if [ -e "$S/hn/handoff-Kim.age" ]; then
+    # A file system that normalizes and folds names (macOS's APFS): the
+    # look-alike is handoff-Kim.age itself there, so --to Kim opens it.
+    out=$(env LC_ALL="$utf8_loc" bash "$S/hn/handoff.sh" --to Kim --fingerprint 2>"$S/err") \
+      || { cat "$S/err" >&2; fail "--to Kim on a name-folding file system was refused"; }
+    [ "$out" = "recipient: $(cat handoff-test.age)" ] || fail "--to Kim on a name-folding file system: $out"
+    echo "ok (--to Kim opens the KELVIN SIGN name here: a file system that folds names)"
+  else
+    expect_refusal "handoff.sh --to Kim with a KELVIN SIGN look-alike beside it" 1 "handoff-Kim.age doesn't exist. Save the agent's recipient there" \
+      env LC_ALL="$utf8_loc" bash "$S/hn/handoff.sh" --to Kim --fingerprint
+  fi
   rm -f "$S/hn/$kelvin"
 else
   echo "skip: no UTF-8 locale, the KELVIN SIGN near-miss check not tested"

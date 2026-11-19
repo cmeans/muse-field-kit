@@ -704,11 +704,12 @@ end {
     if (Test-Utf16NoBom $bytes) { Stop-Run $utf16Msg }
     $secret = ConvertFrom-Bytes $bytes
     [Array]::Clear($bytes, 0, $bytes.Length)
-  } elseif ($piped.Count -gt 0 -or $MyInvocation.ExpectingInput) {
+  } elseif ($piped.Count -gt 0) {
     $secret = [string]::Join("`n", $piped.ToArray())
-    # Windows PowerShell 5.1 hands a file's bytes redirected to its stdin to
-    # the script as pipeline text, decoded a byte per character: a UTF-16 file
-    # with no mark shows as the same alternating NULs.
+    # UTF-16 bytes can arrive as pipeline text (GitHub's Windows PowerShell
+    # 5.1 runner gave the JSON message, not the bytes path's, for such a file
+    # on stdin): with no mark, its first characters show the same
+    # alternating NULs.
     $head = New-Object System.Collections.Generic.List[byte]
     for ($h = 0; $h -lt [Math]::Min(4, $secret.Length); $h++) { $v = [int]$secret[$h]; if ($v -gt 255) { break }; $head.Add([byte]$v) }
     if ($head.Count -eq 4 -and (Test-Utf16NoBom $head.ToArray())) { $secret = $null; Stop-Run $utf16Msg }
@@ -716,11 +717,17 @@ end {
     # bytes (and handoff.sh for its input); a second is refused below.
     if ($secret.Length -gt 0 -and $secret[0] -eq [char]0xFEFF) { $secret = $secret.Substring(1) }
   } elseif ([Console]::IsInputRedirected) {
+    # Before the empty-pipeline case below: Windows PowerShell 5.1, run as
+    # powershell -File handoff.ps1 < payload.json (or type payload.json |),
+    # sets ExpectingInput but binds nothing, so that case read every such
+    # payload as empty. The bytes are on stdin.
     $bytes = Read-Capped ([Console]::OpenStandardInput())
     if ($null -eq $bytes) { Stop-Run 'cannot read stdin' }
     if (Test-Utf16NoBom $bytes) { Stop-Run $utf16Msg }
     $secret = ConvertFrom-Bytes $bytes
     [Array]::Clear($bytes, 0, $bytes.Length)
+  } elseif ($MyInvocation.ExpectingInput) {
+    $secret = ''   # an empty pipeline (@() | .\handoff.ps1): "empty" below
   } else {
     [Console]::Error.WriteLine("Paste or type the JSON, then press Enter and $EndKey.")
     [Console]::Error.WriteLine('Example: {"svc": "example", "username": "u", "password": "p"}  or  {"svc": "example", "api_key_id": "k", "api_key_secret": "s"}')

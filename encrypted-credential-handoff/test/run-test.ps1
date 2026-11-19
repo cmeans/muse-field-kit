@@ -528,10 +528,16 @@ $r = Invoke-Handoff -Script $hk -ArgText "-File $(Q $nulLead)"
 Assert-Refusal 'a raw NUL right after {' 1 $jsonMsg $r
 Assert-True (-not $r.Err.Contains('UTF-16')) 'a raw NUL after { was called UTF-16'
 Remove-Item -LiteralPath $nulLead
-# UTF-16 bytes arriving as pipeline text, a byte per character (how Windows
-# PowerShell 5.1 hands a script a file redirected to its stdin): the same
-# UTF-16 message as for the bytes.
+# UTF-16 bytes arriving as pipeline text, a byte per character (as GitHub's
+# Windows PowerShell 5.1 runner seems to deliver such a file on stdin): the
+# same UTF-16 message as for the bytes.
 Assert-Refusal 'UTF-16 without a mark, as pipeline text' 1 'saved as UTF-16' (Invoke-Handoff -Call "(-join @([char]0x7B, [char]0, [char]0x22, [char]0, [char]0x73, [char]0, [char]0x76, [char]0, [char]0x63, [char]0, [char]0x22, [char]0)) | & $(Q $hk)")
+# Run directly with -File and the payload on stdin (powershell -File
+# handoff.ps1 < payload.json, as from cmd): read as bytes
+# and encrypted. Windows PowerShell 5.1 used to read it as an empty pipeline.
+$direct = Invoke-Proc -Exe $PSExe -Argv (@('-NoProfile', '-NonInteractive') + $(if ($OnWindows) { @('-ExecutionPolicy', 'Bypass') } else { @() }) + @('-File', $hk)) -Stdin $Utf8.GetBytes($Pay)
+[void](Assert-Blob 'powershell -File handoff.ps1 with the payload on stdin' $direct)
+Say 'ok (accepted: powershell -File handoff.ps1 with the payload on stdin)'
 # Piped text with one leading byte-order mark: the mark is dropped, as for
 # bytes, and the payload is accepted; with two, the "second mark" hint.
 [void](Assert-Blob 'one leading U+FEFF, piped' (Invoke-Handoff -Call "(([string][char]0xFEFF) + '{`"svc`":`"example`",`"password`":`"mk-Zq9`"}') | & $(Q $hk)"))
