@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **README split into smaller pages** (#90): the core `README.md` keeps what every reader needs; each platform's install, download, check and setup-check steps are in `INSTALL-linux-macos.md` or `INSTALL-windows.md` (other ways in `INSTALL-options.md`), stores are in `STORES.md`, and design background and CI coverage are in `DESIGN.md`. Nothing's meaning changed.
 - **The test suite checks the bytes `handoff.sh` encrypts** (#55, closes #47): each accepted payload case is decrypted and compared with its input, not only opened.
 - **Releases are tagged per kit, `encrypted-credential-handoff-vX.Y.Z`** (#87, closes #72, #63): README's download URLs and SETUP's release-tag command use the new form, and SETUP's commands use `command grep` (and `sed`, `sort`, `uniq`), so a shell function can't change them (0.1.0 and 0.2.0 keep `v0.1.0` and `v0.2.0`); a release is published only for a commit whose CI passed and whose tag hasn't moved since the build.
 - **More test coverage** (#84, closes #57): a payload typed at the terminal and `handoff.ps1 -File` blobs are checked byte for byte; a raw 0x1F payload row; CI runs `handoff.sh`'s payload checks on jq 1.6 too; the `--rewrap` temporary file's name shape is asserted.
