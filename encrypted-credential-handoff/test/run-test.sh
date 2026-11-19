@@ -2105,6 +2105,26 @@ case "$out" in
 esac
 ! printf '%s' "$out" | grep -q -e '--- end ---' || fail "a raw NUL typed at the terminal: a blob was printed"
 echo "ok (refused: a raw NUL typed at the terminal)"
+# An accepted payload typed at the terminal, raw non-ASCII and a line break
+# inside it: the blob opens to the typed bytes, less the final line feed
+# (the Enter before Ctrl-D, which $(...) drops), the way the payload table's
+# stdin and FILE cases do (issue #57). The blob is the line between the
+# "--- paste everything below" and "--- end ---" lines the terminal showed.
+printf '{"svc":"example",\n"password":"p\303\244ss-\346\227\245\346\234\254-\360\237\230\200-mk-Zq9"}' >"$S/pty-ok.json"
+out=$(pty_type "$S/pty-ok.json" "$BASH_BIN" "$S/hd/handoff.sh")
+[ "${out%%$'\n'*}" = 0 ] || fail "a payload typed at the terminal: exit ${out%%$'\n'*}, expected 0: $out"
+# The prompt hides the input: the typed secret never shows on the terminal.
+case "$out" in *"$MK"*) fail "a payload typed at the terminal was echoed" ;; esac
+printf '%s\n' "$out" | tr -d '\r' | sed -n '/^--- paste everything below/,/^--- end ---$/p' | sed '1d;$d' >"$S/pty-ok.blob"
+[ "$(wc -l <"$S/pty-ok.blob")" -eq 1 ] || fail "a payload typed at the terminal: no single blob line between the markers: $out"
+base64 -d <"$S/pty-ok.blob" | "$AGE" -d -i "$TMPKEY" >"$S/pty-ok.got" \
+  || fail "a payload typed at the terminal: age couldn't open the blob"
+cmp -s "$S/pty-ok.got" "$S/pty-ok.json" \
+  || fail "a payload typed at the terminal: the decrypted bytes differ from the typed ones ($(( $(wc -c <"$S/pty-ok.got") )) bytes, wanted $(( $(wc -c <"$S/pty-ok.json") )))"
+consume --label example --check --blob-file "$S/pty-ok.blob" >/dev/null 2>"$S/cerr" \
+  || { cat "$S/cerr" >&2; fail "a payload typed at the terminal: consume.py --check refused the blob"; }
+rm -f "$S/pty-ok.got" "$S/pty-ok.blob"
+echo "ok (accepted: a payload typed at the terminal, and its blob holds the typed bytes)"
 # A line over the terminal's line cap (4095 bytes on Linux; on macOS 1023,
 # past which every byte is dropped, so pty_type deletes one first) typed or
 # pasted at the prompt is cut: refused, with the hint to use a FILE or a pipe
@@ -2621,6 +2641,42 @@ exec(compile(builtins.open("../consume.py").read(), "consume.py", "exec"), {"__n
 ' "$ST/rb.txt"
 cmp -s blob-age.txt "$ST/rb.txt" || fail "a blob that didn't read back replaced the blob file"
 ! compgen -G "$ST/.rb.txt.*" >/dev/null || fail "a failed read-back left its temporary file"
+# The temporary file's name, which the f= rule and the resume glob depend on:
+# ".<basename cut to at most 100 bytes on a character boundary>.<random>.rewrap",
+# beside the blob file, the random part with no ".". The long name is 40 "€"
+# (3 bytes each) and ".txt": 124 bytes, cut to 33 "€" (99 bytes), where a cut
+# at byte 100 would split a character. consume.py renames by the resolved
+# path, so it's compared with $RST ($TMPDIR is a symlink on macOS).
+long="$(printf '€%.0s' $(seq 40)).txt"
+for name in tn.txt "$long"; do
+  cp blob-age.txt "$ST/$name"
+  rm -f "$S/rewrap-name"
+  rk python3 -I -c '
+import os, sys
+real, record = os.replace, sys.argv[2]
+def recording_replace(a, b):
+    with open(record, "wb") as fh:
+        fh.write(os.fsencode(a) + b"\0" + os.fsencode(b))
+    real(a, b)
+os.replace = recording_replace
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$ST/$name" "$S/rewrap-name" 2>/dev/null || fail "--rewrap of '$name' for the temporary name check failed"
+  [ -s "$S/rewrap-name" ] || fail "--rewrap of '$name' never renamed a temporary file"
+  python3 -I -c '
+import os, re, sys
+tmp, dst = open(sys.argv[1], "rb").read().split(b"\0")
+name, directory = sys.argv[2], sys.argv[3]
+short = "€" * 33 if name.startswith("€") else name
+if os.fsencode(os.path.join(directory, name)) != dst:
+    sys.exit(f"renamed onto {dst!r}, not the blob file")
+if os.path.dirname(tmp) != os.fsencode(directory):
+    sys.exit(f"temporary file {tmp!r} is not beside the blob file")
+if not re.fullmatch(rb"\." + re.escape(os.fsencode(short)) + rb"\.[^.]+\.rewrap", os.path.basename(tmp)):
+    sys.exit(f"temporary name {os.path.basename(tmp)!r} is not .{short}.<random>.rewrap")
+' "$S/rewrap-name" "$name" "$RST" || fail "the temporary name for '$name' has the wrong shape"
+done
+echo "ok (the temporary name: .<basename, cut to 100 bytes on a character>.<random>.rewrap)"
 # A TERM during the rewrite: before the rename, the file is as it was and no
 # temporary file is left; after it, the message says the file holds the new blob.
 for when in before after; do

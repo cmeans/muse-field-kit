@@ -539,13 +539,15 @@ foreach ($c in $pcases) {
     if ($isText) { $r = Invoke-Handoff -Script $hk -Pipe $f } else { $r = Invoke-Handoff -Script $hk -Stdin $raw }
     $blob = Assert-Blob "payload $($c.name)" $r
     Assert-True ($r.Err.Contains($c.stderr_contains)) "payload $($c.name): stderr lacks `"$($c.stderr_contains)`""
-    [void](Assert-Blob "payload $($c.name) (-File)" (Invoke-Handoff -Script $hk -ArgText "-File $(Q $f)"))
-    # What age gets: the text without a leading byte-order mark (dropped) or
-    # trailing line ends.
+    $fileBlob = Assert-Blob "payload $($c.name) (-File)" (Invoke-Handoff -Script $hk -ArgText "-File $(Q $f)")
+    # What age gets, by either route: the text without a leading byte-order
+    # mark (dropped) or trailing line ends. check-interop.py opens both blobs
+    # to these bytes (issue #57).
     $t = $Utf8.GetString($raw)
     if ($t.Length -gt 0 -and $t[0] -eq [char]0xFEFF) { $t = $t.Substring(1) }
     $t = $t.TrimEnd("`r", "`n")
     Save-Interop "payload-$($c.name)" $blob $t $Utf8.GetBytes($t)
+    Save-Interop "payload-$($c.name)-file" $fileBlob $t $Utf8.GetBytes($t)
     Say "ok (accepted: payload $($c.name))"
   } else {
     if ($isText) { $r = Invoke-Handoff -Script $hk -Pipe $f } else { $r = Invoke-Handoff -Script $hk -Stdin $raw }
