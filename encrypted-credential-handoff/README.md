@@ -1,5 +1,7 @@
 # Encrypted credential handoff
 
+[![Release](https://img.shields.io/github/v/release/cmeans/muse-field-kit?filter=encrypted-credential-handoff-*)](https://github.com/cmeans/muse-field-kit/releases?q=encrypted-credential-handoff&expanded=true)
+
 Hand your Muse a service credential **without the plaintext ever entering the chat**.
 
 1. **You encrypt** a small JSON payload, such as `{"svc": "example", "username": "…", "password": "…"}`, on your own machine with `handoff.sh` (`handoff.ps1` on Windows), to your Muse's public key, its `age` recipient.
@@ -132,10 +134,10 @@ An install whose wrappers run a consumer other than this folder's `consume.py` m
 
 ## Installing age
 
-Your side needs `age` (and, for `handoff.sh`, `jq` 1.6 or newer); the agent's side needs `age` (with `age-keygen`, which comes with it) and Python 3.7 or newer. There's no minimum `age` version (`DESIGN.md`, “Choosing the suite”), but install the current release where you can choose.
+Your side needs [`age`](https://github.com/FiloSottile/age) (and, for `handoff.sh`, [`jq`](https://jqlang.org/) 1.6 or newer); the agent's side needs `age` (with `age-keygen`, which comes with it) and [Python](https://www.python.org/downloads/) 3.7 or newer. There's no minimum `age` version (`DESIGN.md`, “Choosing the suite”), but install the current release where you can choose.
 
 - **Linux and macOS:** your package manager (`sudo apt install age jq`, `sudo dnf install age jq`, or `brew install age jq` with [Homebrew](https://brew.sh)); `INSTALL-linux-macos.md` has the details.
-- **Windows:** `winget install --id FiloSottile.age`; `INSTALL-windows.md` has the details.
+- **Windows:** `winget install --id FiloSottile.age` ([winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/)); `INSTALL-windows.md` has the details.
 - **Phones, release binaries, and other ways:** `INSTALL-options.md`.
 
 ## Getting the scripts
@@ -159,13 +161,9 @@ What CI tests on each platform is in `DESIGN.md`, “What CI tests”.
 - **Keep a login probe honest:** after decrypting, attempt one real authentication before declaring the handoff good; judge it by status only, never by printing a response body; and log out any session the probe created if the service supports it.
 - **One identity per agent environment.** Do not reuse the key across machines; the point is that exactly one place can decrypt.
 
-## Status: what is field-tested, and what is new
+## Status
 
-The core of this pattern — one key pair on the agent's machine, encrypt-on-yours, ciphertext through chat, decrypt-in-memory at use, key and ciphertext never sharing a disk — has run daily in the author's setup since October 2026 (the store-only separation form dates from 2026-10-12). Before 0.1.0 was published, Muse also ran its `consume.py` and wrappers live on two production labels, one complete routine rotation (rotate, rewrap, last pass and retire, 2026-11-14), and each of the five stores in `STORES.md`'s table end to end with a dummy blob (2026-11-14). All of that ran on 0.1.0's RSA keys and blobs.
-
-Version 0.2.0 keeps that flow and changes what's under it: `age` in place of RSA and OpenSSL, the header check, the `private_key`, `app_id` and `installation_id` fields, `handoff.ps1` for Windows, the setup checks, and the release files. These are covered by the interop and refusal tests on Linux, macOS and Windows (`DESIGN.md`, “What CI tests”), not yet by field time: 0.2.0's store tests on Muse at the blob sizes up to 64,000 characters passed (2026-11-17), and its live runs moving its own labels to `age` one at a time are pending: they come after the release. Not yet field-tested at all: a compromise response, which no live run has needed, a read-only store token, approvals on a fetch (`STORES.md`, “Approving a connection”), typing a payload into `handoff.ps1` at a real Windows console (CI runs it with no console), and phones. `CHANGELOG.md` lists what ships.
-
-A note on review, in the same spirit: the reviewers of this folder were AI agent sessions in the author's own multi-agent setup (structural review, line-level review with reproduced findings, a cold read, and QA rounds on every pull request), plus Muse, which reviewed every pull request as the agent this folder is written for, and the author. That is peer review inside one shop — valuable, and not a third-party security audit.
+The core of this pattern (one key on the agent's machine, encryption on yours, ciphertext through chat, decryption in memory at use, the key and the ciphertext never on one disk) has run daily in the author's setup since October 2026. Muse has run it live on its own labels, through a complete routine rotation, and against each store in `STORES.md`'s table, end to end. What 0.2.1 ships is covered by the interop and refusal tests on Linux, macOS and Windows (`DESIGN.md`, “What CI tests”). Not yet field-tested: Muse's own labels on the `age`-based version (the live runs above came before it), a compromise response, a read-only store token, approvals on a fetch (`STORES.md`, “Approving a connection”), typing a payload into `handoff.ps1` at a real Windows console (CI runs it with no console), and phones. `CHANGELOG.md` lists what ships and how each release was reviewed.
 
 ## Files
 
