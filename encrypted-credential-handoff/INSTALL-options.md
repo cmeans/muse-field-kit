@@ -12,9 +12,9 @@ Cautions specific to a phone, whichever way you run it:
 - **Clipboard history and sync** (Gboard's clipboard, cross-device clipboards) can copy a password to other places. Copying the *blob* is safe; copying the plaintext isn't. Clear the clipboard after pasting a password.
 - **The payload file** lives in the app's storage: delete it after the blob is made, as on a computer.
 
-## Git Bash or WSL on Windows
+## WSL, or Git Bash (untested), on Windows
 
-If you already use [Git Bash](https://gitforwindows.org/) or [WSL](https://learn.microsoft.com/en-us/windows/wsl/install), you can run `handoff.sh` there instead of `handoff.ps1`, with `age` and `jq` installed for it, and follow `INSTALL-linux-macos.md`.
+In [WSL](https://learn.microsoft.com/en-us/windows/wsl/install), you can run `handoff.sh` instead of `handoff.ps1`: follow `INSTALL-linux-macos.md` inside the WSL distribution. In [Git Bash](https://gitforwindows.org/), which nothing here has been tested on, `handoff.sh` would need `age.exe` and `jq.exe` on `PATH` (`winget install --id FiloSottile.age` and `winget install --id jqlang.jq`), since the package managers in `INSTALL-linux-macos.md` don't exist there.
 
 ## A release binary of age, and checking it
 

@@ -163,7 +163,7 @@ What CI tests on each platform is in `DESIGN.md`, “What CI tests”.
 
 ## Status
 
-The core of this pattern (one key on the agent's machine, encryption on yours, ciphertext through chat, decryption in memory at use, the key and the ciphertext never on one disk) has run daily in the author's setup since October 2026. Muse has run it live on its own labels, through a complete routine rotation, and against each store in `STORES.md`'s table, end to end. What 0.2.1 ships is covered by the interop and refusal tests on Linux, macOS and Windows (`DESIGN.md`, “What CI tests”). Not yet field-tested: a compromise response, a read-only store token, approvals on a fetch (`STORES.md`, “Approving a connection”), typing a payload into `handoff.ps1` at a real Windows console (CI runs it with no console), and phones. `CHANGELOG.md` lists what ships and how each release was reviewed.
+The core of this pattern (one key on the agent's machine, encryption on yours, ciphertext through chat, decryption in memory at use, the key and the ciphertext never on one disk) has run daily in the author's setup since October 2026. Muse has run it live on its own labels, through a complete routine rotation, and against each store in `STORES.md`'s table, end to end. What 0.2.1 ships is covered by the interop and refusal tests on Linux, macOS and Windows (`DESIGN.md`, “What CI tests”). Not yet field-tested: Muse's own labels on the `age`-based version (the live runs above came before it), a compromise response, a read-only store token, approvals on a fetch (`STORES.md`, “Approving a connection”), typing a payload into `handoff.ps1` at a real Windows console (CI runs it with no console), and phones. `CHANGELOG.md` lists what ships and how each release was reviewed.
 
 ## Files
 
