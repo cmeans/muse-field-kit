@@ -283,12 +283,12 @@ Then get the handoff script (next section) and run its setup check: `./handoff.s
 
 ## Getting the scripts
 
-Each tagged release of this repository carries `handoff.sh`, `handoff.ps1` and `SHA256SUMS`, byte for byte the files in this folder at that tag, with a build-provenance attestation for each script. Your agent tells you which release to use (the one its own scripts come from) and gives you only its recipient through chat: **it never sends you the script**, and a script that arrives as a file in chat isn't one to run (invariant 6). Below, replace `vX.Y.Z` with that release's tag.
+Each of this kit's releases carries `handoff.sh`, `handoff.ps1` and `SHA256SUMS`, byte for byte the files in this folder at that tag, with a build-provenance attestation for each script. Your agent tells you which release to use (the one its own scripts come from) and gives you only its recipient through chat: **it never sends you the script**, and a script that arrives as a file in chat isn't one to run (invariant 6). Below, replace `X.Y.Z` with that release's version: its tag is `encrypted-credential-handoff-vX.Y.Z` (releases before 0.2.1 were tagged `vX.Y.Z`, so for 0.2.0 the commands below have `v0.2.0` in place of `encrypted-credential-handoff-vX.Y.Z`). This kit's releases are listed at <https://github.com/cmeans/muse-field-kit/releases?q=encrypted-credential-handoff&expanded=true>.
 
 **Linux and macOS.** Download `handoff.sh` and `SHA256SUMS` for the tag into the directory you'll run the script from:
 
 ```sh
-curl -fL --remote-name-all "https://github.com/cmeans/muse-field-kit/releases/download/vX.Y.Z/handoff.sh" "https://github.com/cmeans/muse-field-kit/releases/download/vX.Y.Z/SHA256SUMS"
+curl -fL --remote-name-all "https://github.com/cmeans/muse-field-kit/releases/download/encrypted-credential-handoff-vX.Y.Z/handoff.sh" "https://github.com/cmeans/muse-field-kit/releases/download/encrypted-credential-handoff-vX.Y.Z/SHA256SUMS"
 ```
 
 `curl` is needed only to download (macOS and most Linux desktops have it). Without it, `wget` with the same two URLs works, or the release page in a browser, saving both files to one directory. Then check the script against `SHA256SUMS` (the line it prints must say `handoff.sh: OK`) and make it executable:
@@ -309,7 +309,7 @@ chmod +x handoff.sh
 **Windows (PowerShell).** Download `handoff.ps1` and `SHA256SUMS` into the folder you'll run it from (on an older Windows PowerShell 5.1 that can't connect, run `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'` first):
 
 ```powershell
-$base = 'https://github.com/cmeans/muse-field-kit/releases/download/vX.Y.Z'
+$base = 'https://github.com/cmeans/muse-field-kit/releases/download/encrypted-credential-handoff-vX.Y.Z'
 Invoke-WebRequest -UseBasicParsing -Uri "$base/handoff.ps1" -OutFile handoff.ps1
 Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS" -OutFile SHA256SUMS
 ```
@@ -325,9 +325,9 @@ if ((Get-FileHash .\handoff.ps1 -Algorithm SHA256).Hash -ne $expected) { throw '
 
 Only then remove the Mark of the Web with `Unblock-File .\handoff.ps1`, and run it as “Running handoff.ps1 on Windows” says.
 
-**With `gh`,** you can also check where the file was built: `gh attestation verify handoff.sh --repo cmeans/muse-field-kit --signer-workflow cmeans/muse-field-kit/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z` (or `.\handoff.ps1` in place of `handoff.sh`) proves it came from this repository's release workflow, run for that release's tag.
+**With `gh`,** you can also check where the file was built: `gh attestation verify handoff.sh --repo cmeans/muse-field-kit --signer-workflow cmeans/muse-field-kit/.github/workflows/release.yml --source-ref refs/tags/encrypted-credential-handoff-vX.Y.Z` (or `.\handoff.ps1` in place of `handoff.sh`) proves it came from this repository's release workflow, run for that release's tag.
 
-**With Git,** `git clone --branch vX.Y.Z https://github.com/cmeans/muse-field-kit` gets the same files, in `muse-field-kit/encrypted-credential-handoff/`; run the script from there. Git isn't required.
+**With Git,** `git clone --branch encrypted-credential-handoff-vX.Y.Z https://github.com/cmeans/muse-field-kit` gets the same files, in `muse-field-kit/encrypted-credential-handoff/`; run the script from there. Git isn't required.
 
 **What the checksum proves, plainly:** `SHA256SUMS` comes from the same release page as the script, so it catches a damaged download and a copy swapped on the way (a chat attachment, a mirror), not a compromise of the GitHub account or repository. The attestation ties the file to the release workflow's run. Neither replaces the recipient comparison (invariant 6).
 
