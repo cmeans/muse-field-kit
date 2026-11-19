@@ -532,6 +532,11 @@ Remove-Item -LiteralPath $nulLead
 # PowerShell 5.1 hands a script a file redirected to its stdin): the same
 # UTF-16 message as for the bytes.
 Assert-Refusal 'UTF-16 without a mark, as pipeline text' 1 'saved as UTF-16' (Invoke-Handoff -Call "(-join @([char]0x7B, [char]0, [char]0x22, [char]0, [char]0x73, [char]0, [char]0x76, [char]0, [char]0x63, [char]0, [char]0x22, [char]0)) | & $(Q $hk)")
+# Piped text with one leading byte-order mark: the mark is dropped, as for
+# bytes, and the payload is accepted; with two, the "second mark" hint.
+[void](Assert-Blob 'one leading U+FEFF, piped' (Invoke-Handoff -Call "(([string][char]0xFEFF) + '{`"svc`":`"example`",`"password`":`"mk-Zq9`"}') | & $(Q $hk)"))
+$r = Invoke-Handoff -Call "(([string][char]0xFEFF) + ([string][char]0xFEFF) + '{`"svc`":`"example`",`"password`":`"mk-Zq9`"}') | & $(Q $hk)"
+Assert-Refusal 'two leading U+FEFF, piped' 1 'a second byte-order mark' $r
 # A payload with only known fields gets no note.
 $r = Invoke-Handoff -Script $hk -Pipe $PayFile
 [void](Assert-Blob 'a payload with only known fields' $r)

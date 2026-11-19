@@ -105,8 +105,10 @@ Usage:
 NAME (default muse; up to 64 letters, digits, _ and -, not starting with -)
 picks the agent's recipient file, handoff-NAME.age, in this script's
 directory.
-FILE is read as UTF-8. At the prompt, the terminal cuts a line over about
-4 KB (1 KB on macOS): for a long payload, use FILE or a pipe.
+FILE is read as UTF-8. At the prompt, one line can hold about 4 KB on Linux
+and 1 KB on macOS: Linux cuts a longer line, and macOS beeps and ignores
+the rest of it, Enter and Ctrl-D too (press Ctrl-C). For a long payload, use
+FILE or a pipe.
 stdout is ONLY the base64 ciphertext; all prompts go to stderr.
 USAGE
 }
@@ -551,6 +553,10 @@ elif [ -t 0 ]; then
     echo "Paste or type the JSON, then press Enter and Ctrl-D."
     echo 'Example: {"svc": "example", "username": "u", "password": "p"}  or  {"svc": "example", "api_key_id": "k", "api_key_secret": "s"}'
     echo "(input is hidden and is not written to shell history)"
+    # Said before the paste: on macOS a line past 1 KB can't be ended at all
+    # (the kernel drops every later byte, Enter and Ctrl-D too), so no
+    # message after the read could reach the user.
+    echo "(one line can hold about 4 KB, 1 KB on macOS: for a longer one, such as a private_key on one line, press Ctrl-C and use a FILE or a pipe)"
   } >&2
   tty_saved=$(stty -g)
   trap 'stty "$tty_saved"' EXIT          # always give the terminal its echo back
@@ -583,11 +589,12 @@ bad_json() {
   case "$SECRET_JSON" in
     *$'\xe2\x80\x9c'*|*$'\xe2\x80\x9d'*) echo "handoff.sh: it has typographic quotes (U+201C or U+201D): JSON takes only straight quotes (\") around a name or a value, so retype any that are meant as those (some editors and chat apps change them); inside a value, they're part of it" >&2 ;;
   esac
-  # A line the terminal cut arrives at about its cap, 4095 bytes on Linux
-  # (1024 is macOS's MAX_CANON): only a line about that long can have been
-  # cut. (awk reads the payload on a pipe, as jq does.)
+  # A line Linux's terminal cut arrives at its cap, 4095 bytes; on macOS the
+  # line can't be ended past 1023 bytes (MAX_INPUT 1024), so one arrives here
+  # only if the user deleted a character first. Only a line about that long
+  # can have been cut. (awk reads the payload on a pipe, as jq does.)
   if [ "$from_tty" = 1 ] && printf '%s\n' "$SECRET_JSON" | LC_ALL=C awk 'length >= 1000 { f = 1 } END { exit !f }'; then
-    echo "handoff.sh: a line was 1 KB or longer, and the terminal cuts a line at about 4 KB (1 KB on macOS): for a long payload, use a FILE or a pipe" >&2
+    echo "handoff.sh: a line was about 1 KB or longer, and the terminal cuts a line at about 4 KB (macOS takes about 1 KB): for a long payload, use a FILE or a pipe" >&2
   fi
   exit 1
 }

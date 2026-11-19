@@ -1853,8 +1853,9 @@ expect_refusal "handoff.sh --to muse with handoff_Muse.age beside it" 1 "but han
 rm -f "$S/hn/handoff_Muse.age"
 # A look-alike that a UTF-8 locale folds to ASCII (U+212A KELVIN SIGN lowers
 # to k) isn't a near miss: it would show as handoff-Kim.age (issue #27 item 1).
-if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8\|en_us\.utf-\?8'; then
-  utf8_loc=$(locale -a | grep -ix 'c\.utf-\?8\|en_us\.utf-\?8' | head -n 1)
+# (ERE: BSD grep, on macOS, takes no \? or \| in a basic expression.)
+if locale -a 2>/dev/null | grep -qiEx 'c\.utf-?8|en_us\.utf-?8'; then
+  utf8_loc=$(locale -a | grep -iEx 'c\.utf-?8|en_us\.utf-?8' | head -n 1)
   kelvin="handoff-"$'\xe2\x84\xaa'"im.age"
   cp handoff-test.age "$S/hn/$kelvin"
   expect_refusal "handoff.sh --to Kim with a KELVIN SIGN look-alike beside it" 1 "handoff-Kim.age doesn't exist. Save the agent's recipient there" \
@@ -2064,18 +2065,17 @@ while time.time() < end:
         out += chunk
     if not sent and b"Paste or type" in out:
         time.sleep(0.3)  # let stty -echo take effect
-        os.write(fd, data + b"\n")
+        os.write(fd, data)
+        # macOS drops every byte past 1023 in a line (MAX_INPUT), Enter and
+        # Ctrl-D too: a Backspace (VERASE, still handled) frees one place,
+        # so the Enter after it ends the line, as a user would have to.
+        if sys.platform == "darwin" and len(data) > 1000:
+            time.sleep(0.2)
+            os.write(fd, b"\x7f")
+        os.write(fd, b"\n")
         time.sleep(0.2)
         os.write(fd, b"\x04")
-        sent, eof_at, eofs = True, time.time(), 1
-    # A line over macOS's MAX_CANON loses its line end, so the first Ctrl-D
-    # only ends that partial line: the second one, on an empty line, is EOF.
-    if sent and eofs < 4 and time.time() - eof_at > 2:
-        try:
-            os.write(fd, b"\x04")
-        except OSError:
-            pass
-        eof_at, eofs = time.time(), eofs + 1
+        sent = True
 else:
     os.kill(pid, 9)
 _, st = os.waitpid(pid, 0)
@@ -2092,14 +2092,20 @@ case "$out" in
 esac
 ! printf '%s' "$out" | grep -q -e '--- end ---' || fail "a raw NUL typed at the terminal: a blob was printed"
 echo "ok (refused: a raw NUL typed at the terminal)"
-# A line over the terminal's line cap (4095 bytes on Linux) typed or pasted
-# at the prompt is cut by the terminal: refused, with the hint to use a FILE
-# or a pipe (issue #64). The same payload as FILE is accepted.
+# A line over the terminal's line cap (4095 bytes on Linux; on macOS 1023,
+# past which every byte is dropped, so pty_type deletes one first) typed or
+# pasted at the prompt is cut: refused, with the hint to use a FILE or a pipe
+# (issue #64). The prompt says the limit before anything is typed. The same
+# payload as FILE is accepted.
 python3 -I -c 'print("{\"svc\":\"example\",\"password\":\"" + "a" * 4970 + "\"}", end="")' >"$S/pty-long.json"
 out=$(pty_type "$S/pty-long.json" "$BASH_BIN" "$S/hd/handoff.sh")
 [ "${out%%$'\n'*}" = 1 ] || fail "a 5,000-byte line at the terminal: exit ${out%%$'\n'*}, expected 1: ${out:0:300}"
 case "$out" in
-  *"the terminal cuts a line at about 4 KB (1 KB on macOS): for a long payload, use a FILE or a pipe"*) ;;
+  *"one line can hold about 4 KB, 1 KB on macOS: for a longer one"*) ;;
+  *) fail "the prompt doesn't say the terminal's line limit: ${out:0:300}" ;;
+esac
+case "$out" in
+  *"the terminal cuts a line at about 4 KB (macOS takes about 1 KB): for a long payload, use a FILE or a pipe"*) ;;
   *) fail "a 5,000-byte line at the terminal: no hint about the terminal's line cap: ${out:0:300}" ;;
 esac
 bash "$S/hd/handoff.sh" "$S/pty-long.json" </dev/null >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "the 5,000-byte payload as FILE was refused"; }

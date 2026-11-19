@@ -712,6 +712,9 @@ end {
     $head = New-Object System.Collections.Generic.List[byte]
     for ($h = 0; $h -lt [Math]::Min(4, $secret.Length); $h++) { $v = [int]$secret[$h]; if ($v -gt 255) { break }; $head.Add([byte]$v) }
     if ($head.Count -eq 4 -and (Test-Utf16NoBom $head.ToArray())) { $secret = $null; Stop-Run $utf16Msg }
+    # One leading byte-order mark is dropped, as ConvertFrom-Bytes does for
+    # bytes (and handoff.sh for its input); a second is refused below.
+    if ($secret.Length -gt 0 -and $secret[0] -eq [char]0xFEFF) { $secret = $secret.Substring(1) }
   } elseif ([Console]::IsInputRedirected) {
     $bytes = Read-Capped ([Console]::OpenStandardInput())
     if ($null -eq $bytes) { Stop-Run 'cannot read stdin' }
