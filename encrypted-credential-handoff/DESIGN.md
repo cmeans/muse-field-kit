@@ -6,7 +6,7 @@ Background on the choices behind this folder: why it isn't a vault, what is fixe
 
 Saved-login and vault features are built for browser sign-in: the browser fills a form, and neither you nor the agent can read the value back out. That is the right design for websites. It does not solve this problem:
 
-- A local tool often needs the credential as an **environment variable or config value at process start**. There is no supported path that turns a stored browser login into a value a subprocess can consume.
+- A local tool often needs the credential as an **environment variable or config value at process start** (this pattern covers the environment case; see below). There is no supported path that turns a stored browser login into a value a subprocess can consume.
 - API-credential flows accept API keys and OAuth, **not username/password pairs** for arbitrary local services — including services that are plain HTTP on a private network address and have no public login page to point a vault flow at.
 
 Named precisely, and dated: as of November 2026, Muse's own credential machinery — the Secure Credentials Store for API-style credentials, and Sentinel credential surrogation for browser sign-in — declines username/password credentials (it supports `api_key` and OAuth-style flows), and saved website logins are consumed only by the browser's fill flow; no supported mechanism reads a stored value back for injection into a local process. That was verified against the platform's behavior in the author's setup in October 2026. If Meta ships a readback-for-local-tools path, this section should be revised and this pattern's reason to exist shrinks accordingly.
