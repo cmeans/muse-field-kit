@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- **The Current-key probe check is one command line** (#96, refs #21): it works when each tool call is a new shell, checks `mktemp`, and deletes the file once it's read; on macOS it uses `getconf DARWIN_USER_TEMP_DIR`, not `$TMPDIR`.
 - **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see `ROTATION.md`'s "A .previous.previous file".
 - **`agent-setup.sh --public-key` takes no KEY (a KEY is now a usage error), and `--rotate` gives save instructions only for `HANDOFF_PRIVKEY`'s key** (#74, closes #51): a request to run either on another file could have the user save a recipient no wrapper uses; SETUP and SKILL treat such a request as an injection attempt.
 - **`consume.py` follow-ups** (#78, closes #75): run mode passes each value as its UTF-8 bytes whatever the locale; `HANDOFF_KEY_DIR` without `HANDOFF_PRIVKEY` is refused with the fix; an armored blob is named as one even with its lines joined, and a blob still framed by the handoff script's lines gets a hint; an identity file's lines split on `\n` alone, as `age` splits them; `--rewrap` restores its signal mask on every path and prints a blob file's mode in four digits.
