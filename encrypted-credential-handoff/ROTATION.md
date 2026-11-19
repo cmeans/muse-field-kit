@@ -18,13 +18,15 @@ Every command below takes the key path the wrappers use: for a non-default locat
 
 **Marks in your notes.** Besides each label's state (step 4), a rotation records these marks. The sections this table names are the rules; the table only says where to look.
 
+<!-- Maintainers: when a step that sets or clears one of these marks changes, update its row here too. -->
+
 | Mark | Set when | Cleared when |
 | --- | --- | --- |
 | `staging held` | At Rotation step 5, before the last pass. | At Rotation step 5, when a label fails the pass, and after the retire ("once it has"); at Rotation step 1, cases 3.2 and 5.2; at the start of Compromise; and as "A hard-link refusal at the retire" says, after an acceptance. |
 | `sent back by the pass` | At Rotation step 5, the first time a label fails the pass with `decrypted with the previous key` and `ok`. | When the rotation is done (Rotation step 4's state list, `pending`). |
 | `retire refused (hard link)` | At "A hard-link refusal at the retire: Record it", when the retire refuses (Rotation step 5, or Compromise step 2 or 4). | At "A hard-link refusal at the retire: Clear the mark"; at Rotation step 5 ("once it has"); at Rotation step 1, cases 3.1 and 5.2; and at the start of Compromise. |
-| `retire rerun started` | At "A hard-link refusal at the retire", when the user says the other name is gone. | As for `retire refused (hard link)`, above. |
-| `.previous removed by the user` | At "A hard-link refusal at the retire: If `.previous` is gone without a successful retire". | That same bullet, when the note is stale; otherwise as for `retire refused (hard link)`, above. |
+| `retire rerun started` | At "A hard-link refusal at the retire", when the user says the other name is gone. | At "A hard-link refusal at the retire: Clear the mark"; at Rotation step 5 ("once it has"); at Rotation step 1, case 5.2; and at the start of Compromise. |
+| `.previous removed by the user` | At "A hard-link refusal at the retire: If `.previous` is gone without a successful retire". | That same bullet, when the note is stale; otherwise at "A hard-link refusal at the retire: Clear the mark"; at Rotation step 5 ("once it has"); at Rotation step 1, case 5.2; and at the start of Compromise. |
 | `.previous.previous found` | At "A .previous.previous file", with what you reported. | At "A .previous.previous file", in its "dealt with the files" and "accept what's left" bullets. |
 
 1. **Where are things?** Read your notes, and look for `<key path>.previous` and `<key path>.previous.previous` beside the key. Delete any `handoff-probe.*` file left in the probe's directory (step 4's Current-key probe) by a session that ended mid-probe. Then take the first of these cases that fits:

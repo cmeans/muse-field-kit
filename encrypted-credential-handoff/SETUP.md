@@ -60,7 +60,7 @@ Anything not on this list — fixing a typo in a message, recording setup notes 
    | Line | Meaning | What to do |
    | --- | --- | --- |
    | `PASS` | That check passed. | Report it, with the rest of the output. |
-   | `INFO` | Information, not a failure (with no key yet, the identity line is `INFO`). | Report it, with the rest of the output. |
+   | `INFO` | Information, not a stop (with no key yet, the identity line is `INFO`). | Report it, with the rest of the output. |
    | `INFO leftovers` | It names what a killed run left in the key directory, and what removes it. | Report it. It's never a reason to rotate: a rotation still needs the user's request. |
    | `FAIL` | A stop (the hard rules' stop conditions). | Report it as it is, and generate no key until the check passes. |
 
@@ -70,7 +70,7 @@ Anything not on this list — fixing a typo in a message, recording setup notes 
 
    | Line | Meaning | What to do |
    | --- | --- | --- |
-   | `PASS` or `INFO` | That check passed, or it's information, not a failure. Every line must be `PASS` or `INFO`. | The recipient line must say the saved file is a valid recipient. |
+   | `PASS` or `INFO` | That check passed, or it's information, not a stop. Every line must be `PASS` or `INFO`. | The recipient line must say the saved file is a valid recipient. |
    | `FAIL` | A stop. | The user fixes what it names (their INSTALL page, “Check your setup”) and runs it again, and you don't go on to step 4 until it passes. |
 
    Then they run `./handoff.sh --fingerprint` (Windows: `.\handoff.ps1 -Fingerprint`), with the same `--to` (`-To`): it prints `recipient: age1…`, and on stderr the file it read.
