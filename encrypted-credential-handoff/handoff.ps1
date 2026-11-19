@@ -706,13 +706,6 @@ end {
     [Array]::Clear($bytes, 0, $bytes.Length)
   } elseif ($piped.Count -gt 0) {
     $secret = [string]::Join("`n", $piped.ToArray())
-    # UTF-16 bytes can arrive as pipeline text (GitHub's Windows PowerShell
-    # 5.1 runner gave the JSON message, not the bytes path's, for such a file
-    # on stdin): with no mark, its first characters show the same
-    # alternating NULs.
-    $head = New-Object System.Collections.Generic.List[byte]
-    for ($h = 0; $h -lt [Math]::Min(4, $secret.Length); $h++) { $v = [int]$secret[$h]; if ($v -gt 255) { break }; $head.Add([byte]$v) }
-    if ($head.Count -eq 4 -and (Test-Utf16NoBom $head.ToArray())) { $secret = $null; Stop-Run $utf16Msg }
     # One leading byte-order mark is dropped, as ConvertFrom-Bytes does for
     # bytes (and handoff.sh for its input); a second is refused below.
     if ($secret.Length -gt 0 -and $secret[0] -eq [char]0xFEFF) { $secret = $secret.Substring(1) }

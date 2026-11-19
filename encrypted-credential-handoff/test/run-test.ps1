@@ -92,7 +92,24 @@ function Invoke-Proc {
       if ($null -eq $EnvSet[$k]) { $psi.EnvironmentVariables.Remove($k) } else { $psi.EnvironmentVariables[$k] = [string]$EnvSet[$k] }
     }
   }
-  $p = [System.Diagnostics.Process]::Start($psi)
+  # On .NET Framework (Windows PowerShell 5.1), Start() wraps stdin in a
+  # writer in Console.InputEncoding, and under code page 65001 (GitHub's
+  # Windows runners) that writer writes a UTF-8 byte-order mark first: the
+  # child would get EF BB BF before STDIN's bytes (77 bytes for a 74-byte
+  # UTF-16 payload, CI run 44438815773). So around Start(), an encoding
+  # without a preamble, as handoff.ps1's own Invoke-Age does.
+  $savedIn = $null
+  if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    try {
+      if ([Console]::InputEncoding.GetPreamble().Length -gt 0) {
+        $savedIn = [Console]::InputEncoding
+        [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false
+      }
+    } catch { $savedIn = $null }
+  }
+  try { $p = [System.Diagnostics.Process]::Start($psi) } finally {
+    if ($null -ne $savedIn) { try { [Console]::InputEncoding = $savedIn } catch { } }
+  }
   $outMs = New-Object System.IO.MemoryStream
   $errMs = New-Object System.IO.MemoryStream
   $t1 = $p.StandardOutput.BaseStream.CopyToAsync($outMs)
@@ -473,11 +490,11 @@ foreach ($c in $cases) {
 Say '== 5b-ps. the payload: checks, cap, -File and pipeline input =='
 Copy-Item -LiteralPath $RcptFile -Destination (Join-Path $K 'handoff-muse.age')
 $jsonMsg = 'input must be a single JSON object with a string "svc" and string values only, aborting'
-# Diagnostic (prints, never fails): what a script with handoff.ps1's param
-# block gets when the suite hands it a UTF-16 file's bytes on stdin, the way
-# the payload table's stdin cases do. GitHub's Windows PowerShell 5.1 runner
-# refused utf16lenobom there with the JSON message while a local 5.1 gave the
-# UTF-16 one; this line shows which route the runner takes.
+# The stdin cases get exactly the bytes they send: a script with
+# handoff.ps1's param block, handed a UTF-16 file's bytes the way the payload
+# table's stdin cases are, reads them from stdin, all of them and nothing
+# more. (Windows PowerShell 5.1 under code page 65001 put a UTF-8 byte-order
+# mark in front, 77 bytes for 74, until Invoke-Proc guarded Start().)
 $probe = Join-Path $S 'stdin-probe.ps1'
 [IO.File]::WriteAllText($probe, @'
 [CmdletBinding(PositionalBinding = $false)]
@@ -494,7 +511,9 @@ end {
 '@, (New-Object System.Text.UTF8Encoding $true))
 $u16probe = (New-Object System.Text.UnicodeEncoding $false, $false).GetBytes('{"svc":"example","password":"mk-Zq9"}')
 $pr = Invoke-Handoff -Script $probe -Stdin $u16probe
-Say "diag: stdin route for UTF-16 bytes ($($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)): $($pr.Out.Trim()) $($pr.Err.Trim())"
+Say "stdin route ($($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)): $($pr.Out.Trim())"
+Assert-True ($pr.Out -match "redirected=True .* stdinbytes=$($u16probe.Length)\b") "the stdin cases don't get exactly their bytes: sent $($u16probe.Length), got: $($pr.Out.Trim()) $($pr.Err.Trim())"
+Say 'ok (the stdin cases get exactly their bytes)'
 # The payload shapes, one table shared with run-test.sh (payload-cases.json):
 # {name, payload or payload_base64 (bytes that aren't text), exit,
 # stderr_contains}. A text case runs piped in and with -File; a bytes case
@@ -550,10 +569,6 @@ $r = Invoke-Handoff -Script $hk -ArgText "-File $(Q $nulLead)"
 Assert-Refusal 'a raw NUL right after {' 1 $jsonMsg $r
 Assert-True (-not $r.Err.Contains('UTF-16')) 'a raw NUL after { was called UTF-16'
 Remove-Item -LiteralPath $nulLead
-# UTF-16 bytes arriving as pipeline text, a byte per character (as GitHub's
-# Windows PowerShell 5.1 runner seems to deliver such a file on stdin): the
-# same UTF-16 message as for the bytes.
-Assert-Refusal 'UTF-16 without a mark, as pipeline text' 1 'saved as UTF-16' (Invoke-Handoff -Call "(-join @([char]0x7B, [char]0, [char]0x22, [char]0, [char]0x73, [char]0, [char]0x76, [char]0, [char]0x63, [char]0, [char]0x22, [char]0)) | & $(Q $hk)")
 # Run directly with -File and the payload on stdin (powershell -File
 # handoff.ps1 < payload.json, as from cmd): read as bytes
 # and encrypted. Windows PowerShell 5.1 used to read it as an empty pipeline.
