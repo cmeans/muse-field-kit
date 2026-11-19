@@ -2,7 +2,7 @@
 # Print the fenced code block that sits between the markers
 #   <!-- NAME:start -->  and  <!-- NAME:end -->
 # in a Markdown file (each marker alone on its line). Used by CI to run the
-# commands README documents, so a doc change that breaks them fails CI.
+# commands the docs give, so a doc change that breaks them fails CI.
 # Fails if the marker pair is missing, unclosed, or holds no code.
 set -euo pipefail
 

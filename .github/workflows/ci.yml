@@ -186,7 +186,7 @@ jobs:
           fi
 
   # The release asset set (handoff.sh, handoff.ps1, SHA256SUMS) builds, is
-  # byte-identical to the tree, and README's Linux verify command works on it.
+  # byte-identical to the tree, and INSTALL-linux-macos.md's verify command works on it.
   # release.yml builds the same set with the same script.
   assets:
     runs-on: ubuntu-latest
@@ -231,16 +231,16 @@ jobs:
             echo "sha256sum -c passed on a tampered script"
             exit 1
           fi
-      - name: README's Linux verify command works on the assets
-        # The command is read from README between its verify-macos-linux
+      - name: INSTALL-linux-macos.md's verify command works on the assets
+        # The command is read from INSTALL-linux-macos.md between its verify-macos-linux
         # markers, so a doc change that breaks it (or drops the markers)
         # fails here.
         run: |
-          block=$(.github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-macos-linux)
+          block=$(.github/scripts/readme-block.sh encrypted-credential-handoff/INSTALL-linux-macos.md verify-macos-linux)
           cmd=$(printf '%s\n' "$block" | grep '^sha256sum ' || true)
-          [ -n "$cmd" ] || { echo "no sha256sum command in README's verify-macos-linux block"; exit 1; }
-          echo "README command: $cmd"
-          # Only handoff.sh and SHA256SUMS downloaded, as README says.
+          [ -n "$cmd" ] || { echo "no sha256sum command in INSTALL-linux-macos.md's verify-macos-linux block"; exit 1; }
+          echo "documented command: $cmd"
+          # Only handoff.sh and SHA256SUMS downloaded, as INSTALL-linux-macos.md says.
           mkdir "$RUNNER_TEMP/sh-only"
           cp "$RUNNER_TEMP/assets/handoff.sh" "$RUNNER_TEMP/assets/SHA256SUMS" "$RUNNER_TEMP/sh-only/"
           cd "$RUNNER_TEMP/sh-only"
@@ -347,7 +347,7 @@ jobs:
           expect 1 failure "$bad, $ok"
           expect 1 "pending (in_progress)" "$ok, $wip"
           expect 0 success "$ok, $other"
-      - name: README's markers are enforced (a missing or unclosed pair fails)
+      - name: The install pages' verify markers are enforced (a missing or unclosed pair fails)
         run: |
           fence=$(printf "\140\140\140sh")
           printf '# no markers\n' > "$RUNNER_TEMP/no-markers.md"
@@ -360,7 +360,7 @@ jobs:
               fi
             done
           done
-          .github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-windows > /dev/null
+          .github/scripts/readme-block.sh encrypted-credential-handoff/INSTALL-windows.md verify-windows > /dev/null
       - name: release-assets.sh refuses a tree with a missing script
         # A copy of the script in a tree that has handoff.ps1 but not
         # handoff.sh: exit status 1, and no output directory.
@@ -376,12 +376,12 @@ jobs:
           grep -q 'missing .*handoff.sh' "$RUNNER_TEMP/broken.err"
           [ ! -e "$RUNNER_TEMP/broken-out" ] || { echo "release-assets.sh wrote output despite the error"; exit 1; }
       - name: Collect what the Windows job checks
-        # The Windows job verifies README's PowerShell block against this
+        # The Windows job verifies INSTALL-windows.md's PowerShell block against this
         # SHA256SUMS and handoff.ps1, the ones built here (the ones that ship).
         run: |
           mkdir "$RUNNER_TEMP/win-check"
           cp "$RUNNER_TEMP/assets/SHA256SUMS" "$RUNNER_TEMP/assets/handoff.ps1" "$RUNNER_TEMP/win-check/"
-          .github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-windows > "$RUNNER_TEMP/win-check/verify-windows.ps1"
+          .github/scripts/readme-block.sh encrypted-credential-handoff/INSTALL-windows.md verify-windows > "$RUNNER_TEMP/win-check/verify-windows.ps1"
       - name: Upload the assets for the Windows job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -542,9 +542,9 @@ jobs:
             exit 1
           fi
 
-      - name: Release assets verify with README's macOS command
+      - name: Release assets verify with INSTALL-linux-macos.md's macOS command
         # release-assets.sh uses sha256sum if the runner has it and falls back
-        # to shasum -a 256; the log shows which exist. The check is README's
+        # to shasum -a 256; the log shows which exist. The check is INSTALL-linux-macos.md's
         # shasum line, read from its verify-macos-linux block.
         run: |
           command -v sha256sum shasum || true
@@ -552,10 +552,10 @@ jobs:
           for f in handoff.sh handoff.ps1; do
             cmp "$RUNNER_TEMP/assets/$f" "encrypted-credential-handoff/$f"
           done
-          block=$(.github/scripts/readme-block.sh encrypted-credential-handoff/README.md verify-macos-linux)
+          block=$(.github/scripts/readme-block.sh encrypted-credential-handoff/INSTALL-linux-macos.md verify-macos-linux)
           cmd=$(printf '%s\n' "$block" | grep '^shasum -a 256 ' || true)
-          [ -n "$cmd" ] || { echo "no shasum command in README's verify-macos-linux block"; exit 1; }
-          echo "README command: $cmd"
+          [ -n "$cmd" ] || { echo "no shasum command in INSTALL-linux-macos.md's verify-macos-linux block"; exit 1; }
+          echo "documented command: $cmd"
           mkdir "$RUNNER_TEMP/sh-only"
           cp "$RUNNER_TEMP/assets/handoff.sh" "$RUNNER_TEMP/assets/SHA256SUMS" "$RUNNER_TEMP/sh-only/"
           cd "$RUNNER_TEMP/sh-only"
@@ -625,7 +625,7 @@ jobs:
           if (@(Get-Content -LiteralPath $log)[-1] -ne 'PASS') { throw 'run-test.ps1 did not end in PASS' }
       - name: Download the release assets built on Linux
         # SHA256SUMS and handoff.ps1 as the assets job built them (the ones
-        # that ship), plus README's verify-windows block it extracted.
+        # that ship), plus INSTALL-windows.md's verify-windows block it extracted.
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-assets-check
@@ -635,7 +635,7 @@ jobs:
         run: |
           Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'assets') | Format-Table Name, Length
           Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'assets\verify-windows.ps1')
-      - name: README's Windows verify command, PowerShell 7
+      - name: INSTALL-windows.md's verify command, PowerShell 7
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -653,7 +653,7 @@ jobs:
           $threw = $false
           try { & $sb } catch { $threw = $true } finally { Pop-Location }
           if (-not $threw) { throw 'the verify command passed on a tampered handoff.ps1' }
-      - name: README's Windows verify command, Windows PowerShell 5.1
+      - name: INSTALL-windows.md's verify command, Windows PowerShell 5.1
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
