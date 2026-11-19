@@ -41,7 +41,7 @@ Guides and patterns without scripts (documentation problems) can be reported as 
 
 Each security-relevant folder's own `SECURITY.md` says what its pattern claims to defend against, and so what counts as a vulnerability:
 
-- `encrypted-credential-handoff/SECURITY.md`: the threat model and the ten invariants in that folder's `README.md`.
+- [`encrypted-credential-handoff/SECURITY.md`](encrypted-credential-handoff/SECURITY.md): the threat model and the ten invariants in that folder's [`README.md`](encrypted-credential-handoff/README.md#threat-model).
 
 **In scope**
 

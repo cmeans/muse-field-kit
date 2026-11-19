@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **The docs link the documents they name** (#93): the first mention in each section, to the section where one is named; `age` and `jq` link to their install pages; CI checks every relative link to a document.
 - **Rotation and compromise moved to `ROTATION.md`, and `SKILL.md` says what to read in each phase** (#92, refs #50): a routine handoff reads about 9,000 words, not every file in full; step numbers, section names and script messages point to the new file.
 - **Install pages give one recommended way per tool, with links** (#91, closes #48, #32), and only their own platform's commands; badges; a shorter Status.
 - **README split into smaller pages** (#90): the core `README.md` keeps what every reader needs; each platform's install, download, check and setup-check steps are in `INSTALL-linux-macos.md` or `INSTALL-windows.md` (other ways in `INSTALL-options.md`), stores are in `STORES.md`, and design background and CI coverage are in `DESIGN.md`. Nothing's meaning changed.
