@@ -73,18 +73,18 @@ jobs:
         run: shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*.sh
       - name: The scripts parse under bash 3.2 (macOS /bin/bash)
         # shellcheck doesn't know bash 3.2's parser bugs (a `)` in a case
-        # pattern inside $(...) ends the substitution there). Each script also
-        # runs to its usage text in POSIX mode (POSIXLY_CORRECT), where bash
-        # before 5.1 refuses process substitution unless the script leaves that
-        # mode first. That covers agent-setup.sh's, which comes before its
-        # usage exit; handoff.sh's comes after its own, so the macOS job's
-        # POSIX-mode round trips (run-test.sh) are what cover that one.
+        # pattern inside $(...) ends the substitution there). agent-setup.sh
+        # also runs to its usage text in POSIX mode (POSIXLY_CORRECT), where
+        # bash before 5.1 refuses process substitution unless the script leaves
+        # that mode first; its process substitution comes before its usage
+        # exit. handoff.sh's comes after its own, so a --help run here tests
+        # nothing for it: the macOS job's POSIX-mode round trips (run-test.sh,
+        # under the bash 3.2 that job checks is on PATH) cover that one.
         run: |
           docker run --rm -v "$PWD/encrypted-credential-handoff:/w:ro" -w /w \
             bash:3.2@sha256:2556c2da19c32c1614d318645c73a7bf64d38be21cf69e98e3ca51f053983719 \
             sh -c 'bash --version | head -1 && for f in agent-setup.sh handoff.sh test/run-test.sh; do bash -n "$f" || exit 1; done &&
-              env POSIXLY_CORRECT=1 bash agent-setup.sh --help >/dev/null &&
-              env POSIXLY_CORRECT=1 bash handoff.sh --help >/dev/null'
+              env POSIXLY_CORRECT=1 bash agent-setup.sh --help >/dev/null'
       - name: ruff
         run: pipx run ruff==0.15.7 check encrypted-credential-handoff/
       - name: A key file owned by another user, for the key-owner refusal
@@ -409,6 +409,43 @@ jobs:
             exit 1
           fi
 
+  # handoff.sh under jq 1.6, the oldest it accepts (Ubuntu 22.04's apt jq).
+  # jq 1.6 accepts a raw control byte inside a string (0x1F, for one), which
+  # consume.py refuses, so there handoff.sh's own control-byte check is the
+  # only guard; the 1.7 and newer jq the other jobs have refuse it
+  # themselves, and would pass with that check gone. The sections that run
+  # handoff.sh's input rules: 3a the round trip, 3b and 5b the payload
+  # checks (payload-cases.json's rawunitsep row is that case). Run as a
+  # plain user, as the suite expects, in a container pinned by digest.
+  linux-jq-1-6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: handoff.sh checks under jq 1.6 (Ubuntu 22.04)
+        run: |
+          set -o pipefail
+          docker run --rm -v "$PWD:/w:ro" \
+            ubuntu:22.04@sha256:9abcaffc92a5279fff3a6a41635c0800ea33e528425fb389658806476e7defde \
+            bash -c 'set -e
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq jq age python3 >/dev/null
+              jq --version; age --version; python3 --version; bash --version | head -1
+              useradd -m t
+              cp -r /w /home/t/w
+              chown -R t /home/t/w
+              cd /home/t/w/encrypted-credential-handoff/test
+              su t -c "HANDOFF_TEST_ONLY=\"3a 3b 5b\" ./run-test.sh"' | tee "$RUNNER_TEMP/run-test-jq16.log"
+          grep -qx 'jq-1.6' "$RUNNER_TEMP/run-test-jq16.log" || { echo "the container's jq is not 1.6"; exit 1; }
+          grep -q '^ok (refused: payload case rawunitsep)$' "$RUNNER_TEMP/run-test-jq16.log" || { echo "the raw 0x1F payload case did not run"; exit 1; }
+          if grep -E '^(skip:|n/a on this OS)' "$RUNNER_TEMP/run-test-jq16.log"; then
+            echo "a check was skipped in CI"
+            exit 1
+          fi
+
   macos:
     runs-on: macos-latest
     timeout-minutes: 25
@@ -429,6 +466,15 @@ jobs:
           age --version
           age-keygen --version
           command -v script zsh dash ksh mksh || true
+      - name: bash on PATH is 3.2
+        # run-test.sh's POSIX-mode round trips run handoff.sh with the bash on
+        # PATH; only bash before 5.1 refuses its process substitution in that
+        # mode, and nothing else tests that handoff.sh leaves it (see "The
+        # scripts parse under bash 3.2"). If the runner image ever puts a newer
+        # bash first, those runs would pass without testing it: fail instead.
+        run: |
+          v=$(bash -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"')
+          [ "$v" = 3.2 ] || { echo "bash on PATH is $v ($(command -v bash)), not 3.2"; exit 1; }
       - name: A key file owned by another user, for the key-owner refusal
         run: |
           sudo install -o root -g wheel -m 600 \
@@ -645,6 +691,7 @@ jobs:
       - encrypted-credential-handoff
       - assets
       - linux-age-versions
+      - linux-jq-1-6
       - macos
       - windows
       - windows-interop

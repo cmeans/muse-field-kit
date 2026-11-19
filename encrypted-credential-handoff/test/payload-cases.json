@@ -270,6 +270,12 @@
   "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
  },
  {
+  "name": "rawunitsep",
+  "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay0fWnE5In0=",
+  "exit": 1,
+  "stderr_contains": "input must be a single JSON object with a string \"svc\" and string values only"
+ },
+ {
   "name": "rawsurrogate",
   "payload_base64": "eyJzdmMiOiJleGFtcGxlIiwicGFzc3dvcmQiOiJtay1acTntoIAifQ==",
   "exit": 1,

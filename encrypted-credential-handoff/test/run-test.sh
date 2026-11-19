@@ -2105,6 +2105,24 @@ case "$out" in
 esac
 ! printf '%s' "$out" | grep -q -e '--- end ---' || fail "a raw NUL typed at the terminal: a blob was printed"
 echo "ok (refused: a raw NUL typed at the terminal)"
+# An accepted payload typed at the terminal, raw non-ASCII and a line break
+# inside it: the blob opens to the typed bytes, less the final line feed
+# (the Enter before Ctrl-D, which $(...) drops), the way the payload table's
+# stdin and FILE cases do (issue #57). The blob is the line between the
+# "--- paste everything below" and "--- end ---" lines the terminal showed.
+printf '{"svc":"example",\n"password":"p\303\244ss-\346\227\245\346\234\254-\360\237\230\200-mk-Zq9"}' >"$S/pty-ok.json"
+out=$(pty_type "$S/pty-ok.json" "$BASH_BIN" "$S/hd/handoff.sh")
+[ "${out%%$'\n'*}" = 0 ] || fail "a payload typed at the terminal: exit ${out%%$'\n'*}, expected 0: $out"
+printf '%s\n' "$out" | tr -d '\r' | sed -n '/^--- paste everything below/,/^--- end ---$/p' | sed '1d;$d' >"$S/pty-ok.blob"
+[ "$(wc -l <"$S/pty-ok.blob")" -eq 1 ] || fail "a payload typed at the terminal: no single blob line between the markers: $out"
+base64 -d <"$S/pty-ok.blob" | "$AGE" -d -i "$TMPKEY" >"$S/pty-ok.got" \
+  || fail "a payload typed at the terminal: age couldn't open the blob"
+cmp -s "$S/pty-ok.got" "$S/pty-ok.json" \
+  || fail "a payload typed at the terminal: the decrypted bytes differ from the typed ones ($(( $(wc -c <"$S/pty-ok.got") )) bytes, wanted $(( $(wc -c <"$S/pty-ok.json") )))"
+consume --label example --check --blob-file "$S/pty-ok.blob" >/dev/null 2>"$S/cerr" \
+  || { cat "$S/cerr" >&2; fail "a payload typed at the terminal: consume.py --check refused the blob"; }
+rm -f "$S/pty-ok.got" "$S/pty-ok.blob"
+echo "ok (accepted: a payload typed at the terminal, and its blob holds the typed bytes)"
 # A line over the terminal's line cap (4095 bytes on Linux; on macOS 1023,
 # past which every byte is dropped, so pty_type deletes one first) typed or
 # pasted at the prompt is cut: refused, with the hint to use a FILE or a pipe
