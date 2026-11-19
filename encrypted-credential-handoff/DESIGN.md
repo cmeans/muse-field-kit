@@ -1,6 +1,6 @@
 # Design notes
 
-Background on the choices behind this folder: why it isn't a vault, what is fixed and what is a choice, how the encryption suite was chosen, and what CI tests. None of it is needed to set up or use the handoff (`README.md`, `SETUP.md`, `ROTATION.md` and `STORES.md` are).
+Background on the choices behind this folder: why it isn't a vault, what is fixed and what is a choice, how the encryption suite was chosen, and what CI tests. None of it is needed to set up or use the handoff ([`README.md`](README.md), [`SETUP.md`](SETUP.md), [`ROTATION.md`](ROTATION.md) and [`STORES.md`](STORES.md) are).
 
 ## Why not a built-in vault?
 
@@ -19,8 +19,8 @@ This pattern fills that gap for programs that read the credential from their env
 
 The suite may be changed, deliberately, by the human, before setup — subject to two constraints:
 
-- **Only as an existing, reviewed tool used as-is**: for example libsodium's `crypto_box_seal` through a maintained binding. It must preserve the invariants in `README.md` (with the same absence of sender authentication, which is behavioral in every variant listed here).
-- **“Hybrid encryption, hand-rolled” is not a user-selectable variant.** A home-grown AES-GCM-plus-RSA construction, or a payload split across several blocks of a smaller cipher, is a mechanism change: it belongs upstream, as an issue against this repo (`CONTRIBUTING.md` at the repo's root), where it can be reviewed once for every adopter.
+- **Only as an existing, reviewed tool used as-is**: for example libsodium's `crypto_box_seal` through a maintained binding. It must preserve the invariants in [`README.md`](README.md) (with the same absence of sender authentication, which is behavioral in every variant listed here).
+- **“Hybrid encryption, hand-rolled” is not a user-selectable variant.** A home-grown AES-GCM-plus-RSA construction, or a payload split across several blocks of a smaller cipher, is a mechanism change: it belongs upstream, as an issue against this repo ([`CONTRIBUTING.md`](../CONTRIBUTING.md) at the repo's root), where it can be reviewed once for every adopter.
 
 Two stronger variants worth knowing about: **signed blobs** (the human signs each payload with a key the agent can verify, removing the behavioral provenance invariant), and a **separate-account key holder** (a helper the agent can ask to decrypt-and-launch, but whose key file the agent's own account cannot read). Both are real designs; neither is in the reference implementation.
 
@@ -49,9 +49,9 @@ The costs accepted: a new dependency on both sides; no independent audit of `age
 What CI runs on every change, on GitHub's hosted runners:
 
 - **Linux:** the whole suite (`test/run-test.sh`) against the distribution's packaged `age` and against the `age` 1.3.2 release binary (pinned by SHA-256, checked once against its Sigsum proof), and `test/run-test.ps1` under PowerShell 7; the agent's side again against `age` 1.0.0 and 1.1.1, built from source with `go install` (the Go checksum database checks that source), the oldest packaged versions, which having no minimum version means supporting.
-- **macOS:** the whole suite with Homebrew's `age` and `jq`, and `INSTALL-linux-macos.md`'s macOS checksum command on the release files.
-- **Windows:** `test/run-test.ps1` under Windows PowerShell 5.1 and PowerShell 7 with the `age.exe` release (pinned by SHA-256), including `INSTALL-windows.md`'s execution-policy routes and its Windows checksum command. The blobs it makes are then opened on Linux by `consume.py`, which checks the values byte for byte.
+- **macOS:** the whole suite with Homebrew's `age` and `jq`, and [`INSTALL-linux-macos.md`](INSTALL-linux-macos.md)'s macOS checksum command on the release files.
+- **Windows:** `test/run-test.ps1` under Windows PowerShell 5.1 and PowerShell 7 with the `age.exe` release (pinned by SHA-256), including [`INSTALL-windows.md`](INSTALL-windows.md)'s execution-policy routes and its Windows checksum command. The blobs it makes are then opened on Linux by `consume.py`, which checks the values byte for byte.
 
 A check that is skipped fails the run, as one that fails does. Run anywhere else, `test/run-test.sh` may skip the checks whose files only CI makes: those that need files owned by another account (`the key-owner refusal wasn't tested`, `the key-directory owner checks weren't run`), and, run as root (as Muse's agent is), `the read-only blob file check didn't run`. Those `skip:` lines are expected there, as are `n/a on this OS:` lines on macOS. Any other `skip:` line names what that machine lacks, and a `FAIL` is a failure.
 
-On pull request #42 every job passed: Linux (the distribution's `age` package, the pinned `age` 1.3.2 release, and PowerShell 7 on Linux), the agent's side against `age` 1.0.0 and 1.1.1, macOS, Windows PowerShell 5.1 and PowerShell 7, and the Linux job that opens the Windows-made blobs. That is test coverage, not field time; `README.md`, “Status”, says what has run live.
+On pull request #42 every job passed: Linux (the distribution's `age` package, the pinned `age` 1.3.2 release, and PowerShell 7 on Linux), the agent's side against `age` 1.0.0 and 1.1.1, macOS, Windows PowerShell 5.1 and PowerShell 7, and the Linux job that opens the Windows-made blobs. That is test coverage, not field time; [`README.md`](README.md#status), “Status”, says what has run live.

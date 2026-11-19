@@ -86,7 +86,21 @@ jobs:
             sh -c 'bash --version | head -1 && for f in agent-setup.sh handoff.sh test/run-test.sh; do bash -n "$f" || exit 1; done &&
               env POSIXLY_CORRECT=1 bash agent-setup.sh --help >/dev/null'
       - name: ruff
-        run: pipx run ruff==0.15.7 check encrypted-credential-handoff/
+        run: pipx run ruff==0.15.7 check encrypted-credential-handoff/ .github/scripts/md-links.py
+      - name: The docs link the documents they name, and every relative link works
+        # md-links.py: in each section, the first mention of another .md in the
+        # repo is a link; every relative .md link names a file and heading that
+        # exist. The two fixtures must fail, or the check is a false green.
+        run: |
+          python3 -I .github/scripts/md-links.py .
+          for bad in unlinked broken; do
+            d="$RUNNER_TEMP/md-$bad"; mkdir -p "$d"; printf '# T\n' > "$d/OTHER.md"
+            if [ "$bad" = unlinked ]; then printf '# A\n\nSee `OTHER.md`.\n' > "$d/A.md"
+            else printf '# A\n\nSee [it](OTHER.md#nope).\n' > "$d/A.md"; fi
+            if python3 -I .github/scripts/md-links.py "$d" > /dev/null; then
+              echo "md-links.py passed the $bad fixture"; exit 1
+            fi
+          done
       - name: A key file owned by another user, for the key-owner refusal
         # Ubuntu's /etc/shadow is group-readable, so run-test.sh finds no
         # owner-only file of another user's: give it a root-owned 0600 copy
