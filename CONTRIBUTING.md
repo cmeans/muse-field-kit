@@ -71,7 +71,10 @@ Each kit is released on its own, with a tag `KIT-vX.Y.Z` (for example `encrypted
 2. Wait for `ci-ok` to pass on that merge commit on `main`.
 3. Tag it and push the tag: `git tag encrypted-credential-handoff-vX.Y.Z <commit>`, then `git push origin encrypted-credential-handoff-vX.Y.Z`.
 
-`release.yml` then checks that the commit is on `main`, that its `ci-ok` passed and that the CHANGELOG has the heading, builds and attests the assets, and publishes the release. If it refuses because `ci-ok` was still running (`pending`), run it again on the tag once `ci-ok` has passed (Actions, Release, "Run workflow" on the tag, `dry_run` false). If `ci-ok` failed, re-run the failed CI jobs on that commit (or fix `main` if the failure is real), then run Release again on the tag. If it's missing, CI never ran on that commit: release a newer one.
+`release.yml` then checks that the commit is on `main`, that its `ci-ok` passed and that the CHANGELOG has the heading, builds and attests the assets, and publishes the release. If it refuses because of `ci-ok` (`missing` or `pending` while CI on that commit is still running, since `ci-ok` starts only after the other jobs), open the commit's CI run in Actions and wait for it to finish. Then:
+
+- **CI passed** (or a job failed on a flake, and re-running the failed jobs made it pass): run Release again on the tag (Actions, Release, "Run workflow" on the tag, `dry_run` false).
+- **CI failed for real, or never ran on that commit:** delete the tag (`git push --delete origin encrypted-credential-handoff-vX.Y.Z`), so no setup picks a version that has no release; fix `main`; and release the fix under a new version.
 
 ## Contact
 

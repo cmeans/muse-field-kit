@@ -110,11 +110,12 @@ jobs:
             exit 1
           fi
           # The tagged commit's ci-ok must have passed (the script is tested
-          # in CI). Tagged too soon after the merge, it's still running: run
-          # this workflow again on the tag once it has passed (dispatch,
-          # dry_run false).
+          # in CI). Tagged too soon after the merge, CI is still running, and
+          # ci-ok reads "missing" (it starts only after the other jobs) or
+          # "pending": CONTRIBUTING, Releases, says what to do then.
           if ! state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci-ok&per_page=100" | .github/scripts/ci-ok-state.sh); then
-            echo "$TAG ($GITHUB_SHA): ci-ok is ${state:-unreadable}, not success; not releasing"
+            echo "$TAG ($GITHUB_SHA): ci-ok is ${state:-unreadable}, not success; not releasing."
+            echo "If CI on this commit is still running, wait for it to finish; then see CONTRIBUTING.md, Releases."
             exit 1
           fi
           # The tag must be KIT-vX.Y.Z with a CHANGELOG heading for it; the
