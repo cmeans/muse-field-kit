@@ -63,6 +63,16 @@ The suite needs only what the folder needs: `bash`, `python3` 3.7 or later, the 
 - Docs and messages use American English spelling (behavior, color, license).
 - Each folder's `CHANGELOG.md` gets an entry for every change to that folder, one line per change: `- **Short title** (#PR): what changed, for the user.` The reasons and edge cases go in the PR and the docs. A release adds two or three sentences on how it was reviewed and what wasn't run.
 
+## Releases
+
+Each kit is released on its own, with a tag `KIT-vX.Y.Z` (for example `encrypted-credential-handoff-v0.2.1`; that kit's releases before 0.2.1 were `v0.1.0` and `v0.2.0`). Only the maintainer can create, move or delete a release tag (the repository's "release tags" ruleset). To release:
+
+1. Merge a PR that turns the kit's `## Unreleased` section into `## X.Y.Z — YYYY-MM-DD — <title>`, with the review sentences.
+2. Wait for `ci-ok` to pass on that merge commit on `main`.
+3. Tag it and push the tag: `git tag encrypted-credential-handoff-vX.Y.Z <commit>`, then `git push origin encrypted-credential-handoff-vX.Y.Z`.
+
+`release.yml` then checks that the commit is on `main`, that its `ci-ok` passed and that the CHANGELOG has the heading, builds and attests the assets, and publishes the release. If it refuses because `ci-ok` was still running, run it again on the tag once `ci-ok` has passed (Actions, Release, "Run workflow" on the tag, `dry_run` false).
+
 ## Contact
 
 Open an issue. This is a one-person project, so response times vary.

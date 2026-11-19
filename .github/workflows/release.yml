@@ -11,22 +11,27 @@ name: Release
 #
 # Publishing rule (one step in build, "decide", sets the output publish
 # depends on):
-#   - a push of a v* tag publishes;
+#   - a push of a release tag, KIT-vX.Y.Z (such as
+#     encrypted-credential-handoff-v0.2.1), publishes;
 #   - a workflow_dispatch publishes only with dry_run == 'false' AND when run
-#     on a tag (github.ref starts with refs/tags/v);
+#     on such a tag (github.ref matches refs/tags/*-v*);
 #   - every other case is a dry run: the assets are built and verified,
 #     nothing is attested or published. A dispatch from a branch never
 #     publishes.
 # A dry run on a branch has no tag, so it skips the checks that need one (the
-# tagged commit is on main; the CHANGELOG heading) and builds the assets only.
+# tagged commit is on main and passed CI; the CHANGELOG heading) and builds
+# the assets only. Only encrypted-credential-handoff has release assets
+# today; a tag for another kit is refused until its assets are added here.
+# The repository's "release tags" ruleset lets only the maintainer create,
+# move or delete a v* or *-v* tag.
 
 on:
   push:
-    tags: ['v*']
+    tags: ['*-v*']
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Build and verify only (true), or publish when run on a v* tag (false)"
+        description: "Build and verify only (true), or publish when run on a KIT-vX.Y.Z tag (false)"
         type: choice
         options: ['true', 'false']
         default: 'true'
@@ -43,6 +48,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: read # the tagged commit's ci-ok check run
     outputs:
       publish: ${{ steps.decide.outputs.publish }}
       tag: ${{ steps.tag.outputs.tag }}
@@ -63,7 +71,7 @@ jobs:
           REF: ${{ github.ref }}
         run: |
           on_tag=false
-          case "$REF" in refs/tags/v*) on_tag=true ;; esac
+          case "$REF" in refs/tags/*-v*) on_tag=true ;; esac
           publish=false
           if [ "$EVENT_NAME" = push ] && [ "$on_tag" = true ]; then
             publish=true
@@ -72,7 +80,7 @@ jobs:
             publish=true
             echo "case: dispatch on tag $REF with dry_run=false, publishing"
           elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
-            echo "case: dispatch with dry_run=false but $REF is not a v* tag, dry run"
+            echo "case: dispatch with dry_run=false but $REF is not a KIT-vX.Y.Z tag, dry run"
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             echo "case: dispatch with dry_run=$DRY_RUN, dry run"
           else
@@ -86,6 +94,7 @@ jobs:
         if: steps.decide.outputs.on_tag == 'true'
         env:
           TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # The tagged commit must be on main.
           git fetch --no-tags origin main
@@ -93,9 +102,26 @@ jobs:
             echo "$TAG ($GITHUB_SHA) is not on main"
             exit 1
           fi
-          # The tag must be vX.Y.Z with a CHANGELOG heading for it; the
-          # section is the release notes (the script is tested in CI).
-          version=$(.github/scripts/release-notes.sh "$TAG" encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes/notes.md" 2>&1) || { echo "$version"; exit 1; }
+          # The kit is the tag's prefix; only encrypted-credential-handoff
+          # has release assets (release-assets.sh).
+          kit=${TAG%-v*}
+          if [ "$kit" != encrypted-credential-handoff ]; then
+            echo "$TAG is for kit '$kit', which has no release assets in this workflow"
+            exit 1
+          fi
+          # The tagged commit's ci-ok must have passed (the script is tested
+          # in CI). Tagged too soon after the merge, it's still running: run
+          # this workflow again on the tag once it has passed (dispatch,
+          # dry_run false).
+          if ! state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci-ok&per_page=100" | .github/scripts/ci-ok-state.sh); then
+            echo "$TAG ($GITHUB_SHA): ci-ok is ${state:-unreadable}, not success; not releasing"
+            exit 1
+          fi
+          # The tag must be KIT-vX.Y.Z with a CHANGELOG heading for it; the
+          # section is the release notes (the script is tested in CI). Only
+          # stdout is captured: an error message goes to the log, never into
+          # $GITHUB_OUTPUT or the release title.
+          version=$(.github/scripts/release-notes.sh "$TAG" "$kit/CHANGELOG.md" "$RUNNER_TEMP/notes/notes.md")
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "release notes ($(wc -l < "$RUNNER_TEMP/notes/notes.md") lines):"
@@ -183,6 +209,20 @@ jobs:
         run: |
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "release $TAG already exists; not attesting or publishing again. Delete it first if it must be redone."
+            exit 1
+          fi
+
+      - name: Refuse if the tag no longer points at the built commit
+        # Between build and publish the tag could have been moved (only the
+        # maintainer can, under the ruleset); the release must be for the
+        # commit that was built and checked.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          now=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          if [ "$now" != "$GITHUB_SHA" ]; then
+            echo "$TAG now points at $now, not the built commit $GITHUB_SHA; not attesting or publishing"
             exit 1
           fi
 

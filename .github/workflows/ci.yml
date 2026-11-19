@@ -251,19 +251,20 @@ jobs:
         # version here, so a malformed heading fails CI before the tag.
         run: |
           for want in 0.1.0 0.2.0; do
-            v=$(.github/scripts/release-notes.sh "v$want" encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes-real.md")
+            v=$(.github/scripts/release-notes.sh "encrypted-credential-handoff-v$want" encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes-real.md")
             [ "$v" = "$want" ]
             [ -s "$RUNNER_TEMP/notes-real.md" ]
             if grep -q '^## ' "$RUNNER_TEMP/notes-real.md"; then echo "notes for $want run past the section"; exit 1; fi
           done
-          if .github/scripts/release-notes.sh v9.9.9 encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes-none.md" 2>/dev/null; then
+          if .github/scripts/release-notes.sh encrypted-credential-handoff-v9.9.9 encrypted-credential-handoff/CHANGELOG.md "$RUNNER_TEMP/notes-none.md" 2>/dev/null; then
             echo "release-notes.sh accepted a version with no heading"
             exit 1
           fi
           [ ! -e "$RUNNER_TEMP/notes-none.md" ]
       - name: release-notes.sh on synthetic cases
         run: |
-          cl="$RUNNER_TEMP/CHANGELOG.md"
+          mkdir -p "$RUNNER_TEMP/demo-kit"
+          cl="$RUNNER_TEMP/demo-kit/CHANGELOG.md"
           {
             echo '# Changelog'
             echo
@@ -288,18 +289,22 @@ jobs:
           } > "$cl"
           rn=.github/scripts/release-notes.sh
           # Good tag, dated heading: the body runs through the ### subheading and stops at the next ##.
-          v=$($rn v0.1.0 "$cl" "$RUNNER_TEMP/n1.md")
+          v=$($rn demo-kit-v0.1.0 "$cl" "$RUNNER_TEMP/n1.md")
           [ "$v" = 0.1.0 ]
           grep -q '^first line$' "$RUNNER_TEMP/n1.md"
           grep -q '^### Added$' "$RUNNER_TEMP/n1.md"
           grep -q '^sub text$' "$RUNNER_TEMP/n1.md"
           if grep -Eq 'patch text|unreleased text' "$RUNNER_TEMP/n1.md"; then echo "notes leaked another section"; exit 1; fi
           # A heading with no suffix.
-          $rn v0.1.1 "$cl" "$RUNNER_TEMP/n2.md" > /dev/null
+          $rn demo-kit-v0.1.1 "$cl" "$RUNNER_TEMP/n2.md" > /dev/null
           [ "$(cat "$RUNNER_TEMP/n2.md")" = "patch text" ]
           # Failures write nothing: a prefix (0.1 vs 0.1.0), a missing heading,
-          # an empty section, and bad tag shapes.
-          for t in v0.1 v0.3.0 v0.2.0 0.1.0 v0.1.0-rc1 v1.2 vx.y.z "v0.1.0 " v; do
+          # an empty section, bad tag shapes (the old repo-wide v0.1.0 form,
+          # a pre-release, no kit), and a tag for another kit than the
+          # CHANGELOG's folder.
+          for t in demo-kit-v0.1 demo-kit-v0.3.0 demo-kit-v0.2.0 v0.1.0 demo-kit-0.1.0 demo-kit-v0.1.0-rc1 \
+              demo-kit-v1.2 demo-kit-vx.y.z "demo-kit-v0.1.0 " -v0.1.0 Demo-kit-v0.1.0 demo--kit-v0.1.0 \
+              other-kit-v0.1.0 kit-v0.1.0; do
             rm -f "$RUNNER_TEMP/nf.md"
             if $rn "$t" "$cl" "$RUNNER_TEMP/nf.md" 2>/dev/null; then
               echo "release-notes.sh accepted '$t'"
@@ -307,6 +312,33 @@ jobs:
             fi
             [ ! -e "$RUNNER_TEMP/nf.md" ] || { echo "release-notes.sh wrote notes for '$t'"; exit 1; }
           done
+      - name: ci-ok-state.sh on stub check-run replies
+        # release.yml refuses a tag whose commit's newest ci-ok check run
+        # (from GitHub Actions) isn't a success.
+        run: |
+          s=.github/scripts/ci-ok-state.sh
+          run() { jq -n "{check_runs: [$1]}" | $s; }
+          ok='{"id": 5, "name": "ci-ok", "app": {"slug": "github-actions"}, "status": "completed", "conclusion": "success"}'
+          bad='{"id": 6, "name": "ci-ok", "app": {"slug": "github-actions"}, "status": "completed", "conclusion": "failure"}'
+          rerun_ok='{"id": 8, "name": "ci-ok", "app": {"slug": "github-actions"}, "status": "completed", "conclusion": "success"}'
+          wip='{"id": 7, "name": "ci-ok", "app": {"slug": "github-actions"}, "status": "in_progress", "conclusion": null}'
+          other='{"id": 9, "name": "ci-ok", "app": {"slug": "someone-else"}, "status": "completed", "conclusion": "failure"}'
+          expect() {  # WANT_RC WANT_OUT RUNS
+            local out rc=0
+            out=$(run "$3") || rc=$?
+            [ "$rc" = "$1" ] && [ "$out" = "$2" ] || { echo "runs [$3]: got '$out' (exit $rc), want '$2' (exit $1)"; exit 1; }
+          }
+          expect 0 success "$ok"
+          expect 1 failure "$bad"
+          expect 1 "pending (in_progress)" "$wip"
+          expect 1 missing ""
+          expect 1 missing "$(jq -nc '{id: 1, name: "ci", app: {slug: "github-actions"}, status: "completed", conclusion: "success"}')"
+          # The newest run decides (a rerun after a failure, or the reverse);
+          # another app's run of the same name counts for nothing.
+          expect 0 success "$rerun_ok, $bad"
+          expect 1 failure "$bad, $ok"
+          expect 1 "pending (in_progress)" "$ok, $wip"
+          expect 0 success "$ok, $other"
       - name: README's markers are enforced (a missing or unclosed pair fails)
         run: |
           fence=$(printf "\140\140\140sh")
