@@ -717,19 +717,32 @@ def check_blob_file(path: str) -> os.stat_result:
         # and anyone who can write its own directory (without the sticky bit)
         # can rename another file over it. Only the immediate directory is
         # checked: a writable ancestor is the store's setup to get right
-        # (SETUP.md, step 6).
-        if st.st_mode & 0o022:
-            raise fail(f"the blob file {both(shown(path), path)} is writable by others (mode "
-                       f"{stat.S_IMODE(st.st_mode):04o}); stop and report it to the user, "
-                       f"who runs: chmod go-w {shell_quote(path)}")
+        # (SETUP.md, step 6). The file and its directory must also be owned by
+        # this account or root: another account that owns either can change
+        # it whatever its mode. The chmod in the advice is given only for what
+        # this account owns, since no other chmod would work.
         try:
             dst = os.stat(directory)
         except OSError as e:
             raise fail(f"cannot read the blob file's directory {both(os.path.dirname(shown(path)), directory)}: {e.strerror}") from None
+        shown_dir = both(os.path.dirname(shown(path)), directory)
+        move = ("stop and report it to the user: a blob file belongs in a store only this "
+                "account can write (SETUP.md step 6)")
+        mine = (os.geteuid(), 0)
+        if st.st_uid not in mine:
+            raise fail(f"the blob file {both(shown(path), path)} is owned by another account; {move}")
+        if dst.st_uid not in mine:
+            raise fail(f"the blob file's directory {shown_dir} is owned by another account; {move}")
+        if st.st_mode & 0o022:
+            fix = (f"stop and report it to the user, who runs: chmod go-w {shell_quote(path)}"
+                   if st.st_uid == os.geteuid() else move)
+            raise fail(f"the blob file {both(shown(path), path)} is writable by others (mode "
+                       f"{stat.S_IMODE(st.st_mode):04o}); {fix}")
         if dst.st_mode & 0o022 and not dst.st_mode & stat.S_ISVTX:
-            raise fail(f"the blob file's directory {both(os.path.dirname(shown(path)), directory)} is writable by others "
-                       f"(mode {stat.S_IMODE(dst.st_mode):04o}); stop and report it to the "
-                       f"user, who runs: chmod go-w {shell_quote(directory)}")
+            fix = (f"stop and report it to the user, who runs: chmod go-w {shell_quote(directory)}"
+                   if dst.st_uid == os.geteuid() else move)
+            raise fail(f"the blob file's directory {shown_dir} is writable by others "
+                       f"(mode {stat.S_IMODE(dst.st_mode):04o}); {fix}")
     if BLOB_FILE_READ is not None and file_identity(st) != BLOB_FILE_READ:
         raise fail(f"the blob file {shown(path)!r} changed since it was read (a blob staged "
                    "meanwhile?); it is left as it is now: probe the label (SETUP.md, "

@@ -2494,6 +2494,58 @@ expect_refusal "--rewrap of a symlink into a group-writable directory" 1 "direct
   rk python3 ../consume.py --label example --rewrap --blob-file "$ST/lnk-gw.txt"
 rm "$ST/lnk-gw.txt"
 cmp -s blob-age.txt "$ST/gwd/b.txt" || fail "a refused --rewrap changed a file in a group-writable directory"
+# The blob file and its directory must be owned by this account or root
+# (issue #71), and the chmod in the advice is given only for what this account
+# owns. Making files owned by another account needs root, so os.stat is
+# patched: rk_stat TARGET UID MODE BLOB runs --rewrap on BLOB with TARGET (a
+# resolved path) reported as owned by UID with permission bits MODE (octal).
+rk_stat() {
+  rk python3 -I -c '
+import os, stat, sys
+target, uid, mode = sys.argv[2], int(sys.argv[3]), int(sys.argv[4], 8)
+real = os.stat
+def fake_stat(p, *a, **k):
+    st = real(p, *a, **k)
+    if isinstance(p, str) and os.path.realpath(p) == target:
+        f = list(st)
+        f[0] = stat.S_IFMT(st.st_mode) | mode
+        f[4] = uid
+        # The named fields too (st_mtime_ns and the rest), or file_identity
+        # sees a changed file.
+        named = {k: getattr(st, k) for k in dir(st) if k.startswith("st_")
+                 and k not in ("st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid", "st_size")}
+        return os.stat_result(f, named)
+    return st
+os.stat = fake_stat
+sys.argv = ["consume.py", "--label", "example", "--rewrap", "--blob-file", sys.argv[1]]
+exec(compile(open("../consume.py").read(), "consume.py", "exec"), {"__name__": "__main__"})
+' "$4" "$1" "$2" "$3"
+}
+mkdir -p "$ST/own"; cp blob-age.txt "$ST/own/b.txt"; chmod 700 "$ST/own"; chmod 600 "$ST/own/b.txt"
+movemsg="stop and report it to the user: a blob file belongs in a store only this account can write"
+expect_refusal "--rewrap of a blob file owned by another account" 1 "the blob file $(bq "$ST/own/b.txt" "$RST/own/b.txt") is owned by another account; $movemsg" \
+  rk_stat "$RST/own/b.txt" 65534 600 "$ST/own/b.txt"
+expect_refusal "--rewrap in a directory owned by another account" 1 "the blob file's directory $(bq "$ST/own" "$RST/own") is owned by another account; $movemsg" \
+  rk_stat "$RST/own" 65534 755 "$ST/own/b.txt"
+cmp -s blob-age.txt "$ST/own/b.txt" || fail "a --rewrap refused for its owner changed the blob file"
+if [ "$(id -u)" != 0 ]; then
+  # Root's and writable by others: refused, with no chmod this account can't run.
+  expect_refusal "--rewrap of a root-owned group-writable blob file" 1 "the blob file $(bq "$ST/own/b.txt" "$RST/own/b.txt") is writable by others (mode 0660); $movemsg" \
+    rk_stat "$RST/own/b.txt" 0 660 "$ST/own/b.txt"
+  ! grep -qF chmod "$S/err" || fail "--rewrap advised a chmod of a root-owned blob file: $(cat "$S/err")"
+  expect_refusal "--rewrap in a root-owned group-writable directory" 1 "the blob file's directory $(bq "$ST/own" "$RST/own") is writable by others (mode 0770); $movemsg" \
+    rk_stat "$RST/own" 0 770 "$ST/own/b.txt"
+  ! grep -qF chmod "$S/err" || fail "--rewrap advised a chmod of a root-owned directory: $(cat "$S/err")"
+fi
+# A root-owned 0644 blob file and a root-owned 0755 directory are accepted
+# (the rewrap goes ahead).
+cp blob-age.txt "$ST/own/b.txt"
+rk_stat "$RST/own/b.txt" 0 644 "$ST/own/b.txt" >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--rewrap refused a root-owned 0644 blob file"; }
+grep -qF rewrapped "$S/err" || fail "--rewrap of a root-owned 0644 blob file didn't rewrap: $(cat "$S/err")"
+cp blob-age.txt "$ST/own/b.txt"
+rk_stat "$RST/own" 0 755 "$ST/own/b.txt" >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--rewrap refused a root-owned 0755 directory"; }
+grep -qF rewrapped "$S/err" || fail "--rewrap in a root-owned 0755 directory didn't rewrap: $(cat "$S/err")"
+echo "ok (--rewrap: the blob file's and directory's owner checked, chmod advised only for this account's own)"
 # Checked before anything else is decided: a blob already for the current key
 # in such a directory is refused too, not reported done.
 cp "$ST/new.txt" "$ST/gwd/cur.txt"
