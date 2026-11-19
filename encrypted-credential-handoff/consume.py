@@ -422,7 +422,8 @@ def check_key_dir(path: str) -> None:
     or other: anyone else who can write there can rename another file over
     the key, or add one beside it (agent-setup.sh makes it 0700). No sticky
     exception, unlike a blob's directory: the sticky bit stops renames, not
-    new files beside the key, and a key directory has no reason to be shared."""
+    new files beside the key, and a key directory has no reason to be shared.
+    (The sticky bit changes only the advice: move the key, not chmod.)"""
     if os.name == "nt":
         return
     # Absolute but not normalized: abspath would fold a ".." by its text,
@@ -433,14 +434,17 @@ def check_key_dir(path: str) -> None:
         dst = os.stat(directory)
     except OSError as e:
         raise fail(f"cannot read the key's directory {directory!r}: {e.strerror}") from None
-    move = ("stop and report it to the user: the key belongs in a directory of this "
-            "account's own (SETUP.md step 1)")
+    move = ("stop and report it to the user: the key belongs in a directory only this "
+            "account can write (SETUP.md step 1)")
     if dst.st_uid not in (os.geteuid(), 0):
         raise fail(f"the key's directory {directory!r} is owned by another account; {move}")
     if dst.st_mode & 0o022:
         # chmod is the fix only for this account's own directory: on a shared
         # one (/tmp, owned by root) it would break the directory for everyone.
-        if dst.st_uid == os.geteuid():
+        # A sticky, world-writable directory is a shared one whoever owns it
+        # (root owns /tmp, so an agent running as root would own it).
+        shared = dst.st_mode & stat.S_ISVTX and dst.st_mode & 0o002
+        if dst.st_uid == os.geteuid() and not shared:
             fix = f"stop and report it to the user, who runs: chmod -- go-w {shell_quote(directory)}"
         else:
             fix = move
