@@ -33,11 +33,17 @@ These patterns were developed under a set of operating rules. They are listed he
 
 ## Disclosure
 
-These are my own builds and guides, written up and submitted by me. The shared-memory store and NAS MCP server referenced in some guides live in their own repositories and are not part of this one.
+I direct this work and submit it myself. The patterns come from my own setup, and the builds are a collaboration with the agents named under [Acknowledgments](#acknowledgments). The shared-memory store and NAS MCP server referenced in some guides live in their own repositories and are not part of this one.
 
 ## Contributing, security and conduct
 
 Contributions come in as issues (bug reports, feature requests, platform test reports); pull requests are opened by collaborators. See [`CONTRIBUTING.md`](CONTRIBUTING.md). An exploitable security flaw goes through a private advisory, never a public issue: [`SECURITY.md`](SECURITY.md). Everyone taking part follows the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+
+## Acknowledgments
+
+This kit is one maintainer's work, built with AI agents that each have a fixed role. Muse, Meta's personal AI agent and the agent these guides are written for, built the first working version for its own setup, tested it on itself, and reviews changes as the end user the patterns serve. Claude Code (Anthropic's Claude) generalized that version and wrote most of what's here now, and a separate Claude Code session reviewed each change as QA before the maintainer's sign-off. Claude on claude.ai reviewed the whole repository once. Nothing merged without the maintainer's sign-off.
+
+The reviews found real bugs, which is why they're there, but they all ran inside one setup. That's peer review, not a third-party audit: each release's [CHANGELOG](encrypted-credential-handoff/CHANGELOG.md) says what was reviewed and what wasn't run.
 
 ## License
 
