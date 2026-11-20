@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- **`consume.py --help` finds the option where `parse_args` would** (#111, refs #8 item 5): `--blob --label --help` and `--label -- --help` print the usage instead of "unrecognized argument".
 - **A fetched store's rotation on macOS** (#110, refs #8 item 3, #16 item 8): its labels are staged again instead of rewrapped, with a new `awaiting staging (macOS)` state; a RAM disk is untested, and any other place is the user's decision, recorded.
 - **A proxy's credential file** (#109, refs #16 item 2): the user writes it, outside chat; it's plaintext the agent's tools can read, so it's recorded as accepted knowingly.
 - **SETUP step 6's permission rules** (#108, refs #9 items 1 and 2, #8 items 1 and 2): `umask 077` in each command that creates something; checks after storing for the file, its directory and every directory above them, and for the kit's folder, `bin/`, `run/` and the wrappers; no symlinks on those paths (a root-owned system link aside); macOS ACLs; a blob that sat writable is staged again; a group-shared store isn't one; step 2 says what to do about the key directory's mode note.
