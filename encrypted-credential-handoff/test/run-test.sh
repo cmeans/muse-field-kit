@@ -3217,6 +3217,15 @@ grep -qF -- "--rewrap --blob-file" "$S/out" || fail "--rewrap --help doesn't sho
 # --help as an option's value isn't a request for help.
 rc=0; consume --label --help --check >"$S/out" 2>&1 || rc=$?
 if [ "$rc" = 0 ] || grep -qF "Usage:" "$S/out"; then fail "--label --help printed the usage"; fi
+# The scan walks the options as parse_args does (issue #8 item 5): a value
+# can look like an option, and "--" as a value doesn't start the command.
+consume --blob --label --help >"$S/out" 2>&1 || fail "--blob --label --help failed: $(cat "$S/out")"
+grep -qF -- "--rewrap --blob-file" "$S/out" || fail "--blob --label --help doesn't show the usage"
+consume --label -- --help >"$S/out" 2>&1 || fail "--label -- --help failed: $(cat "$S/out")"
+grep -qF -- "--rewrap --blob-file" "$S/out" || fail "--label -- --help doesn't show the usage"
+# ...and --help after the command's own "--" is the command's.
+rc=0; consume --label example --check -- --help >"$S/out" 2>&1 || rc=$?
+if grep -qF "Usage:" "$S/out"; then fail "--help after -- printed the helper's usage"; fi
 # --help prints the usage and exits 0.
 consume --help >"$S/out" 2>&1 || fail "consume.py --help failed"
 grep -qF -- "--rewrap" "$S/out" || fail "consume.py --help doesn't show the usage"

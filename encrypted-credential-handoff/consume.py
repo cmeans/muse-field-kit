@@ -961,6 +961,11 @@ def check_env_name(name: str) -> None:
         )
 
 
+# The options that take a value: parse_args reads them, and help_asked walks
+# argv the same way, so both use this one tuple.
+VALUE_OPTIONS = ("--label", "--blob", "--blob-file", "--env")
+
+
 def parse_args(argv):
     label = None
     check = False
@@ -984,7 +989,7 @@ def parse_args(argv):
             if a in seen:
                 raise fail(f"{a} given twice")
             seen.add(a)
-        if a in ("--label", "--blob", "--blob-file", "--env"):
+        if a in VALUE_OPTIONS:
             i += 1
             if i >= len(argv):
                 raise fail(f"{a} needs a value")
@@ -1127,17 +1132,31 @@ def fix_std_fds() -> None:
         setattr(sys, name, stream)
 
 
+def help_asked(argv) -> bool:
+    """Whether -h or --help is one of the helper's own options. Walks argv
+    as parse_args does: an option that takes a value consumes the next
+    argument, whatever it is (--label --help is a label, and --label -- sets
+    the label to "--"), and the first "--" that isn't a value starts the
+    command. Unlike parse_args, it skips over an argument it doesn't
+    recognize, so --help after a typo still prints the usage."""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            return False
+        if a in ("-h", "--help"):
+            return True
+        i += 2 if a in VALUE_OPTIONS else 1
+    return False
+
+
 def main() -> int:
     fix_std_fds()
     if sys.version_info < (3, 7):
         # capture_output and text= need 3.7; say so instead of a traceback.
         print("consume.py: requires Python 3.7 or later", file=sys.stderr)
         return 1
-    own = sys.argv[1:sys.argv.index("--")] if "--" in sys.argv[1:] else sys.argv[1:]
-    # Option positions only: a value (--label --help) isn't a request for help.
-    takes_value = {"--label", "--blob", "--blob-file", "--env"}
-    positions = [a for k, a in enumerate(own) if k == 0 or own[k - 1] not in takes_value]
-    if "-h" in positions or "--help" in positions:
+    if help_asked(sys.argv[1:]):
         # __doc__ is None under python3 -OO; the usage then is the one line.
         doc = __doc__ or ""
         print(doc[doc.index("Usage:"):].rstrip() if "Usage:" in doc else
