@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- **The rewrap's tmpfs directory checks** (#105, refs #16 items 3 and 7, #9 item 5d, #19 item 3): `mkdir -m 700` runs under `umask 077`; a `found:` with no uid is a failed `stat`; a missing directory is first checked to be your own uid's, and a missing `/run/user` records `stopped` while a remade `/dev/shm` directory doesn't.
 - **STORES.md ranks the tested stores by a table of the requirements** (#104, closes #102): a store meeting one only partly counts but ranks lower (Drive's R1, Notion's R2); the shared agent memory service, which failed R3, is no longer listed.
 - **Rotation's Compromise steps** (#103, refs #18): a compromised host is recorded, with the host it applies to; SKILL, Compromise, rotation step 1, setup step 6 and the follow-ups stop on it until the user clears it in a direct turn; step 2 keys on `.previous` existing; a superseded rotation's leftovers are cleaned up and its `sent back by the pass` cleared.
 - **Store, design and security-reporting wording** (#101): STORES R3 counts the store's provider among its readers; DESIGN's sender-authentication note no longer contradicts its signed-blob variant; the folder's SECURITY.md agrees with the root one (a private advisory, or the contact form as fallback); an injection the rules should catch but don't is in scope.
