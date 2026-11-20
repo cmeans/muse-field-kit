@@ -2462,6 +2462,7 @@ case "\$(cat "$W/mode" 2>/dev/null)" in
   changed) [ "\$n" -lt 2 ] || { echo "a blob staged meanwhile"; exit 0; } ;;
   failback) [ "\$n" -lt 3 ] || exit 1 ;;
   diffback) [ "\$n" -lt 3 ] || { echo "different text"; exit 0; } ;;
+  foldback) [ "\$n" -lt 3 ] || { fold -w 64 "$W/blob"; exit 0; } ;;
 esac
 cat "$W/blob"
 EOF
@@ -2511,7 +2512,7 @@ fsw() {
   rm -f "$W/count" "$f" "$f.now"
   [ "$m" = keep ] || cp blob-age.txt "$W/blob"
   printf '%s' "$m" >"$W/mode"
-  rc=0; "$W/rewrap" 2>"$W/err" || rc=$?
+  rc=0; (umask 022; "$W/rewrap") 2>"$W/err" || rc=$?
   [ "$rc" = "$want" ] || fail "the doc's fetched-store rewrap wrapper ($m): exit $rc, not $want: $(cat "$W/err")"
   for t in "$@"; do
     grep -qF -- "$t" "$W/err" || fail "the doc's fetched-store rewrap wrapper ($m) didn't say '$t': $(cat "$W/err")"
@@ -2525,13 +2526,28 @@ rk python3 ../consume.py --label example --check --blob-file "$W/blob" >/dev/nul
 fsw keep 0 "is already for the current key" "store unchanged"
 [ ! -e "$f" ] || fail "the doc's wrapper left its file for a blob already current"
 fsw failfetch 3 "fetch (or creating $f) failed; store unchanged"
-fsw failrefetch 4 "re-fetch failed; store unchanged, $f kept"
-[ -e "$f" ] || fail "the doc's wrapper didn't keep its file after a failed re-fetch"
-fsw changed 6 "the stored blob changed meanwhile (a blob staged?); store unchanged, $f kept"
+# kept MODE: after an outcome that says "$f kept", the file is there, mode
+# 0600 though the run's umask was 022, and the re-fetch's $f.now is gone.
+kept() {
+  [ -e "$f" ] || fail "the doc's wrapper ($1) said $f kept but removed it"
+  [ "$(stat_of %a "$f")" = 600 ] || fail "the doc's wrapper ($1) kept $f with mode $(stat_of %a "$f"), not 600"
+  [ ! -e "$f.now" ] || fail "the doc's wrapper ($1) left $f.now"
+}
+fsw failrefetch 4 "re-fetch failed; store unchanged, $f kept"; kept failrefetch
+fsw changed 6 "the stored blob changed meanwhile (a blob staged?); store unchanged, $f kept"; kept changed
 cmp -s "$W/blob" blob-age.txt || fail "the doc's wrapper wrote the store after seeing it change"
-fsw failstore 5 "store write failed"
-fsw failback 4 "fetch-back failed; $f kept"
-fsw diffback 1 "the store returned different text; $f kept"
+fsw failstore 5 "store write failed"; kept failstore
+fsw failback 4 "fetch-back failed; $f kept"; kept failback
+fsw diffback 1 "the store returned different text; $f kept"; kept diffback
+# A store that folds or trims what it sends back still compares equal: the
+# compare ignores whitespace, as the doc says.
+fsw foldback 0 "stored, fetched back and compared; $f removed"
+# A refusal (a blob that isn't one) leaves the file behind, as the doc says.
+printf 'not base64 !!!' >"$W/blob.bad"
+rm -f "$W/count" "$f"; cp "$W/blob.bad" "$W/blob"; printf ok >"$W/mode"
+rc=0; (umask 022; "$W/rewrap") 2>"$W/err" || rc=$?
+{ [ "$rc" = 1 ] && grep -qF "not valid base64" "$W/err" && [ -e "$f" ]; } \
+  || fail "the doc's wrapper with a refused blob: exit $rc, file $( [ -e "$f" ] && echo kept || echo gone ), $(cat "$W/err")"
 # A leftover file stops it before any fetch; a missing directory too; and it
 # takes no arguments.
 cp blob-age.txt "$W/blob"; printf ok >"$W/mode"; rm -f "$W/count"; : >"$f"
