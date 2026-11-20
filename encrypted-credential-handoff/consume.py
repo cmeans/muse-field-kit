@@ -1127,17 +1127,31 @@ def fix_std_fds() -> None:
         setattr(sys, name, stream)
 
 
+def help_asked(argv) -> bool:
+    """Whether -h or --help is one of the helper's own options. Walks argv
+    as parse_args does: an option that takes a value consumes the next
+    argument, whatever it is (--label --help is a label, and --label -- sets
+    the label to "--"), and the first "--" that isn't a value starts the
+    command."""
+    takes_value = ("--label", "--blob", "--blob-file", "--env")
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            return False
+        if a in ("-h", "--help"):
+            return True
+        i += 2 if a in takes_value else 1
+    return False
+
+
 def main() -> int:
     fix_std_fds()
     if sys.version_info < (3, 7):
         # capture_output and text= need 3.7; say so instead of a traceback.
         print("consume.py: requires Python 3.7 or later", file=sys.stderr)
         return 1
-    own = sys.argv[1:sys.argv.index("--")] if "--" in sys.argv[1:] else sys.argv[1:]
-    # Option positions only: a value (--label --help) isn't a request for help.
-    takes_value = {"--label", "--blob", "--blob-file", "--env"}
-    positions = [a for k, a in enumerate(own) if k == 0 or own[k - 1] not in takes_value]
-    if "-h" in positions or "--help" in positions:
+    if help_asked(sys.argv[1:]):
         # __doc__ is None under python3 -OO; the usage then is the one line.
         doc = __doc__ or ""
         print(doc[doc.index("Usage:"):].rstrip() if "Usage:" in doc else
