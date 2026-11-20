@@ -753,7 +753,7 @@ env PATH="$S/posixchmod:$PATH" POSIXLY_CORRECT=1 HANDOFF_KEY_DIR="$S/posix-setup
   || fail "first setup under POSIX option parsing left the wrong modes"
 # Refusals of --fingerprint / --public-key: what is not an owner-only age
 # identity, in the words consume.py uses.
-expect_refusal "an RSA PEM as KEY (--fingerprint)" 1 "is an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again (README.md)" \
+expect_refusal "an RSA PEM as KEY (--fingerprint)" 1 "is an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again" \
   bash ../agent-setup.sh --fingerprint "$RSAKEY"
 expect_refusal "an RSA PEM as the key (--public-key)" 1 "an RSA key from 0.1.0" \
   env HANDOFF_PRIVKEY="$RSAKEY" bash ../agent-setup.sh --public-key
@@ -1653,7 +1653,7 @@ expect_refusal "a plugin identity line" 1 "plugin identity" \
 expect_refusal "a post-quantum identity line" 1 "post-quantum identity" \
   env HANDOFF_PRIVKEY="$S/id-pq.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 cp "$RSAKEY" "$S/id-rsa.txt"
-expect_refusal "an RSA PEM at the identity path" 1 "an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again (README.md)" \
+expect_refusal "an RSA PEM at the identity path" 1 "an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again" \
   env HANDOFF_PRIVKEY="$S/id-rsa.txt" python3 ../consume.py --label example --check --blob-file blob-age.txt
 # Any other text is refused before age-keygen runs (a stub age-keygen leaves a marker).
 mkdir -p "$S/kgstub"

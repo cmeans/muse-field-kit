@@ -12,8 +12,6 @@ Hand your Muse a service credential **without the plaintext ever entering the ch
 
 **What it needs:** on your side, [`age`](https://github.com/FiloSottile/age#installation) and, for `handoff.sh`, bash and `jq` 1.6 or newer (Linux, macOS); on Windows, `age` and the PowerShell that ships with Windows, nothing else. On the agent's side (Linux or macOS), bash, `age` and Python 3.7 or newer. No OpenSSL anywhere. “Installing age” and “Getting the scripts” say how; “Platform” says what runs where, and `DESIGN.md`, “What CI tests”, what is tested.
 
-**Coming from 0.1.0?** Version 0.2.0 replaces 0.1.0's RSA keys with `age` and can't read 0.1.0's keys or blobs: a 0.1.0 install sets up again from scratch (a new identity, and each credential staged again).
-
 **For your Muse:** [`SKILL.md`](SKILL.md) routes each request (set up, stage a credential, rotate the key) to its step in [`SETUP.md`](SETUP.md) or [`ROTATION.md`](ROTATION.md), the instructions it follows, and says which parts to read when. Muse finds a skill only once its folder is installed among its skills, not from a link to this repo, so the setup prompt below asks it to install this folder as one. The installed copy only points Muse back here: it reads the instructions and runs the scripts from a clone of this repository.
 
 ## Prompts for your Muse
