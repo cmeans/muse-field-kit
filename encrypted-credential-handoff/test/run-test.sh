@@ -3799,6 +3799,8 @@ rc=0; rk bash ../agent-setup.sh --retire >/dev/null 2>"$R/err" || rc=$?
 [ "$rc" = 1 ] && [ ! -e "$R/.handoff-new.Linked" ] && [ -f "$KEY.previous" ] \
   || fail "--retire without --yes and a linked leftover: exit $rc, $(cat "$R/err")"
 grep -qF "another link to the previous key" "$R/err" || fail "--retire without --yes didn't report the link it removed"
+# ...and its exit 1 is the missing confirmation's, not some other refusal's.
+grep -qF "only once ROTATION.md step 5's last pass is recorded" "$R/err" || fail "--retire without --yes didn't ask for the confirmation: $(cat "$R/err")"
 ln "$KEY.previous" "$R/.handoff-setup.Linked"
 rk bash ../agent-setup.sh --retire --yes >/dev/null 2>"$R/err" || fail "--retire with a linked leftover failed: $(cat "$R/err")"
 [ ! -e "$R/.handoff-setup.Linked" ] || fail "--retire left another link to the old key"
@@ -3863,6 +3865,22 @@ rc=0; env HANDOFF_PRIVKEY="$nl/k.txt" bash ../agent-setup.sh --retire >/dev/null
 grep -qE -- "-xdev -inum [0-9]+, as root" "$S/qerr" || fail "the -inum hint isn't one number: $(cat "$S/qerr")"
 ! grep -q '^touch), as root' "$S/qerr" || fail "the -inum hint split on the newline: $(cat "$S/qerr")"
 rm -rf "$nl" "$S/nlbackup.txt"
+# The -inum form only with an inode that is all digits (issue #9 item 13):
+# an ls -di that prints something else, or nothing, drops it, and the
+# -samefile form stays.
+mkdir -p "$S/badls" "$S/inum"; cp "$TMPKEY" "$S/inum/k.txt"
+env HANDOFF_PRIVKEY="$S/inum/k.txt" bash ../agent-setup.sh --rotate >/dev/null 2>&1 || fail "--rotate for the -inum guard tests failed"
+ln "$S/inum/k.txt.previous" "$S/inum-backup.txt"
+for bad in 'x1y' ''; do
+  # A shim for ls -di only: any other ls call is the real one.
+  printf '#!/bin/sh\nif [ "$1" = -di ]; then [ -n "%s" ] && printf "%%s %%s\\n" "%s" "$3"; exit 0; fi\nexec %s "$@"\n' "$bad" "$bad" "$(command -v ls)" >"$S/badls/ls"
+  chmod +x "$S/badls/ls"
+  rc=0; env PATH="$S/badls:$PATH" HANDOFF_PRIVKEY="$S/inum/k.txt" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
+  [ "$rc" = 1 ] && grep -qF "has another hard link" "$S/qerr" || fail "--retire with ls -di printing '$bad': exit $rc, $(cat "$S/qerr")"
+  ! grep -q -- "-inum" "$S/qerr" || fail "the hint kept an -inum form for an inode of '$bad': $(cat "$S/qerr")"
+  grep -qF -- "-xdev -samefile '$(cd "$S/inum" && pwd -P)/k.txt.previous'" "$S/qerr" || fail "the hint lost its -samefile form for an inode of '$bad': $(cat "$S/qerr")"
+done
+rm -rf "$S/badls" "$S/inum" "$S/inum-backup.txt"
 # A relative key path still gets an absolute path in the find hint.
 grep -qF -- "-samefile '$(cd "$S/dashlink" && pwd -P)/-k.txt.previous'" "$S/err" || fail "the find hint for a relative key isn't absolute: $(cat "$S/err")"
 # A key file named like a temporary key isn't swept by its own --rotate.
