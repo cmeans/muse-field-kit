@@ -1262,14 +1262,18 @@ def main() -> int:
         print(f"consume.py: rewrapped {shown(target)!r} to the current key {current!r}; the blob "
               f"was for the previous key ({previous!r})", file=sys.stderr)
         return 0
+    # The two rotation lines start with a newline: the wrapper's fetch writes
+    # to the same stderr first, and store-controlled text left without one
+    # (a NUL, say: BSD grep then doesn't see the rest of that line) would
+    # join onto them and hide them from the probe's count (issue #21 item 1).
     if slot == "current" and os.path.lexists(previous):
         # During a rotation, a positive line too: a probe's check is then for
         # a line that is there, not one that isn't.
-        print(f"consume.py: label {label!r} opened with the current key "
+        print(f"\nconsume.py: label {label!r} opened with the current key "
               "(a rotation is under way)", file=sys.stderr)
     if slot == "previous":
         # Nothing from the payload: which key file opened it.
-        print(f"consume.py: label {label!r} decrypted with the previous key; "
+        print(f"\nconsume.py: label {label!r} decrypted with the previous key; "
               "rewrap it once ROTATION.md step 3 is done", file=sys.stderr)
     # Built from bytes: each value goes to the command as its UTF-8 bytes, the
     # bytes the user encrypted, whatever this process's locale. With str

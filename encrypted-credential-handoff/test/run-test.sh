@@ -2440,6 +2440,13 @@ print(os.environ["SERVICE_PASSWORD"])
 [ "$out" = "$P" ] || fail "an old blob didn't run through the previous key"
 grep -qF "label 'example' decrypted with the previous key; rewrap it" "$R/err" || fail "run mode didn't say to rewrap: $(cat "$R/err")"
 no_dummy_in "$R/err"
+# The line starts a line of its own even after a fetch's stderr that ends in a
+# NUL with no newline (issue #21 item 1: BSD grep stops reading a line at a
+# NUL, so a joined line counted 0 there).
+{ printf 'fetch noise\000' >&2; rk python3 ../consume.py --label example --blob-file blob-age.txt -- true; } 2>"$R/err" \
+  || fail "run mode after a NUL on stderr failed: $(cat -v "$R/err")"
+python3 -I -c 'import sys; d = open(sys.argv[1], "rb").read(); sys.exit(0 if b"\x00\nconsume.py: label '"'"'example'"'"' decrypted with the previous key;" in d else 1)' "$R/err" \
+  || fail "the previous-key line didn't start its own line after a NUL: $(cat -v "$R/err")"
 # --rewrap rewrites its --blob-file in place, for the current key, and
 # prints nothing on stdout.
 cp blob-age.txt "$ST/new.txt"
@@ -2469,6 +2476,10 @@ mv "$R/held.txt" "$R/k.txt.previous"
 # probe checks for a line that's there.
 rk python3 ../consume.py --label example --blob-file "$ST/new.txt" -- true 2>"$R/err" || fail "run mode on the rewrapped blob failed"
 grep -qxF "consume.py: label 'example' opened with the current key (a rotation is under way)" "$R/err" || fail "run mode didn't say the current key opened it: $(cat "$R/err")"
+# ...and it too starts with a newline (the NUL case, which the attack
+# needs, is the previous-key line's, above).
+python3 -I -c 'import sys; sys.exit(0 if open(sys.argv[1], "rb").read().startswith(b"\nconsume.py: label") else 1)' "$R/err" \
+  || fail "the current-key line doesn't start with a newline: $(cat -v "$R/err")"
 # A blob already for the current key isn't rewritten (age's output differs on every run).
 cp "$ST/new.txt" "$ST/new2.txt"
 rk python3 ../consume.py --label example --rewrap --blob-file "$ST/new2.txt" 2>"$R/err" || fail "--rewrap of a current blob failed"

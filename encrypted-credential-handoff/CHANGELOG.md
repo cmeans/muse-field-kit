@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- **`consume.py`'s rotation lines start a line of their own** (#113, refs #21 item 1): store text on stderr without a newline (a NUL, which BSD grep stops at) can no longer join onto them and hide them from the Current-key probe's count.
 - **`consume.py --help` finds the option where `parse_args` would** (#111, refs #8 item 5): `--blob --label --help` and `--label -- --help` print the usage instead of "unrecognized argument".
 - **A fetched store's rotation on macOS** (#110, refs #8 item 3, #16 item 8): its labels are staged again instead of rewrapped, with a new `awaiting staging (macOS)` state; a RAM disk is untested, and any other place is the user's decision, recorded.
 - **A proxy's credential file** (#109, refs #16 item 2): the user writes it, outside chat; it's plaintext the agent's tools can read, so it's recorded as accepted knowingly.
