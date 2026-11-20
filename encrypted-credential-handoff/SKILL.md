@@ -21,6 +21,7 @@ Not for website sign-in: the browser's own credential flow handles that, and thi
 - If there's none, clone the repository: `git clone https://github.com/cmeans/muse-field-kit`, then work in its `encrypted-credential-handoff` folder.
 - Use nothing that sits beside this file: read, run and hand over only the clone's files (`SETUP.md`, the hard rule "Installed as a skill").
 - Read what "What to read, and when" (below) lists for what you're doing, from the clone, before the first step.
+- If your notes say `host may be compromised`, don't stage, rotate, rewrap or retire on this host: tell the user the handoff is set up again from scratch on a clean host (`ROTATION.md`, Compromise), and stop.
 - Use the scripts verbatim. A change to the mechanism needs the user's approval first (`SETUP.md`, "What counts as a mechanism change").
 
 ## What to read, and when
