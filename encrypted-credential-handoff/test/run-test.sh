@@ -3442,7 +3442,7 @@ expect_refusal "--retire --yes with a .previous holding the current key" 1 "hold
   rk bash ../agent-setup.sh --retire --yes
 # ...and it says to stop and points at ROTATION.md, not at another --rotate,
 # which would strand the labels already rewrapped (issue #117).
-grep -qF "Nothing was deleted: stop, and do what ROTATION.md step 5 says" "$S/err" || fail "the same-key --retire refusal doesn't point at ROTATION.md step 5: $(cat "$S/err")"
+grep -qF "Nothing was deleted: stop, and do what ROTATION.md says for this refusal where you are (Rotation step 5" "$S/err" || fail "the same-key --retire refusal doesn't point at ROTATION.md: $(cat "$S/err")"
 ! grep -qF "run agent-setup.sh --rotate again" "$S/err" || fail "the same-key --retire refusal still says to run --rotate again"
 [ -f "$KEY.previous" ] || fail "a refused --retire --yes deleted a .previous holding the current key"
 rm "$KEY.previous"; mkdir "$KEY.previous"

@@ -21,7 +21,7 @@
 
 ### Fixed
 
-- **`--retire`'s same-key refusal no longer says to run `--rotate` again** (#118, closes #117): it says to stop and points at ROTATION.md step 5, which now has its outcome (a key file was replaced: stop and report), as does Compromise step 4.
+- **`--retire`'s same-key refusal no longer says to run `--rotate` again** (#118, closes #117): it says to stop and points at ROTATION.md, where step 5 now has its outcome by what the two key names hold, and Compromise step 4 and step 1's resume and unaccounted-`.previous` cases have theirs.
 - **`consume.py`'s rotation lines start a line of their own** (#113, refs #21 item 1): store text on stderr without a newline (a NUL, which BSD grep stops at) can no longer join onto them and hide them from the Current-key probe's count.
 - **`consume.py --help` finds the option where `parse_args` would** (#111, refs #8 item 5): `--blob --label --help` and `--label -- --help` print the usage instead of "unrecognized argument".
 - **A fetched store's rotation on macOS** (#110, refs #8 item 3, #16 item 8): its labels are staged again instead of rewrapped, with a new `awaiting staging (macOS)` state; a RAM disk is untested, and any other place is the user's decision, recorded.
