@@ -3440,6 +3440,10 @@ grep -qF "resuming an interrupted rotation" "$R/err" || fail "a copied .previous
 cp -p "$KEY" "$KEY.previous"
 expect_refusal "--retire --yes with a .previous holding the current key" 1 "holds the current key: the rotation didn't finish" \
   rk bash ../agent-setup.sh --retire --yes
+# ...and it says to stop and points at ROTATION.md, not at another --rotate,
+# which would strand the labels already rewrapped (issue #117).
+grep -qF "Nothing was deleted: stop, and do what ROTATION.md says for this refusal where you are (Rotation step 5 or step 1 case 4, or Compromise step 2 or 4)" "$S/err" || fail "the same-key --retire refusal doesn't point at ROTATION.md: $(cat "$S/err")"
+! grep -qF "run agent-setup.sh --rotate again" "$S/err" || fail "the same-key --retire refusal still says to run --rotate again"
 [ -f "$KEY.previous" ] || fail "a refused --retire --yes deleted a .previous holding the current key"
 rm "$KEY.previous"; mkdir "$KEY.previous"
 expect_refusal "--rotate with a directory at .previous" 1 "is not a regular file" \
