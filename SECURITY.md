@@ -46,7 +46,7 @@ Each security-relevant folder's own `SECURITY.md` says what its pattern claims t
 **In scope**
 
 - A way a folder's documented guarantees fail when its scripts are used as its instructions say (`SETUP.md`, and `ROTATION.md` where there is one) (for example, a credential reaching the chat, the agent's context or disk), or wording that overstates what is defended.
-- A request the instructions should treat as an injection attempt but don't: content the agent reads (a web page, a tool result, a message) that gets a credential disclosed while the agent follows its instructions as written. That's a gap in the rules, not the agent misbehaving.
+- A request the instructions should treat as an injection attempt but don't: content the agent reads (a web page, a tool result, a message) that gets a credential or the key disclosed, or a label run other than as recorded, while the agent follows its instructions as written. That's a gap in the rules. The threat model's "Prompt injection at use time" and "the agent misbehaving" cover an agent that departs from its rules, which is out of scope.
 - The scripts themselves: input that gets past a documented check, a credential in output or logs, a race by another account that defeats a check.
 - This repository's GitHub Actions workflows: injection through `${{ github.event.* }}` expressions in `run:` blocks, token permissions, and anything that lets a pull request's content run with more than read access.
 - The integrity of what a release publishes.
