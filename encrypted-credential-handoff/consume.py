@@ -494,7 +494,7 @@ def load_key(privkey: str) -> "tuple[str, bytes]":
             f"-----BEGIN {kind}-----" in text
             for kind in ("RSA PRIVATE KEY", "PRIVATE KEY", "ENCRYPTED PRIVATE KEY")):
         raise fail(f"the key at {privkey!r} is an RSA key from 0.1.0; 0.2.0 uses age: "
-                   "a 0.1.0 install sets up again (README.md)")
+                   "a 0.1.0 install sets up again")
     not_identity = f"the file at {privkey!r} is not an age identity file"
     if text is None:
         raise fail(not_identity)

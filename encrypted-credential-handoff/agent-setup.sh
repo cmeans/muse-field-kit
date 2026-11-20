@@ -248,7 +248,7 @@ recipient_of() {  # FILE
   esac
   case "$data" in
     *"-----BEGIN RSA PRIVATE KEY-----"*|*"-----BEGIN PRIVATE KEY-----"*|*"-----BEGIN ENCRYPTED PRIVATE KEY-----"*)
-      echo "the key at $(qp "$f") is an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again (README.md)" >&2
+      echo "the key at $(qp "$f") is an RSA key from 0.1.0; 0.2.0 uses age: a 0.1.0 install sets up again" >&2
       return 2 ;;
   esac
   while IFS= read -r line || [ -n "$line" ]; do
