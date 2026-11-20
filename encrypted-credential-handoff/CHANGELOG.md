@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- **Rotation's resume and leftovers** (#98, refs #9, #18): a resume first waits for a backgrounded rewrap run, recorded as such; temporary copies are matched exactly, not by glob; step 5 deletes stray ones before the retire; the format and no-rotation refusals are named; a kept tmpfs copy may be gone.
 - **Rotation's label-state wording** (#97, refs #19, #18): the probe skip needs a current-key probe after step 3; step 5 waits while a label is `stopped`; one `stopped:` template for probe stops; both done states named; a send-back is one update; a staging probe that isn't `ok` is a stop; the already-current line quoted as `consume.py` prints it.
 - **The Current-key probe check is one command line** (#96, refs #21): it works when each tool call is a new shell, checks `mktemp`, and deletes the file once it's read; on macOS it uses `getconf DARWIN_USER_TEMP_DIR`, not `$TMPDIR`.
 - **A `.previous` key is refused as the current one** (#53, closes #46): `--rotate` on it used to strand the old key at `.previous.previous`. An install already in that state is caught too; see `ROTATION.md`'s "A .previous.previous file".
