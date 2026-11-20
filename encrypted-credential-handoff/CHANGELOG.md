@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- **A hard-link refusal's search** (#107, refs #21 items 4 and 5, #8 item 4): the user keeps the message's absolute path, not `<key path>.previous`; paths are shown quoted; the mount-point one-liner fails on a missing directory (it printed an ancestor's mount point); a search that prints nothing reruns from the key's own filesystem or subvolume; the `-inum` form, also the only one for a path with a control character, runs only from that mount point.
 - **The rewrap wrapper's `f=` checks** (#106, refs #19 items 6 and 7): the form check refuses `.` and `..` parts and a file at `/`; the shared-file check ignores case; a new check finds an `f` assigned anywhere but its own `f=` line.
 - **The rewrap's tmpfs directory checks** (#105, refs #16 items 3 and 7, #9 item 5d, #19 item 3): `mkdir -m 700` runs under `umask 077`; a `found:` with no uid is a failed `stat`; a missing directory is first checked to be your own uid's, and a missing `/run/user` records `stopped` while a remade `/dev/shm` directory doesn't.
 - **STORES.md ranks the tested stores by a table of the requirements** (#104, closes #102): a store meeting one only partly counts but ranks lower (Drive's R1, Notion's R2); the shared agent memory service, which failed R3, is no longer listed.
