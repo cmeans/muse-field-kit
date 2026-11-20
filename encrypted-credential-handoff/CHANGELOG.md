@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- **STORES.md ranks the tested stores by a table of the requirements** (#104, closes #102): a store meeting one only partly counts but ranks lower (Drive's R1, Notion's R2); the shared agent memory service, which failed R3, is no longer listed.
 - **Store, design and security-reporting wording** (#101): STORES R3 counts the store's provider among its readers; DESIGN's sender-authentication note no longer contradicts its signed-blob variant; the folder's SECURITY.md agrees with the root one (a private advisory, or the contact form as fallback); an injection the rules should catch but don't is in scope.
 - **The README's threat model and invariants say what they promise** (#100): each invariant names what keeps it (cryptography, code, the agent's rules, or you), and invariant 9 no longer reads as a check the helper makes; prompt injection at use time is named; the chat is a kept copy; a retire isn't retroactive; a compromised host isn't just a leaked key.
 - **Rotation step 1's recovery cases close** (#99, refs #9, #18): a rotation the notes missed is recorded late once the user confirms it; a retire whose pass wasn't recorded is probed again and closed; a rotation with labels not done stays open until the user closes it.
