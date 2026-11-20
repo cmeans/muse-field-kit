@@ -961,6 +961,11 @@ def check_env_name(name: str) -> None:
         )
 
 
+# The options that take a value: parse_args reads them, and help_asked walks
+# argv the same way, so both use this one tuple.
+VALUE_OPTIONS = ("--label", "--blob", "--blob-file", "--env")
+
+
 def parse_args(argv):
     label = None
     check = False
@@ -984,7 +989,7 @@ def parse_args(argv):
             if a in seen:
                 raise fail(f"{a} given twice")
             seen.add(a)
-        if a in ("--label", "--blob", "--blob-file", "--env"):
+        if a in VALUE_OPTIONS:
             i += 1
             if i >= len(argv):
                 raise fail(f"{a} needs a value")
@@ -1132,8 +1137,8 @@ def help_asked(argv) -> bool:
     as parse_args does: an option that takes a value consumes the next
     argument, whatever it is (--label --help is a label, and --label -- sets
     the label to "--"), and the first "--" that isn't a value starts the
-    command."""
-    takes_value = ("--label", "--blob", "--blob-file", "--env")
+    command. Unlike parse_args, it skips over an argument it doesn't
+    recognize, so --help after a typo still prints the usage."""
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -1141,7 +1146,7 @@ def help_asked(argv) -> bool:
             return False
         if a in ("-h", "--help"):
             return True
-        i += 2 if a in takes_value else 1
+        i += 2 if a in VALUE_OPTIONS else 1
     return False
 
 
