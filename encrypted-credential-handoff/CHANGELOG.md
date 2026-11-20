@@ -18,7 +18,7 @@
 
 ### Fixed
 
-- **The rewrap wrapper's `f=` checks** (#106, refs #19 items 6 and 7): the form check refuses `.` and `..` parts and a file at `/`; the shared-file check ignores case; the `diff` is named as what rules out other assignments.
+- **The rewrap wrapper's `f=` checks** (#106, refs #19 items 6 and 7): the form check refuses `.` and `..` parts and a file at `/`; the shared-file check ignores case; a new check finds an `f` assigned anywhere but its own `f=` line.
 - **STORES.md ranks the tested stores by a table of the requirements** (#104, closes #102): a store meeting one only partly counts but ranks lower (Drive's R1, Notion's R2); the shared agent memory service, which failed R3, is no longer listed.
 - **Rotation's Compromise steps** (#103, refs #18): a compromised host is recorded, with the host it applies to; SKILL, Compromise, rotation step 1, setup step 6 and the follow-ups stop on it until the user clears it in a direct turn; step 2 keys on `.previous` existing; a superseded rotation's leftovers are cleaned up and its `sent back by the pass` cleared.
 - **Store, design and security-reporting wording** (#101): STORES R3 counts the store's provider among its readers; DESIGN's sender-authentication note no longer contradicts its signed-blob variant; the folder's SECURITY.md agrees with the root one (a private advisory, or the contact form as fallback); an injection the rules should catch but don't is in scope.
