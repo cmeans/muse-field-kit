@@ -2447,6 +2447,120 @@ no_dummy_in "$R/err"
   || fail "run mode after a NUL on stderr failed: $(cat -v "$R/err")"
 python3 -I -c 'import sys; d = open(sys.argv[1], "rb").read(); sys.exit(0 if b"\x00\nconsume.py: label '"'"'example'"'"' decrypted with the previous key;" in d else 1)' "$R/err" \
   || fail "the previous-key line didn't start its own line after a NUL: $(cat -v "$R/err")"
+# ROTATION.md step 4's fetched-store rewrap wrapper, run as written (issue #18
+# item 8): taken from the doc, its paths pointed at a fake store and this
+# rotation's keys, and driven through each outcome the doc quotes, checking
+# each line and exit code.
+W="$S/fsw"; rm -rf "$W"; mkdir -p "$W/run" "$W/home" "$W/bin" "$W/tmpfs"; chmod 700 "$W/tmpfs"
+cat >"$W/bin/fetch-blob" <<EOF
+#!/bin/sh
+# A fake store's fetch: \$W/mode picks a failure, \$W/count numbers the calls.
+n=\$((\$(cat "$W/count" 2>/dev/null || echo 0) + 1)); echo "\$n" >"$W/count"
+case "\$(cat "$W/mode" 2>/dev/null)" in
+  failfetch) exit 1 ;;
+  failrefetch) [ "\$n" -lt 2 ] || exit 1 ;;
+  changed) [ "\$n" -lt 2 ] || { echo "a blob staged meanwhile"; exit 0; } ;;
+  failback) [ "\$n" -lt 3 ] || exit 1 ;;
+  diffback) [ "\$n" -lt 3 ] || { echo "different text"; exit 0; } ;;
+  foldback) [ "\$n" -lt 3 ] || { fold -w 64 "$W/blob"; exit 0; } ;;
+esac
+cat "$W/blob"
+EOF
+cat >"$W/bin/store-blob" <<EOF
+#!/bin/sh
+[ "\$(cat "$W/mode" 2>/dev/null)" != failstore ] || exit 1
+cat >"$W/blob.tmp" && mv "$W/blob.tmp" "$W/blob"
+EOF
+chmod 700 "$W/bin/fetch-blob" "$W/bin/store-blob"
+# The wrapper, from the doc, with its paths replaced. Each replaced string
+# must be there once: a doc edit that drops one fails here, not silently.
+python3 -I - ../ROTATION.md "$W/rewrap" "$W" "$KEY" "$(cd .. && pwd -P)/consume.py" \
+  "$(dirname "$(command -v "$AGE")")" "$(dirname "$(command -v python3)")" <<'PYEOF' || fail "couldn't take the fetched-store rewrap wrapper from ROTATION.md"
+import sys
+doc, out, w, key, consume, agedir, pydir = sys.argv[1:]
+lines = open(doc, encoding="utf-8").read().split("\n")
+start = lines.index("   label=example")
+while lines[start] != "   ```sh":
+    start -= 1
+end = lines.index("   ```", start + 1)
+body = "\n".join(l[3:] for l in lines[start + 1:end]) + "\n"
+subs = [
+    ("cd /home/agent/run/example", f"cd {w}/run"),
+    ("f=/run/user/1000/handoff-rewrap-example", f"f={w}/tmpfs/handoff-rewrap-example"),
+    ("/home/agent/bin/fetch-blob", f"{w}/bin/fetch-blob"),
+    ("/home/agent/bin/store-blob", f"{w}/bin/store-blob"),
+    ("HANDOFF_PRIVKEY=/home/agent/.config/handoff/handoff-identity.txt", f"HANDOFF_PRIVKEY={key}"),
+    ("/home/agent/muse-field-kit/encrypted-credential-handoff/consume.py", consume),
+    ("PATH=/usr/local/bin:/usr/bin:/bin", f"PATH={agedir}:{pydir}:/usr/bin:/bin"),
+]
+for a, b in subs:
+    n = body.count(a)
+    if n != 1:
+        sys.exit(f"ROTATION.md's example has {n} of {a!r}")
+    body = body.replace(a, b)
+body = body.replace("HOME=/home/agent", f"HOME={w}/home")
+if "/home/agent" in body or "/run/user/1000" in body:
+    sys.exit("ROTATION.md's example has a path this test doesn't replace")
+open(out, "w", encoding="utf-8").write(body)
+PYEOF
+chmod 700 "$W/rewrap"
+f="$W/tmpfs/handoff-rewrap-example"
+# fsw MODE EXPECTED-EXIT TEXT...: reset the store to the old blob (or keep it,
+# for "keep"), run the wrapper, and check its exit and each line of TEXT.
+fsw() {
+  m=$1; want=$2; shift 2
+  rm -f "$W/count" "$f" "$f.now"
+  [ "$m" = keep ] || cp blob-age.txt "$W/blob"
+  printf '%s' "$m" >"$W/mode"
+  rc=0; (umask 022; "$W/rewrap") 2>"$W/err" || rc=$?
+  [ "$rc" = "$want" ] || fail "the doc's fetched-store rewrap wrapper ($m): exit $rc, not $want: $(cat "$W/err")"
+  for t in "$@"; do
+    grep -qF -- "$t" "$W/err" || fail "the doc's fetched-store rewrap wrapper ($m) didn't say '$t': $(cat "$W/err")"
+  done
+}
+fsw ok 0 "rewrapped" "the blob was for the previous key" "stored, fetched back and compared; $f removed"
+[ ! -e "$f" ] || fail "the doc's wrapper left its file after a full rewrap"
+cmp -s "$W/blob" blob-age.txt && fail "the doc's wrapper didn't replace the stored blob"
+rk python3 ../consume.py --label example --check --blob-file "$W/blob" >/dev/null 2>"$W/err2" || fail "the stored blob doesn't open after the doc's wrapper: $(cat "$W/err2")"
+! grep -qF "decrypted with the previous key" "$W/err2" || fail "the doc's wrapper stored a blob that's still for the previous key"
+fsw keep 0 "is already for the current key" "store unchanged"
+[ ! -e "$f" ] || fail "the doc's wrapper left its file for a blob already current"
+fsw failfetch 3 "fetch (or creating $f) failed; store unchanged"
+# kept MODE: after an outcome that says "$f kept", the file is there, mode
+# 0600 though the run's umask was 022, and the re-fetch's $f.now is gone.
+kept() {
+  [ -e "$f" ] || fail "the doc's wrapper ($1) said $f kept but removed it"
+  [ "$(stat_of %a "$f")" = 600 ] || fail "the doc's wrapper ($1) kept $f with mode $(stat_of %a "$f"), not 600"
+  [ ! -e "$f.now" ] || fail "the doc's wrapper ($1) left $f.now"
+}
+fsw failrefetch 4 "re-fetch failed; store unchanged, $f kept"; kept failrefetch
+fsw changed 6 "the stored blob changed meanwhile (a blob staged?); store unchanged, $f kept"; kept changed
+cmp -s "$W/blob" blob-age.txt || fail "the doc's wrapper wrote the store after seeing it change"
+fsw failstore 5 "store write failed"; kept failstore
+fsw failback 4 "fetch-back failed; $f kept"; kept failback
+fsw diffback 1 "the store returned different text; $f kept"; kept diffback
+# A store that folds or trims what it sends back still compares equal: the
+# compare ignores whitespace, as the doc says.
+fsw foldback 0 "stored, fetched back and compared; $f removed"
+# A refusal (a blob that isn't one) leaves the file behind, as the doc says.
+printf 'not base64 !!!' >"$W/blob.bad"
+rm -f "$W/count" "$f"; cp "$W/blob.bad" "$W/blob"; printf ok >"$W/mode"
+rc=0; (umask 022; "$W/rewrap") 2>"$W/err" || rc=$?
+{ [ "$rc" = 1 ] && grep -qF "not valid base64" "$W/err" && [ -e "$f" ]; } \
+  || fail "the doc's wrapper with a refused blob: exit $rc, file $( [ -e "$f" ] && echo kept || echo gone ), $(cat "$W/err")"
+# A leftover file stops it before any fetch; a missing directory too; and it
+# takes no arguments.
+cp blob-age.txt "$W/blob"; printf ok >"$W/mode"; rm -f "$W/count"; : >"$f"
+rc=0; "$W/rewrap" 2>"$W/err" || rc=$?
+{ [ "$rc" = 1 ] && grep -qF "leftover $f: ROTATION.md step 4, on a resume" "$W/err"; } || fail "the doc's wrapper with a leftover file: exit $rc, $(cat "$W/err")"
+[ ! -e "$W/count" ] || fail "the doc's wrapper fetched despite a leftover file"
+rm -f "$f"; rmdir "$W/tmpfs"
+rc=0; "$W/rewrap" 2>"$W/err" || rc=$?
+{ [ "$rc" = 1 ] && grep -qF "no $W/tmpfs (no login session?); store unchanged" "$W/err"; } || fail "the doc's wrapper with no directory: exit $rc, $(cat "$W/err")"
+mkdir -m 700 "$W/tmpfs"
+rc=0; "$W/rewrap" extra 2>"$W/err" || rc=$?
+{ [ "$rc" = 2 ] && grep -qF "example rewrap wrapper takes no arguments" "$W/err"; } || fail "the doc's wrapper with an argument: exit $rc, $(cat "$W/err")"
+rm -rf "$W"
 # --rewrap rewrites its --blob-file in place, for the current key, and
 # prints nothing on stdout.
 cp blob-age.txt "$ST/new.txt"

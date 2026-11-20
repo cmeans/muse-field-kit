@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **A test runs ROTATION.md's fetched-store rewrap wrapper as written** (#115, refs #18 item 8): taken from the doc, against a fake store, through each of its outcomes (line, exit code, and whether its file is kept), a refusal and a store that folds the blob it returns.
 - **STORES.md adds Amazon S3, tested on Muse** (#114): a dedicated bucket behind a bearer-token front end meets all six requirements in full and ranks 1, beside Upstash.
 - **Tests for the `--retire` hint's `-inum` guards and its confirmation** (#112, refs #9 item 13, #16 item 6): tests check that the hint drops its `-inum` form for an inode that isn't all digits or is empty, in both message forms, and that `--retire` without `--yes` exits on the missing confirmation.
 - **Tables for label states, rotation marks and setup-check meanings** (#95, closes #50): the same rules; the rotation-record and mechanism-change restatements point to their one home.
