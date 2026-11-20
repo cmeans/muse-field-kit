@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- **The README's threat model and invariants say what they promise** (#100): each invariant names what keeps it (cryptography, code, the agent's rules, or you), and invariant 9 no longer reads as a check the helper makes; prompt injection at use time is named; the chat is a kept copy; a retire isn't retroactive; a compromised host isn't just a leaked key.
 - **Rotation step 1's recovery cases close** (#99, refs #9, #18): a rotation the notes missed is recorded late once the user confirms it; a retire whose pass wasn't recorded is probed again and closed; a rotation with labels not done stays open until the user closes it.
 - **Rotation's resume and leftovers** (#98, refs #9, #18): a resume first waits for a backgrounded rewrap run, recorded as such; temporary copies are matched exactly, not by glob; step 5 deletes stray ones before the retire; the format and no-rotation refusals are named; a kept tmpfs copy may be gone.
 - **Rotation's label-state wording** (#97, refs #19, #18): the probe skip needs a current-key probe after step 3; step 5 waits while a label is `stopped`; one `stopped:` template for probe stops; both done states named; a send-back is one update; a staging probe that isn't `ok` is a stop; the already-current line quoted as `consume.py` prints it.

@@ -49,7 +49,7 @@ Limited forms, for staging or tests rather than everyday use:
 - **`/dev/shm`** (a tmpfs): off the disk, and needs no secret, but it is emptied at every VM restart, which Muse reported as frequent (2026-11-14), and possibly at your account's last logout too (`ROTATION.md` step 4), and every credential has to be staged again after one. That a tmpfs is outside the provider's snapshots is an inference: Muse can't observe the provider's policy.
 - **Muse's built-in file links**: off the VM and fetchable without a secret, but they last at most 48 hours (as Muse reported, 2026-11-14), and anyone holding a link can read it (R3).
 
-Not stores: Muse's own memory files and workspace (the key's disk); any file on its VM; a sync client's local mirror; a public repository, gist or pastebin (ciphertext is safe to handle in the open, not to publish, and a public copy can't be deleted); the platform's credential stores (the Secure Credentials Store, saved website logins: no tool can read a value back out; a custom connection's token is held there and swapped in at egress, never read).
+Not stores: Muse's own memory files and workspace (the key's disk); any file on its VM; a sync client's local mirror; a public repository, gist or pastebin (ciphertext is safe to send, not to publish, and a public copy can't be deleted); the platform's credential stores (the Secure Credentials Store, saved website logins: no tool can read a value back out; a custom connection's token is held there and swapped in at egress, never read).
 
 If nothing qualifies, don't adopt the pattern yet, or put the key or the store on a genuinely separate volume. A store that fails these requirements doesn't make the pattern slightly weaker; it removes the property the pattern is for.
 
