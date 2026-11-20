@@ -151,7 +151,7 @@ Your agent tells you which release to use (the one its own scripts come from) an
 
 - **Your side, Linux and macOS:** `handoff.sh`, with bash (written for macOS's own `/bin/bash` too), `age` and `jq`.
 - **Your side, Windows:** `handoff.ps1`, with Windows PowerShell 5.1 or PowerShell 7 and `age.exe`. It is `handoff.sh`'s twin: the same recipient file, rules and messages.
-- **The agent's side, Linux and macOS:** `agent-setup.sh` and `consume.py`. They rely on Unix file ownership and modes and on `exec`, so there is no Windows version of the agent's side. On macOS, a fetched store's labels are staged again during a rotation instead of rewrapped ([`ROTATION.md`](ROTATION.md) step 4).
+- **The agent's side, Linux and macOS:** `agent-setup.sh` and `consume.py`. They rely on Unix file ownership and modes and on `exec`, so there is no Windows version of the agent's side. On macOS, a fetched store's labels are staged again during a rotation instead of rewrapped, unless the user chose a place for the rewrap's file ([`ROTATION.md`](ROTATION.md) step 4).
 - **Phones:** untested ([`INSTALL-options.md`](INSTALL-options.md)).
 
 A port to another platform written by an agent is *unreviewed by definition*, and [`SETUP.md`](SETUP.md) says how it must be gated (the user's review plus the interop test under `test/`) before it touches a real credential.
