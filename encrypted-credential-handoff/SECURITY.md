@@ -4,8 +4,8 @@ This folder is a security pattern; flaws in it matter more than most bugs.
 
 ## Reporting
 
-- Preferred: report it privately at https://github.com/cmeans/muse-field-kit/security/advisories/new (or: this repository's **Security and quality** tab, which may be under the "…" menu on a narrow window, then **Report a vulnerability**). You need to be signed in to GitHub. Only you and the repository's maintainers see the report, and it and any fix can be discussed there before disclosure.
-- Please do **not** open a public issue containing exploit detail for an unpatched flaw.
+- Report it privately at https://github.com/cmeans/muse-field-kit/security/advisories/new (or: this repository's **Security and quality** tab, which may be under the "…" menu on a narrow window, then **Report a vulnerability**). You need to be signed in to GitHub. Only you and the repository's maintainers see the report, and it and any fix can be discussed there before disclosure.
+- Please do **not** open a public issue for a security problem. If you can't use a private advisory, open a public issue with the root [`SECURITY.md`](../SECURITY.md#reporting-an-issue)'s contact-request form instead: it asks for no details, and the maintainer arranges a private channel.
 - Reports about the *pattern* (a way the invariants fail even when the scripts are used as documented) are as welcome as reports about the scripts.
 
 ## Scope notes
