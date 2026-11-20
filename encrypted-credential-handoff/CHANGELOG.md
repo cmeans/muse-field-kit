@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- **Four rotation-record gaps** (#116): the `stopped` row names a write-off; `--rewrap`'s same-key refusal gets its outcome, and its message points there (before step 3, `--rotate` didn't finish; after, a key file was replaced: stop and report); `.previous.previous found` is cleared when the files are gone with no `.previous`; SETUP step 8 lists that mark.
 - **`consume.py`'s rotation lines start a line of their own** (#113, refs #21 item 1): store text on stderr without a newline (a NUL, which BSD grep stops at) can no longer join onto them and hide them from the Current-key probe's count.
 - **`consume.py --help` finds the option where `parse_args` would** (#111, refs #8 item 5): `--blob --label --help` and `--label -- --help` print the usage instead of "unrecognized argument".
 - **A fetched store's rotation on macOS** (#110, refs #8 item 3, #16 item 8): its labels are staged again instead of rewrapped, with a new `awaiting staging (macOS)` state; a RAM disk is untested, and any other place is the user's decision, recorded.
