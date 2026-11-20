@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **STORES.md adds Amazon S3, tested on Muse** (#114): a dedicated bucket behind a bearer-token front end meets all six requirements in full and ranks 1, beside Upstash.
 - **Tables for label states, rotation marks and setup-check meanings** (#95, closes #50): the same rules; the rotation-record and mechanism-change restatements point to their one home.
 - **Rotation step 1's cases are a numbered list, and On a resume's outcomes a bulleted one** (#94, refs #50, #19): the same rules, with only the joining words between cases changed.
 - **The docs link the documents they name** (#93): the first mention in each section, to the section where one is named; `age` and `jq` link to their install pages; CI checks every relative link to a document.
