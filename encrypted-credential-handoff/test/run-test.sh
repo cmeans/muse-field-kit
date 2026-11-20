@@ -2476,7 +2476,8 @@ mv "$R/held.txt" "$R/k.txt.previous"
 # probe checks for a line that's there.
 rk python3 ../consume.py --label example --blob-file "$ST/new.txt" -- true 2>"$R/err" || fail "run mode on the rewrapped blob failed"
 grep -qxF "consume.py: label 'example' opened with the current key (a rotation is under way)" "$R/err" || fail "run mode didn't say the current key opened it: $(cat "$R/err")"
-# ...and it too starts a line of its own after store text with no newline.
+# ...and it too starts with a newline (the NUL case, which the attack
+# needs, is the previous-key line's, above).
 python3 -I -c 'import sys; sys.exit(0 if open(sys.argv[1], "rb").read().startswith(b"\nconsume.py: label") else 1)' "$R/err" \
   || fail "the current-key line doesn't start with a newline: $(cat -v "$R/err")"
 # A blob already for the current key isn't rewritten (age's output differs on every run).
