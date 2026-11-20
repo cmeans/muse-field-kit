@@ -80,7 +80,7 @@ What each step writes: `jq` (or `ConvertTo-Json`) reads the key file and writes 
 **Defends against:**
 
 - The credential appearing in chat transcripts, message logs, or the agent's context (chat, tool output, or files the agent later reads).
-- Plaintext at rest on the agent's machine: none is written to any file. (Process memory is not magic: on a host with swap or core dumps enabled, in-memory plaintext can still reach disk that way. The claim is “never written by this design,” stated exactly.)
+- Plaintext at rest on the agent's machine: none is written to any file. (A proxy's credential, in a file the user writes for a program that needs it, is outside the handoff and recorded as accepted knowingly: [`SETUP.md`](SETUP.md) step 6. Process memory is not magic: on a host with swap or core dumps enabled, in-memory plaintext can still reach disk that way. The claim is “never written by this design,” stated exactly.)
 - A reader of the blob store learning the secret from a stored blob — *provided the separation invariant holds* (below).
 - Accidental disclosure by the agent in conversation: it never holds the value in context, so it cannot quote it.
 
