@@ -19,7 +19,7 @@ This pattern fills that gap for programs that read the credential from their env
 
 The suite may be changed, deliberately, by the human, before setup — subject to two constraints:
 
-- **Only as an existing, reviewed tool used as-is**: for example libsodium's `crypto_box_seal` through a maintained binding. It must preserve the invariants in [`README.md`](README.md) (with the same absence of sender authentication, which is behavioral in every variant listed here).
+- **Only as an existing, reviewed tool used as-is**: for example libsodium's `crypto_box_seal` through a maintained binding. It must preserve the invariants in [`README.md`](README.md) (with the same absence of sender authentication, which stays behavioral with any suite swap; only the signed-blob variant below removes it).
 - **“Hybrid encryption, hand-rolled” is not a user-selectable variant.** A home-grown AES-GCM-plus-RSA construction, or a payload split across several blocks of a smaller cipher, is a mechanism change: it belongs upstream, as an issue against this repo ([`CONTRIBUTING.md`](../CONTRIBUTING.md) at the repo's root), where it can be reviewed once for every adopter.
 
 Two stronger variants worth knowing about: **signed blobs** (the human signs each payload with a key the agent can verify, removing the behavioral provenance invariant), and a **separate-account key holder** (a helper the agent can ask to decrypt-and-launch, but whose key file the agent's own account cannot read). Both are real designs; neither is in the reference implementation.
