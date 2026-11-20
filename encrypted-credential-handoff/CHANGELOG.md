@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- **Rotation's Compromise steps** (#103, refs #18): a compromised host is recorded, with the host it applies to; SKILL, Compromise, rotation step 1, setup step 6 and the follow-ups stop on it until the user clears it in a direct turn; step 2 keys on `.previous` existing; a superseded rotation's leftovers are cleaned up and its `sent back by the pass` cleared.
 - **Store, design and security-reporting wording** (#101): STORES R3 counts the store's provider among its readers; DESIGN's sender-authentication note no longer contradicts its signed-blob variant; the folder's SECURITY.md agrees with the root one (a private advisory, or the contact form as fallback); an injection the rules should catch but don't is in scope.
 - **The README's threat model and invariants say what they promise** (#100): each invariant names what keeps it (cryptography, code, the agent's rules, or you), and invariant 9 no longer reads as a check the helper makes; prompt injection at use time is named; the chat is a kept copy; a retire isn't retroactive; a compromised host isn't just a leaked key.
 - **Rotation step 1's recovery cases close** (#99, refs #9, #18): a rotation the notes missed is recorded late once the user confirms it; a retire whose pass wasn't recorded is probed again and closed; a rotation with labels not done stays open until the user closes it.
