@@ -1,5 +1,11 @@
 # Changelog — encrypted-credential-handoff
 
+## Unreleased
+
+### Changed
+
+- **The README drops its "Coming from 0.1.0?" note** (#122): nobody outside the project installed 0.1.0. The two refusals for a 0.1.0 RSA key no longer point at the README for it.
+
 ## 0.2.1 — 2026-11-20 — rotation and stores, hardened
 
 Each PR in this release went through Dev's own pre-QA reviews and at least one QA review round, and was reviewed by Muse, the agent the folder is written for. Each merged only once the author had applied the `QA Approved` label, which only the author applies. The PRs record each round's findings and what was fixed or declined, in their bodies and review comments; the non-blocking findings left open are in #85 (the backlog), #77, #79, #80, #82, #83 and #119 (recovery routes after a key file is replaced mid-rotation), and earlier follow-up issues (#8, #9, #16, #18, #19, #21, #43) still hold items these PRs didn't close. Behavior the docs describe was checked by running it: the wrapper and probe commands in throwaway containers (with BSD and BusyBox tools where the docs claim them), and, on Muse with dummy blobs, the new Amazon S3 store end to end (the other stores in STORES.md were tested on Muse before this release, with 0.2.0 blobs). As with 0.1.0 and 0.2.0, the reviewers were AI agent sessions in the author's setup, plus the author: peer review inside one shop, not a third-party audit.
