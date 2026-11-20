@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **Tests for the `--retire` hint's `-inum` guards and its confirmation** (#112, refs #9 item 13, #16 item 6): tests check that the hint drops its `-inum` form for an inode that isn't all digits or is empty, in both message forms, and that `--retire` without `--yes` exits on the missing confirmation.
 - **Tables for label states, rotation marks and setup-check meanings** (#95, closes #50): the same rules; the rotation-record and mechanism-change restatements point to their one home.
 - **Rotation step 1's cases are a numbered list, and On a resume's outcomes a bulleted one** (#94, refs #50, #19): the same rules, with only the joining words between cases changed.
 - **The docs link the documents they name** (#93): the first mention in each section, to the section where one is named; `age` and `jq` link to their install pages; CI checks every relative link to a document.
@@ -18,7 +19,6 @@
 
 ### Fixed
 
-- **Tests for two `--retire` guards and a confirmation** (#112, refs #9 item 13, #16 item 6): the `-inum` hint is dropped for an inode that isn't all digits or is empty; `--retire` without `--yes` is checked to exit on the missing confirmation.
 - **A fetched store's rotation on macOS** (#110, refs #8 item 3, #16 item 8): its labels are staged again instead of rewrapped, with a new `awaiting staging (macOS)` state; a RAM disk is untested, and any other place is the user's decision, recorded.
 - **A proxy's credential file** (#109, refs #16 item 2): the user writes it, outside chat; it's plaintext the agent's tools can read, so it's recorded as accepted knowingly.
 - **SETUP step 6's permission rules** (#108, refs #9 items 1 and 2, #8 items 1 and 2): `umask 077` in each command that creates something; checks after storing for the file, its directory and every directory above them, and for the kit's folder, `bin/`, `run/` and the wrappers; no symlinks on those paths (a root-owned system link aside); macOS ACLs; a blob that sat writable is staged again; a group-shared store isn't one; step 2 says what to do about the key directory's mode note.

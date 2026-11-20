@@ -3864,6 +3864,16 @@ rc=0; env HANDOFF_PRIVKEY="$nl/k.txt" bash ../agent-setup.sh --retire >/dev/null
 [ "$rc" = 1 ] || fail "--retire with a newline in the path and another link: exit $rc"
 grep -qE -- "-xdev -inum [0-9]+, as root" "$S/qerr" || fail "the -inum hint isn't one number: $(cat "$S/qerr")"
 ! grep -q '^touch), as root' "$S/qerr" || fail "the -inum hint split on the newline: $(cat "$S/qerr")"
+# ...and with no inode to give (an ls -di that prints nothing), it gives no
+# -inum command at all, only the words for finding one.
+mkdir -p "$S/nolsdi"
+# shellcheck disable=SC2016  # the shim's own variables
+printf '#!/bin/sh\nif [ "$1" = -di ]; then exit 0; fi\nexec %s "$@"\n' "$(command -v ls)" >"$S/nolsdi/ls"; chmod +x "$S/nolsdi/ls"
+rc=0; env PATH="$S/nolsdi:$PATH" HANDOFF_PRIVKEY="$nl/k.txt" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
+[ "$rc" = 1 ] || fail "--retire with a newline in the path and no inode: exit $rc"
+! grep -qF -- "-xdev -inum ," "$S/qerr" || fail "the hint gave an -inum command with no inode: $(cat "$S/qerr")"
+grep -qF "with find's -inum and the old key's inode (ls -di)" "$S/qerr" || fail "the hint with no inode lost its fallback words: $(cat "$S/qerr")"
+rm -rf "$S/nolsdi"
 rm -rf "$nl" "$S/nlbackup.txt"
 # The -inum form only with an inode that is all digits (issue #9 item 13):
 # an ls -di that prints something else, or nothing, drops it, and the
@@ -3873,10 +3883,11 @@ env HANDOFF_PRIVKEY="$S/inum/k.txt" bash ../agent-setup.sh --rotate >/dev/null 2
 ln "$S/inum/k.txt.previous" "$S/inum-backup.txt"
 for bad in 'x1y' ''; do
   # A shim for ls -di only: any other ls call is the real one.
+  # shellcheck disable=SC2016  # the shim's own variables
   printf '#!/bin/sh\nif [ "$1" = -di ]; then [ -n "%s" ] && printf "%%s %%s\\n" "%s" "$3"; exit 0; fi\nexec %s "$@"\n' "$bad" "$bad" "$(command -v ls)" >"$S/badls/ls"
   chmod +x "$S/badls/ls"
   rc=0; env PATH="$S/badls:$PATH" HANDOFF_PRIVKEY="$S/inum/k.txt" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
-  [ "$rc" = 1 ] && grep -qF "has another hard link" "$S/qerr" || fail "--retire with ls -di printing '$bad': exit $rc, $(cat "$S/qerr")"
+  { [ "$rc" = 1 ] && grep -qF "has another hard link" "$S/qerr"; } || fail "--retire with ls -di printing '$bad': exit $rc, $(cat "$S/qerr")"
   ! grep -q -- "-inum" "$S/qerr" || fail "the hint kept an -inum form for an inode of '$bad': $(cat "$S/qerr")"
   grep -qF -- "-xdev -samefile '$(cd "$S/inum" && pwd -P)/k.txt.previous'" "$S/qerr" || fail "the hint lost its -samefile form for an inode of '$bad': $(cat "$S/qerr")"
 done
