@@ -1051,7 +1051,11 @@ case "$mode" in
     key_recipient "$key"
     prev_rcpt=$(recipient_of "$prev") || exit 1
     if [ "$prev_rcpt" = "$rcpt" ]; then
-      echo "agent-setup.sh: $(qp "$prev") holds the current key: the rotation didn't finish; run agent-setup.sh --rotate again" >&2
+      # By the retire (ROTATION.md step 5, after step 3's confirmation), both
+      # names holding one key means a key file was replaced, not an
+      # unfinished --rotate: another --rotate would make a new key and
+      # strand the labels already rewrapped (issue #117).
+      echo "agent-setup.sh: $(qp "$prev") holds the current key: the rotation didn't finish, or a key file was replaced since. Nothing was deleted: stop, and do what ROTATION.md step 5 says (in a compromise response, its Compromise step 4)" >&2
       exit 1
     fi
     # A killed setup or --rotate can leave a temporary file that is a hard
