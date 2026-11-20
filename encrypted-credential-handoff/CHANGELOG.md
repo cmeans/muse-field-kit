@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **STORES.md adds Amazon S3, tested on Muse** (#114): a dedicated bucket behind a bearer-token front end meets all six requirements in full and ranks 1, beside Upstash.
 - **Tests for the `--retire` hint's `-inum` guards and its confirmation** (#112, refs #9 item 13, #16 item 6): tests check that the hint drops its `-inum` form for an inode that isn't all digits or is empty, in both message forms, and that `--retire` without `--yes` exits on the missing confirmation.
 - **Tables for label states, rotation marks and setup-check meanings** (#95, closes #50): the same rules; the rotation-record and mechanism-change restatements point to their one home.
 - **Rotation step 1's cases are a numbered list, and On a resume's outcomes a bulleted one** (#94, refs #50, #19): the same rules, with only the joining words between cases changed.
