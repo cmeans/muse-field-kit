@@ -1213,7 +1213,8 @@ def main() -> int:
         # key: a blob "for the current key" then is for the key being retired.
         raise fail(
             f"--rewrap: {previous!r} holds the same key as {current!r}: the rotation "
-            "didn't finish. Run agent-setup.sh --rotate again (ROTATION.md step 1)."
+            "didn't finish, or a key file was replaced since. Nothing was written: "
+            "stop, and do what ROTATION.md step 4 says."
         )
     if do_rewrap:
         # TERM and HUP end a --rewrap as INT does: a clean line, the file as it
