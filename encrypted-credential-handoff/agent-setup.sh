@@ -491,10 +491,14 @@ lock_dir() {  # DIR
 # mktemp's .handoff-tmp.XXXXXX holds a marker, written first, and at most the
 # key age-keygen makes there (<name>.key). Empty counts too (a run killed
 # between mktemp and the marker). Anything else by that name, a user's own
-# .handoff-tmp.backup/ with files in it, is never removed.
+# .handoff-tmp.backup/ with files in it, is never removed. One made before the
+# marker (0.2.0, 0.2.1) holds only <name>.key: it counts when that file is
+# provably this script's copy, the same file as a KEY given (the live key or
+# its .previous), which no user's directory holds by accident.
 TMP_MARK=.handoff-tmp-mark
-our_tmp_dir() {  # DIR
-  local d="$1" b e has_mark=0 n=0
+our_tmp_dir() {  # DIR [KEY...]
+  local d="$1" b e has_mark=0 n=0 kf='' k
+  shift
   b=${d##*/}
   [ -d "$d" ] && [ ! -L "$d" ] || return 1
   # One this script made is 0700 and this account's: one it can't read or
@@ -505,11 +509,18 @@ our_tmp_dir() {  # DIR
     n=$((n + 1))
     case "${e##*/}" in
       "$TMP_MARK") [ -f "$e" ] && [ ! -L "$e" ] || return 1; has_mark=1 ;;
-      "$b.key") [ -f "$e" ] && [ ! -L "$e" ] || return 1 ;;
+      "$b.key") [ -f "$e" ] && [ ! -L "$e" ] || return 1; kf=$e ;;
       *) return 1 ;;
     esac
   done
-  [ "$has_mark" -eq 1 ] || [ "$n" -eq 0 ]
+  [ "$has_mark" -eq 1 ] || [ "$n" -eq 0 ] && return 0
+  # Unmarked, holding only its key: ours if that is a link to a KEY.
+  if [ "$n" -eq 1 ] && [ -n "$kf" ]; then
+    for k in "$@"; do
+      if [ -f "$k" ] && [ ! -L "$k" ] && [ "$kf" -ef "$k" ]; then return 0; fi
+    done
+  fi
+  return 1
 }
 # A new private directory, marked as this script's before anything goes in it.
 new_tmp_dir() {  # DIR -> prints the new directory
@@ -523,10 +534,10 @@ new_tmp_dir() {  # DIR -> prints the new directory
 # perhaps a temporary copy of the key (a second hard link to it). Named, with
 # the lock's rmdir, for a refusal that stops before the lock would; nothing
 # printed when there's neither. Only by the names this script makes.
-leftover_note() {  # DIR WHO (setup: no key, setup sweeps; rotate: a key --rotate can rotate; user: neither)
-  local d="$1" abs f nd=0 tmps='' hint
+leftover_note() {  # DIR WHO [KEY] (setup: no key, setup sweeps; rotate: a key --rotate can rotate; user: neither)
+  local d="$1" abs f nd=0 tmps='' hint k="${3-}"
   for f in "$d"/.handoff-tmp.??????; do
-    if our_tmp_dir "$f"; then nd=$((nd + 1)); fi
+    if our_tmp_dir "$f" ${k:+"$k" "$k.previous"}; then nd=$((nd + 1)); fi
   done
   # Who removes what. With no key yet, the next setup sweeps them (and
   # --rotate refuses); once a key exists, --rotate does. Where neither would
@@ -802,7 +813,7 @@ password: $pwn bytes"
     fi
     # A killed run's lock would stop the next --rotate; say so now, with the
     # remover the identity line above chose (who).
-    if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")" "$who") && [ -n "$kmsg" ]; then
+    if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")" "$who" "$k") && [ -n "$kmsg" ]; then
       cs_out INFO leftovers "${kmsg#note: }"
     fi
   else
@@ -958,7 +969,7 @@ case "$mode" in
     for f in "$dir"/.handoff-tmp.??????; do
       # The private directory of a killed --rotate or setup (the lock says
       # none is running), by its marker: never a user's directory of that name.
-      our_tmp_dir "$f" || continue
+      our_tmp_dir "$f" "$key" "$prev" || continue
       rm -rf -- "$f"
       echo "note: removed a temporary key directory a killed run left behind: $(qp "$f")" >&2
     done
@@ -1166,8 +1177,8 @@ if [ -e "$PRIV" ] || [ -L "$PRIV" ]; then  # a dangling symlink there too
      && { { [ -n "$hp" ] && [ ! -L "$hp" ] && [ "${hp##*/}" = "${PRIV##*/}" ] \
             && [ "$(dirname -- "$hp")" -ef "$(dirname -- "$PRIV")" ] && [ "$hp" -ef "$PRIV" ]; } \
           || { [ -z "${HANDOFF_PRIVKEY-}" ] && [ -z "${HANDOFF_KEY_DIR-}" ]; }; }; then
-    leftover_note "$(dirname -- "$PRIV")" rotate >&2
-  else leftover_note "$(dirname -- "$PRIV")" user >&2; fi
+    leftover_note "$(dirname -- "$PRIV")" rotate "$PRIV" >&2
+  else leftover_note "$(dirname -- "$PRIV")" user "$PRIV" >&2; fi
   exit 1
 fi
 

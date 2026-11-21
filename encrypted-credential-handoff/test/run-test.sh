@@ -3738,6 +3738,25 @@ mkdir "$S/nl-left/.handoff-tmp.XyZ123"
 expect_refusal "the overwrite refusal, HANDOFF_PRIVKEY's directory with a trailing newline" 1 "a killed run left (report them to the user, who removes them)" \
   env HANDOFF_KEY_DIR="$S/nl-left" HANDOFF_PRIVKEY="$S/nl-left"$'\n'"/handoff-identity.txt" bash ../agent-setup.sh
 rm -r "$S/nl-left"
+# A 0.2.0 or 0.2.1 setup killed after its ln left an unmarked private
+# directory holding only a second link to the live key: it is still ours
+# (provably, -ef the key), so it's named and --rotate removes it (QA r1 on
+# #134). An unmarked one holding a copy (not a link) stays.
+mkdir -p "$S/v02-left"; chmod 700 "$S/v02-left"
+cp "$TMPKEY" "$S/v02-left/handoff-identity.txt"; chmod 600 "$S/v02-left/handoff-identity.txt"
+mkdir -m 700 "$S/v02-left/.handoff-tmp.Ab12Cd" "$S/v02-left/.handoff-tmp.CoPy12"
+ln "$S/v02-left/handoff-identity.txt" "$S/v02-left/.handoff-tmp.Ab12Cd/.handoff-tmp.Ab12Cd.key"
+cp "$TMPKEY" "$S/v02-left/.handoff-tmp.CoPy12/.handoff-tmp.CoPy12.key"
+env HANDOFF_PRIVKEY="$S/v02-left/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
+grep -qxF "INFO leftovers: $S/v02-left holds 1 temporary key directory(ies) a killed run left (the next --rotate removes them)" "$S/out" \
+  || fail "--check-setup didn't name a 0.2.x leftover: $(grep leftovers "$S/out")"
+expect_refusal "a rerun after a 0.2.x setup killed after its ln" 1 "1 temporary key directory(ies) a killed run left (the next --rotate removes them)" \
+  env HANDOFF_KEY_DIR="$S/v02-left" HANDOFF_PRIVKEY="$S/v02-left/handoff-identity.txt" bash ../agent-setup.sh
+env HANDOFF_PRIVKEY="$S/v02-left/handoff-identity.txt" bash ../agent-setup.sh --rotate >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--rotate beside a 0.2.x leftover failed"; }
+[ ! -e "$S/v02-left/.handoff-tmp.Ab12Cd" ] || fail "--rotate didn't remove a 0.2.x leftover linked to the key"
+[ -f "$S/v02-left/.handoff-tmp.CoPy12/.handoff-tmp.CoPy12.key" ] || fail "--rotate removed an unmarked directory holding a copy, not a link"
+env HANDOFF_PRIVKEY="$S/v02-left/handoff-identity.txt" bash ../agent-setup.sh --retire --yes >/dev/null 2>"$S/err" || fail "--retire after a 0.2.x leftover was swept failed: $(cat "$S/err")"
+rm -r "$S/v02-left"
 # The leftovers line's remover follows the identity line beside it: wherever
 # that line doesn't advise setup or pass a key --rotate would rotate, the
 # user is told. One state per row: a relative path, a key in a group-writable
