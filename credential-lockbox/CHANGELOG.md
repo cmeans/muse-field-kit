@@ -1,6 +1,8 @@
 # Changelog — Credential Lockbox
 
-## Unreleased
+## 0.3.0 — 2026-11-21 — renamed from encrypted-credential-handoff to Credential Lockbox
+
+The first release as Credential Lockbox, renamed from the encrypted credential handoff (`encrypted-credential-handoff`): the folder is `credential-lockbox/` and the skill `credential-lockbox`, so an install from 0.2.x moves to the new folder and reinstalls the skill; the scripts, the `HANDOFF_*` variables and the files on disk keep their names, and nothing about a handoff changes. It also stops a file or folder name from hiding text in what the scripts print (#139): setup refuses a key folder whose path holds an invisible or control character (one a person can't see but a model can read, such as a Unicode "tag" character), and `agent-setup.sh`'s and `handoff.sh`'s messages show any character outside plain ASCII in a path as an escape code (`é` as `\303\251`), so a path can't hide or fake part of a message. `handoff.ps1` on Windows escapes control and bidi characters but still prints tag characters and other non-ASCII ones as they are. It is also the first release whose `SHA256SUMS` and attestations cover the agent's scripts. Each PR went through at least one QA round (and Dev's pre-QA review, all but two small ones, #122 and #123), was reviewed by Muse, and merged only once the author had applied `QA Approved`; the PRs record each round's findings. Behavior the docs describe was checked by running it, including the whole suite under a glibc bash 3.2 and with BSD grep and sed for the macOS paths. Open follow-ups: #85 (the backlog), #79, #80 (items 9 and 10), #119. As before, the reviewers were AI agent sessions in the author's setup, plus the author: peer review inside one shop, not a third-party audit.
 
 ### Added
 
@@ -9,7 +11,7 @@
 ### Changed
 
 - **Renamed Credential Lockbox** (#141): the folder is `credential-lockbox/`, the skill `credential-lockbox`, and releases are tagged `credential-lockbox-vX.Y.Z`. 0.2.1 keeps its `encrypted-credential-handoff-v0.2.1` tag (0.1.0 and 0.2.0: `v0.1.0`, `v0.2.0`), and releases are titled Credential Lockbox X.Y.Z. The scripts and the `HANDOFF_*` variables keep their names.
-- **`agent-setup.sh` and `handoff.sh` messages show a path's bytes outside printable ASCII escaped, and setup refuses every default-ignorable character (tags, variation selectors, blank fillers)** (refs #80 items 3, 4): a key directory such as `/home/josé` still works, and a command to paste still names it.
+- **A path can't hide text in what `agent-setup.sh` and `handoff.sh` print** (#139, refs #80 items 3, 4): their messages show any character outside plain ASCII as an escape code (`é` as `\303\251`), and setup refuses a key folder whose path holds an invisible or control character (Unicode's "default-ignorable" ones, such as tag characters and variation selectors). A key folder such as `/home/josé` still works, and a command printed for you to paste keeps the name as it is.
 - **`agent-setup.sh` quotes any printed path holding `=`, and matches safe characters by name, not by the locale's ranges** (refs #80 items 5, 7, 11, 12): zsh expands `=ls`; the by-hand notes also say how to see a name's bytes on BusyBox.
 - **`agent-setup.sh` removes only the temporary directories it made** (refs #80 items 1, 2, 6, 8): each holds a marker now. A user's `.handoff-tmp.backup/`, or a file named `.handoff-setup.*` or `.handoff-new.*`, is left alone by setup, `--rotate` and `--retire`.
 - **`handoff.ps1` shows control and bidi characters in paths and arguments as `<U+XXXX>`** (closes #82), **gives a link to a folder a remedy that removes only the link** (closes #83), and **calls piped BOM-less UTF-16 what it is** (refs #85).

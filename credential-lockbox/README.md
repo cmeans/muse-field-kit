@@ -12,7 +12,7 @@ An independent community project, not affiliated with or endorsed by Meta.
 
 **Watch the four-minute overview:**
 
-https://github.com/user-attachments/assets/14bc70a8-2d0f-497d-a598-b22efdd57401
+https://github.com/user-attachments/assets/24c636e7-4f44-41fe-8164-1915014d5aec
 
 **Who it's for:** anyone whose agent needs credentials for programs it runs on its own machine that read them from their environment — MCP servers, CLIs, scripts that call an API — where the platform's browser-oriented saved logins can't reach. A PEM private key (a GitHub App's, say) travels too, in the payload's `private_key` field, and arrives the same way, as an environment variable. Not for website sign-in, or a program that needs the credential in a file, a config file or on stdin: this version delivers through the environment only. See [`DESIGN.md`](DESIGN.md#why-not-a-built-in-vault), “Why not a built-in vault?”.
 
@@ -170,7 +170,7 @@ What CI tests on each platform is in [`DESIGN.md`](DESIGN.md#what-ci-tests), “
 
 ## Status
 
-The core of this pattern (one key on the agent's machine, encryption on yours, ciphertext through chat, decryption in memory at use, the key and the ciphertext never on one disk) has run daily in the author's setup since October 2026. Muse has run it live on its own labels, through a complete routine rotation, and against each store in [`STORES.md`](STORES.md)'s table, end to end. What 0.2.1 ships is covered by the interop and refusal tests on Linux, macOS and Windows ([`DESIGN.md`](DESIGN.md#what-ci-tests), “What CI tests”). Not yet field-tested: Muse's own labels on the `age`-based version (the live runs above came before it), a compromise response, a read-only store token, approvals on a fetch (`STORES.md`, “Approving a connection”), typing a payload into `handoff.ps1` at a real Windows console (CI runs it with no console), and phones. [`CHANGELOG.md`](CHANGELOG.md) lists what ships and how each release was reviewed.
+The core of this pattern (one key on the agent's machine, encryption on yours, ciphertext through chat, decryption in memory at use, the key and the ciphertext never on one disk) has run daily in the author's setup since October 2026. Muse has run it live on its own labels, through a complete routine rotation, and against each store in [`STORES.md`](STORES.md)'s table, end to end. What 0.3.0 ships is covered by the interop and refusal tests on Linux, macOS and Windows ([`DESIGN.md`](DESIGN.md#what-ci-tests), “What CI tests”). Not yet field-tested: Muse's production labels on the `age`-based version (it's installed and check-tested on Muse's setup, but those labels haven't been re-staged to it yet), a compromise response, a read-only store token, approvals on a fetch (`STORES.md`, “Approving a connection”), typing a payload into `handoff.ps1` at a real Windows console (CI runs it with no console), and phones. [`CHANGELOG.md`](CHANGELOG.md) lists what ships and how each release was reviewed.
 
 ## Files
 
