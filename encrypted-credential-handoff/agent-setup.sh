@@ -160,16 +160,21 @@ sq() {
   if has_ctl "$1"; then return 1; fi
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
-# sq only when the path needs it, as Python's shlex.quote does: a plain path
+# sq only when the path needs it, as Python's shlex.quote does (except that =
+# is quoted too, below): a plain path
 # reads as it did before (the chmod hint), and any other gets sq's quotes.
+# = isn't safe (issue #80 item 5): zsh expands =ls to /usr/bin/ls at the start
+# of a word and after a : in an assignment (HANDOFF_KEY_DIR=a:=ls). The safe
+# characters are spelled out, not as ranges, which bash before 5.0 matches by
+# the locale's collation, taking in some non-ASCII letters (item 11).
 pq() {
   case "$1" in
     '') sq "$1" ;;
-    *[!A-Za-z0-9_@%+=:,./-]*) sq "$1" ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_@%+:,./-]*) sq "$1" ;;
     *) printf '%s' "$1" ;;
   esac
 }
-by_hand_note="by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name)"
+by_hand_note="by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name; where ls has no -b, as on BusyBox, printf '%s\0' * | od -c shows the bytes)"
 
 # The PATH age-keygen is looked for on, in the words of consume.py's
 # age_missing (long ones cut at 300 characters).
@@ -352,8 +357,8 @@ key_dir_unsafe_msg() {  # DIR
     # No command to paste for such a path (sq refuses one).
     printf "the key's directory %s is writable by others; stop and report it to the user, who removes group and other write access with chmod go-w %s" "$(qp "$d")" "$by_hand_note"
   elif [ -n "$mine" ]; then
-    # sq, not qp: printf %q's $'...' form (any non-ASCII path under LC_ALL=C)
-    # turns into code when pasted into dash.
+    # pq (sq's quoting when needed), not qp: printf %q's $'...' form (any
+    # non-ASCII path under LC_ALL=C) turns into code when pasted into dash.
     printf "the key's directory %s is writable by others; stop and report it to the user, who runs: chmod -- go-w %s" "$(qp "$d")" "$(pq "$d")"
   else
     printf "the key's directory %s is writable by others; stop and report it to the user: the key belongs in a directory only this account can write (SETUP.md step 1)" "$(qp "$d")"
@@ -795,7 +800,7 @@ password: $pwn bytes"
         # next branch names the directory.)
         cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"; who=setup
       else
-        # sq, not qp: a command to paste (has_ctl already ruled out a
+        # pq, not qp: a command to paste (has_ctl already ruled out a
         # path sq refuses, above).
         cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(pq "$kd") agent-setup.sh makes it"; who=setup
       fi
@@ -1108,7 +1113,7 @@ case "$mode" in
         else
           alt="as root, with find's -inum and the old key's inode (ls -di) from its disk's mount point"
         fi
-        echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name ($alt) and removes that other name first, not the old key itself. The old key's own path has a hidden or control character, so no command names it; LC_ALL=C ls -b shows such a name (ROTATION.md: A hard-link refusal at the retire)" >&2
+        printf '%s\n' "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name ($alt) and removes that other name first, not the old key itself. The old key's own path has a hidden or control character, so no command names it; LC_ALL=C ls -b shows such a name (where ls has no -b, as on BusyBox, printf '%s\0' * | od -c shows the bytes) (ROTATION.md: A hard-link refusal at the retire)" >&2
         exit 1
       fi
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
@@ -1163,7 +1168,7 @@ PRIV="$KEY_DIR/handoff-identity.txt"
 
 if [ -e "$PRIV" ] || [ -L "$PRIV" ]; then  # a dangling symlink there too
   echo "refusing to overwrite existing key: $PRIV" >&2
-  # sq, not %q (dash); setup refused a path sq won't quote, above.
+  # pq, not %q (dash); setup refused a path sq won't quote, above.
   echo "if a setup was cut short, this is its key: HANDOFF_PRIVKEY=$(pq "$PRIV") agent-setup.sh --public-key shows it; to replace it, see ROTATION.md" >&2
   # --rotate sweeps only for a key it would rotate, and only if it would
   # rotate this one: HANDOFF_PRIVKEY names this key, or neither variable is

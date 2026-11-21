@@ -3881,7 +3881,7 @@ rm -r "$S/dangle"
 # starts in the output.
 nld="$S/b"$'\n'"recipient: age1fake"
 mkdir -p "$nld/.handoff-lock"; chmod 700 "$nld"; cp "$TMPKEY" "$nld/k.txt"; chmod 600 "$nld/k.txt"
-expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "they remove the .handoff-lock directory with rmdir (never rm -r) by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name)" \
+expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "they remove the .handoff-lock directory with rmdir (never rm -r) by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name; where ls has no -b, as on BusyBox, printf '%s\\0' * | od -c shows the bytes)" \
   env HANDOFF_PRIVKEY="$nld/k.txt" bash ../agent-setup.sh --rotate
 ! grep -q '^recipient: age1fake' "$S/err" || fail "the lock message for a directory with a newline printed it raw: $(cat "$S/err")"
 ! grep -qE "rmdir ['\$/]" "$S/err" || fail "the lock message printed a command for a directory with a newline: $(cat "$S/err")"
@@ -3924,10 +3924,35 @@ for c in "$c1" "$c2" "$c3"; do
   case "$c" in *"\$'"*) fail "a command to paste uses the \$'...' form: $c" ;; esac
 done
 if command -v dash >/dev/null 2>&1; then
-  (cd "$S" && dash -c "$c1 true; $c3 true; $(printf '%s' "$c2" | sed 's/^chmod -- go-w/: /')") || true
-  [ ! -e "$S/PWNED" ] && [ ! -e "$pd/PWNED" ] || fail "a printed command ran code under dash"
-  echo "ok (commands for a non-ASCII path with a quote run as data under dash)"
+  # Each command, run under dash, gives the path back exactly: the two
+  # assignments set it (env shows it), and chmod's argument is it.
+  got1=$(cd "$S" && LC_ALL=C dash -c "$c1 env" | LC_ALL=C sed -n 's/^HANDOFF_KEY_DIR=//p')
+  got3=$(cd "$S" && LC_ALL=C dash -c "$c3 env" | LC_ALL=C sed -n 's/^HANDOFF_PRIVKEY=//p')
+  got2=$(cd "$S" && LC_ALL=C dash -c "$(printf '%s' "$c2" | sed "s/^chmod -- go-w/printf '%s'/")")
+  [ ! -e "$S/PWNED" ] && [ ! -e "$pd/PWNED" ] || fail "a printed command ran code under dash: $c1 / $c3 / $c2"
+  [ "$got1" = "$pd" ] || fail "under dash, $c1 set HANDOFF_KEY_DIR to '$got1', not '$pd'"
+  [ "$got3" = "$pd/handoff-identity.txt" ] || fail "under dash, $c3 set HANDOFF_PRIVKEY to '$got3', not '$pd/handoff-identity.txt'"
+  [ "$got2" = "$pd" ] || fail "under dash, $c2 names '$got2', not '$pd'"
+  echo "ok (commands for a non-ASCII path with a quote run as data under dash, and give the path back)"
 fi
+# pq quotes any path holding = (zsh expands =ls at a word's start and after a
+# : in an assignment) or ~, and leaves a plain path bare.
+# The functions are read here and passed in: bash 3.2 (macOS) brace-expanded
+# a sed script nested in double quotes inside the bash -c string.
+fns=$(sed -n -e '/^sq() {/,/^}/p' -e '/^pq() {/,/^}/p' -e '/^has_ctl() {/,/^}/p' ../agent-setup.sh)
+for p in '=ls' 'a:=ls' 'x==ls' '~root' 'plain/path'; do
+  q=$(bash -c 'eval "$1"; pq "$2"' _ "$fns" "$p")
+  case "$p" in
+    plain/path) [ "$q" = "$p" ] || fail "pq quoted a plain path: $q" ;;
+    *) [ "$q" = "'$p'" ] || fail "pq left $p unquoted: $q" ;;
+  esac
+done
+# Its safe class names characters, not ranges (bash before 5.0 matches a
+# range by the locale's collation, taking in some non-ASCII letters) or a
+# [:class:], which follows the locale on every bash.
+! sed -n '/^pq() {/,/^}/p' ../agent-setup.sh | LC_ALL=C grep -qE '[A-Za-z0-9]-[A-Za-z0-9]|\[:' \
+  || fail "pq's safe class uses a character range or a [:class:]"
+echo "ok (pq quotes = and ~, names its safe characters, and leaves a plain path bare)"
 rm -rf "$pd" "$S/PWNED"
 echo "ok (no command to paste uses printf %q's \$'...' form)"
 # Every rmdir printed for a plain path runs under dash as under bash, where
@@ -4094,6 +4119,7 @@ env HANDOFF_PRIVKEY="$nl/k.txt" bash ../agent-setup.sh --rotate >/dev/null 2>&1 
 ln "$nl/k.txt.previous" "$S/nlbackup.txt"
 rc=0; env HANDOFF_PRIVKEY="$nl/k.txt" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
 [ "$rc" = 1 ] || fail "--retire with a newline in the path and another link: exit $rc"
+grep -qF "printf '%s\\0' * | od -c shows the bytes" "$S/qerr" || fail "the hard-link refusal gives no BusyBox way to see the name's bytes: $(cat "$S/qerr")"
 grep -qE -- "-xdev -inum [0-9]+, as root" "$S/qerr" || fail "the -inum hint isn't one number: $(cat "$S/qerr")"
 ! grep -q '^touch), as root' "$S/qerr" || fail "the -inum hint split on the newline: $(cat "$S/qerr")"
 # ...and with no inode to give (an ls -di that prints nothing), it gives no
