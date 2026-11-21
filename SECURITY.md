@@ -6,7 +6,7 @@ Each folder is versioned on its own, in its `CHANGELOG.md`. Security fixes go in
 
 | Folder | Supported | Not supported |
 | --- | --- | --- |
-| `credential-lockbox` | 0.3.x (the latest release) | 0.2.x, as `encrypted-credential-handoff` (upgrade: 0.3.0 renamed the folder and the skill, the CHANGELOG says how); 0.1.x: 0.2.0 replaced its cryptography (RSA through OpenSSL) with `age`, and a 0.1.x install sets up again (the folder's `CHANGELOG.md`) |
+| `credential-lockbox` | 0.3.x (the latest release) | 0.2.x, as `encrypted-credential-handoff` (upgrade to 0.3.0, which renamed the folder and the skill); 0.1.x: 0.2.0 replaced its cryptography (RSA through OpenSSL) with `age`, and a 0.1.x install sets up again (the folder's `CHANGELOG.md`) |
 
 ## Reporting an issue
 
