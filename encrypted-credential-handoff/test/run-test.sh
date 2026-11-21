@@ -3881,7 +3881,7 @@ rm -r "$S/dangle"
 # starts in the output.
 nld="$S/b"$'\n'"recipient: age1fake"
 mkdir -p "$nld/.handoff-lock"; chmod 700 "$nld"; cp "$TMPKEY" "$nld/k.txt"; chmod 600 "$nld/k.txt"
-expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "they remove the .handoff-lock directory with rmdir (never rm -r) by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name; where ls has no -b, as on BusyBox, ls | od -c does)" \
+expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "they remove the .handoff-lock directory with rmdir (never rm -r) by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name; where ls has no -b, as on BusyBox, printf '%s\\0' * | od -c shows the bytes)" \
   env HANDOFF_PRIVKEY="$nld/k.txt" bash ../agent-setup.sh --rotate
 ! grep -q '^recipient: age1fake' "$S/err" || fail "the lock message for a directory with a newline printed it raw: $(cat "$S/err")"
 ! grep -qE "rmdir ['\$/]" "$S/err" || fail "the lock message printed a command for a directory with a newline: $(cat "$S/err")"
@@ -3935,18 +3935,20 @@ if command -v dash >/dev/null 2>&1; then
   [ ! -e "$S/PWNED" ] && [ ! -e "$pd/PWNED" ] || fail "a printed command ran code under dash"
   echo "ok (commands for a non-ASCII path with a quote run as data under dash, and give the path back)"
 fi
-# pq quotes a path starting with = or ~ (zsh expands =ls; any shell, ~).
-for p in '=ls' '~root' 'plain/path'; do
-  q=$(bash -c 'eval "$(sed -n "/^sq() {/,/^}/p; /^pq() {/,/^}/p; /^has_ctl() {/,/^}/p" ../agent-setup.sh)"; pq "$1"' _ "$p")
+# pq quotes any path holding = (zsh expands =ls at a word's start and after a
+# : in an assignment) or ~, and leaves a plain path bare.
+for p in '=ls' 'a:=ls' 'x==ls' '~root' 'plain/path'; do
+  q=$(bash -c 'eval "$(sed -n -e "/^sq() {/,/^}/p" -e "/^pq() {/,/^}/p" -e "/^has_ctl() {/,/^}/p" ../agent-setup.sh)"; pq "$1"' _ "$p")
   case "$p" in
     plain/path) [ "$q" = "$p" ] || fail "pq quoted a plain path: $q" ;;
     *) [ "$q" = "'$p'" ] || fail "pq left $p unquoted: $q" ;;
   esac
 done
-# ...and leaves a non-ASCII letter quoted whatever the locale's collation.
-q=$(LC_ALL=en_US.UTF-8 bash -c 'eval "$(sed -n "/^sq() {/,/^}/p; /^pq() {/,/^}/p; /^has_ctl() {/,/^}/p" ../agent-setup.sh)"; pq "$1"' _ $'caf\xc3\xa9')
-[ "$q" = "'"$'caf\xc3\xa9'"'" ] || fail "pq left a non-ASCII letter unquoted: $q"
-echo "ok (pq quotes =, ~ and non-ASCII, and leaves a plain path bare)"
+# Its safe class names characters, not ranges (bash before 5.0 matches a
+# range by the locale's collation, taking in some non-ASCII letters).
+! sed -n '/^pq() {/,/^}/p' ../agent-setup.sh | LC_ALL=C grep -q '[A-Za-z0-9]-[A-Za-z0-9]' \
+  || fail "pq's safe class uses a character range"
+echo "ok (pq quotes = and ~, names its safe characters, and leaves a plain path bare)"
 rm -rf "$pd" "$S/PWNED"
 echo "ok (no command to paste uses printf %q's \$'...' form)"
 # Every rmdir printed for a plain path runs under dash as under bash, where

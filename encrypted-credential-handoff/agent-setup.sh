@@ -162,18 +162,18 @@ sq() {
 }
 # sq only when the path needs it, as Python's shlex.quote does: a plain path
 # reads as it did before (the chmod hint), and any other gets sq's quotes.
-# A leading = or ~ is quoted too: zsh expands =ls to /usr/bin/ls, and a shell
-# expands ~ (issue #80 item 5). The safe characters are spelled out, not as
-# ranges, which bash before 5.0 matches by the locale's collation, taking in
-# some non-ASCII letters (item 11).
+# = isn't safe (issue #80 item 5): zsh expands =ls to /usr/bin/ls at the start
+# of a word and after a : in an assignment (HANDOFF_KEY_DIR=a:=ls). The safe
+# characters are spelled out, not as ranges, which bash before 5.0 matches by
+# the locale's collation, taking in some non-ASCII letters (item 11).
 pq() {
   case "$1" in
-    ''|'='*|'~'*) sq "$1" ;;
-    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_@%+=:,./-]*) sq "$1" ;;
+    '') sq "$1" ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_@%+:,./-]*) sq "$1" ;;
     *) printf '%s' "$1" ;;
   esac
 }
-by_hand_note="by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name; where ls has no -b, as on BusyBox, ls | od -c does)"
+by_hand_note="by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name; where ls has no -b, as on BusyBox, printf '%s\0' * | od -c shows the bytes)"
 
 # The PATH age-keygen is looked for on, in the words of consume.py's
 # age_missing (long ones cut at 300 characters).
@@ -1112,7 +1112,7 @@ case "$mode" in
         else
           alt="as root, with find's -inum and the old key's inode (ls -di) from its disk's mount point"
         fi
-        echo "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name ($alt) and removes that other name first, not the old key itself. The old key's own path has a hidden or control character, so no command names it; LC_ALL=C ls -b shows such a name (where ls has no -b, as on BusyBox, ls | od -c does) (ROTATION.md: A hard-link refusal at the retire)" >&2
+        printf '%s\n' "agent-setup.sh: $(qp "$prev") has another hard link, so deleting it wouldn't remove the old key from disk; the previous key was not deleted. Report it to the user, who finds the other name ($alt) and removes that other name first, not the old key itself. The old key's own path has a hidden or control character, so no command names it; LC_ALL=C ls -b shows such a name (where ls has no -b, as on BusyBox, printf '%s\0' * | od -c shows the bytes) (ROTATION.md: A hard-link refusal at the retire)" >&2
         exit 1
       fi
       if [ -n "$mnt" ]; then where=$(sq "$mnt"); else where="<the mount point of its disk>"; fi
