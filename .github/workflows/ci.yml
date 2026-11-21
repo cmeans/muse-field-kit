@@ -136,6 +136,13 @@ jobs:
           sudo apt-get install -y -qq age
           age --version
           age-keygen --version
+      - name: Add a Latin-1 locale
+        # run-test.sh's Latin-1 half of #75's test runs only where an
+        # ISO-8859-1 locale exists, and no runner has one (issue #79 item 1);
+        # the apt-age step below checks that its ok line is there.
+        run: |
+          sudo localedef -i en_US -f ISO-8859-1 en_US.ISO-8859-1
+          [ "$(LC_ALL=en_US.ISO-8859-1 python3 -X utf8=0 -I -c 'import sys; print(sys.getfilesystemencoding())')" = iso8859-1 ]
       - name: A misspelled or empty HANDOFF_TEST_ONLY fails (no false green)
         # An id that matches no section used to run nothing and still print
         # ALL INTEROP CHECKS PASSED. Also: every `if section` in run-test.sh is
@@ -169,6 +176,8 @@ jobs:
         run: |
           set -o pipefail
           ./encrypted-credential-handoff/test/run-test.sh | tee "$RUNNER_TEMP/run-test-apt.log"
+          grep -qx 'ok (run mode passes UTF-8 bytes under a Latin-1 locale)' "$RUNNER_TEMP/run-test-apt.log" \
+            || { echo "the Latin-1 locale check did not run"; exit 1; }
           if grep -E '^(skip:|n/a on this OS)' "$RUNNER_TEMP/run-test-apt.log"; then
             echo "a check was skipped in CI"
             exit 1
@@ -510,6 +519,45 @@ jobs:
             exit 1
           fi
 
+  # The whole suite as root (uid 0), the way Muse's agent runs it: the other
+  # jobs run as a plain user, so a regression on root's paths (as #70's /tmp
+  # chmod advice was, fixed in #86) passed CI (issue #85). In a container
+  # pinned by digest. Three checks can't run as root and print the skip
+  # lines listed below; any other skip or "n/a on this OS" line fails, as in
+  # the other jobs.
+  linux-as-root:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The suite as root (Ubuntu 24.04)
+        run: |
+          set -o pipefail
+          docker run --rm -v "$PWD:/w:ro" \
+            ubuntu:24.04@sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289 \
+            bash -c 'set -e
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq age jq python3 openssl >/dev/null
+              echo "uid: $(id -u)"; age --version; jq --version; python3 --version
+              cp -r /w /root/w
+              cd /root/w/encrypted-credential-handoff/test
+              ./run-test.sh' | tee "$RUNNER_TEMP/run-test-root.log"
+          grep -qx 'uid: 0' "$RUNNER_TEMP/run-test-root.log" || { echo "the suite did not run as root"; exit 1; }
+          cat > "$RUNNER_TEMP/root-skips.txt" <<'EOF'
+            skip: no owner-only file owned by another user, the key-owner refusal wasn't tested
+            skip: no key directories owned by another account and by root (CI makes them), the key-directory owner checks weren't run
+            skip: running as root, the read-only blob file check didn't run
+          EOF
+          sed -i 's/^ *//' "$RUNNER_TEMP/root-skips.txt"
+          if grep -E '^(skip:|n/a on this OS)' "$RUNNER_TEMP/run-test-root.log" \
+              | grep -vxF -f "$RUNNER_TEMP/root-skips.txt"; then
+            echo "a check was skipped as root that only a plain user may skip"
+            exit 1
+          fi
+
   macos:
     runs-on: macos-latest
     timeout-minutes: 25
@@ -756,6 +804,7 @@ jobs:
       - assets
       - linux-age-versions
       - linux-jq-1-6
+      - linux-as-root
       - macos
       - windows
       - windows-interop
