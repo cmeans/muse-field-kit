@@ -79,7 +79,7 @@ Each kit is released on its own, with a tag `KIT-vX.Y.Z` (for example `encrypted
 If it refuses because the tag no longer points at the built commit (it checks before attesting and again right before creating the release), the tag was moved during the run:
 
 - **Moved on purpose:** nothing to do for this run. Pushing the moved tag started a new Release run for its commit.
-- **Moved by mistake:** put the tag back on the built commit the message names (`git push --force origin <commit>:refs/tags/encrypted-credential-handoff-vX.Y.Z`), then run Release again on the tag. If the scripts were already attested, the new run attests the same files again, which is harmless.
+- **Moved by mistake:** moving the tag was a tag push too, so it started a Release run for the wrong commit. First cancel that run (Actions, Release), or, if it already published, delete its release (`gh release delete encrypted-credential-handoff-vX.Y.Z --yes`, which keeps the tag). Then put the tag back on the built commit the message names (`git push --force origin <commit>:refs/tags/encrypted-credential-handoff-vX.Y.Z`). That push starts a new Release run; run Release again on the tag only if none starts. If the scripts were already attested, the new run attests the same files again, which is harmless.
 - **The tag couldn't be read** (the API call failed): run Release again on the tag. If the tag was deleted, release a new version instead.
 
 ## Contact

@@ -252,7 +252,7 @@ jobs:
             exit 1
           fi
           if [ "$now" != "$GITHUB_SHA" ]; then
-            echo "$TAG now points at $now, not the built commit $GITHUB_SHA; the scripts were attested, but no release was created. If the tag was moved by mistake, put it back on $GITHUB_SHA and run Release again; if on purpose, its own run releases it (CONTRIBUTING.md, Releases)"
+            echo "$TAG now points at $now, not the built commit $GITHUB_SHA; the scripts were attested, but no release was created. If the tag was moved by mistake, that move started a Release run for the wrong commit: cancel it first (or delete its release if it published), then put the tag back on $GITHUB_SHA, which starts a new run. If on purpose, its own run releases it (CONTRIBUTING.md, Releases)"
             exit 1
           fi
           gh release create "$TAG" \
