@@ -492,8 +492,9 @@ Assert-True (-not (Test-Path -LiteralPath $dirLink)) "the printed remedy didn't 
 Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents"
 # In a folder whose name has typographic quotes (PowerShell ends a '...' string
 # at U+2018-U+201B too) and a subexpression, the printed command still names
-# the link, and runs nothing from the name.
-$quoteDir = Join-Path $S ('a' + [char]0x2019 + ' $($global:PWNED=$true) ' + [char]0x2018 + 'b')
+# the link, and runs nothing from the name. (No : in it: Windows refuses one in
+# a file name.)
+$quoteDir = Join-Path $S ('a' + [char]0x2019 + ' $(Set-Variable PWNED $true -Scope Global) ' + [char]0x2018 + 'b')
 $hq = Install-Handoff $quoteDir $null
 New-DirLink (Join-Path $quoteDir 'handoff-muse.age') $linkTarget
 $r = Invoke-Handoff -Script $hq -ArgText '-Fingerprint'
