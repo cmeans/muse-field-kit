@@ -3789,7 +3789,7 @@ echo "ok (the leftovers line's remover follows the identity line)"
 # overprint or start a line of --check-setup's output.
 (cd "$S" && env HANDOFF_PRIVKEY=$'x\rPASS identity: forged' bash "$OLDPWD/../agent-setup.sh" --check-setup >"$S/out" 2>/dev/null) || true
 ! grep -q $'\r' "$S/out" || fail "--check-setup printed a key path's carriage return"
-for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x81\xa6' $'\xe2\x80\x8f' $'\xef\xbb\xbf' $'\xf3\xa0\x80\x81' $'\xef\xb8\x8f' $'\xe3\x85\xa4' $'\xc3\xa9'; do
+for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x81\xa6' $'\xe2\x80\x8f' $'\xef\xbb\xbf' $'\xf3\xa0\x80\x81' $'\xef\xb8\x8f' $'\xe3\x85\xa4' $'\xe1\x85\x9f'; do
   env HANDOFF_PRIVKEY="$S/u${ch}PASS identity: forged/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
   ! LC_ALL=C grep -qF "$ch" "$S/out" || fail "--check-setup printed a key path's $(LC_ALL=C printf '%q' "$ch")"
 done
@@ -3809,29 +3809,48 @@ grep -qF "HANDOFF_KEY_DIR=$S/kdhome/.config/handoff agent-setup.sh makes it" "$S
 # override, as it does a control character.
 # Also the invisible ones issue #80 item 3 found: tag characters (U+E0001,
 # U+E007F), variation selectors (U+FE0F, U+E0100), U+180E, U+206A, U+206F,
-# U+FFF9, U+034F and U+3164.
+# U+FFF9, U+034F and U+3164, and the blank fillers U+115F, U+1160, U+FFA0 and
+# U+2800.
 for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x80\xae' $'\xe2\x81\xa6' $'\xe2\x80\x8f' $'\xe2\x80\x8b' $'\xd8\x9c' $'\xef\xbb\xbf' $'\xc2\xad' $'\xe2\x81\xa0' \
-          $'\xf3\xa0\x80\x81' $'\xf3\xa0\x81\xbf' $'\xef\xb8\x8f' $'\xf3\xa0\x84\x80' $'\xe1\xa0\x8e' $'\xe2\x81\xaa' $'\xe2\x81\xaf' $'\xef\xbf\xb9' $'\xcd\x8f' $'\xe3\x85\xa4'; do
-  expect_refusal "setup into a key directory with $(LC_ALL=C printf '%q' "$ch")" 1 "has a control character in its path" \
+          $'\xf3\xa0\x80\x81' $'\xf3\xa0\x81\xbf' $'\xef\xb8\x8f' $'\xf3\xa0\x84\x80' $'\xe1\xa0\x8e' $'\xe2\x81\xaa' $'\xe2\x81\xaf' $'\xef\xbf\xb9' $'\xcd\x8f' $'\xe3\x85\xa4' \
+          $'\xe1\x85\x9f' $'\xe1\x85\xa0' $'\xef\xbe\xa0' $'\xe2\xa0\x80'; do
+  expect_refusal "setup into a key directory with $(LC_ALL=C printf '%q' "$ch")" 1 "has a control or hidden character in its path" \
     env HANDOFF_KEY_DIR="$S/sep${ch}recipient: age1fake" bash ../agent-setup.sh
   [ ! -e "$S/sep${ch}recipient: age1fake" ] || fail "setup made a key directory with $(LC_ALL=C printf '%q' "$ch")"
 done
 # A key directory with other non-ASCII (an é, or U+E0080, which no list
-# names) is allowed, and every line that shows its path escapes the bytes:
-# setup's, --check-setup's and --fingerprint's.
+# names) is allowed. A message shows its path escaped (setup's, --check-setup's
+# and --fingerprint's lines); a command to paste keeps the bytes, so it names
+# the same directory (issue #80 item 3, the maintainer's choice).
 for ch in $'\xc3\xa9' $'\xf3\xa0\x82\x80'; do
-  na="$S/jos${ch}"; rm -rf "$na"
-  env LC_ALL="${utf8_loc:-C}" HANDOFF_KEY_DIR="$na" bash ../agent-setup.sh >"$S/out" 2>&1 || { cat "$S/out" >&2; fail "setup refused a key directory with $(LC_ALL=C printf '%q' "$ch")"; }
+  na="$S/jos${ch} x"; rm -rf "$na"
+  # Before setup, --check-setup's command makes the key where HANDOFF_PRIVKEY points.
+  env LC_ALL="${utf8_loc:-C}" HANDOFF_PRIVKEY="$na/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>&1 || true
+  LC_ALL=C grep -qF "INFO identity: no key at $(LC_ALL=C printf '%q' "$na/handoff-identity.txt") yet; HANDOFF_KEY_DIR='$na' agent-setup.sh makes it" "$S/out" \
+    || fail "--check-setup's no-key line for $(LC_ALL=C printf '%q' "$ch"): $(LC_ALL=C grep identity "$S/out" | LC_ALL=C cat -v)"
+  cmd=$(LC_ALL=C sed -n 's/^INFO identity: no key at .* yet; \(HANDOFF_KEY_DIR=.*\) agent-setup\.sh makes it$/\1/p' "$S/out")
+  (cd .. && eval "env LC_ALL=${utf8_loc:-C} $cmd bash ./agent-setup.sh") >"$S/out" 2>&1 || { cat "$S/out" >&2; fail "the pasted command for $(LC_ALL=C printf '%q' "$ch") failed"; }
+  [ -f "$na/handoff-identity.txt" ] || fail "the pasted command for $(LC_ALL=C printf '%q' "$ch") made the key elsewhere"
   grep -qxF "this key lives at: $(LC_ALL=C printf '%q' "$na/handoff-identity.txt")" "$S/out" \
     || fail "setup didn't print the escaped key path for $(LC_ALL=C printf '%q' "$ch"): $(grep 'lives at' "$S/out")"
-  env LC_ALL="${utf8_loc:-C}" HANDOFF_PRIVKEY="$na/handoff-identity.txt" bash ../agent-setup.sh --check-setup >>"$S/out" 2>&1 || true
+  ! LC_ALL=C grep -F "$ch" "$S/out" | LC_ALL=C grep -vqE "HANDOFF_PRIVKEY='" \
+    || fail "a setup message showed $(LC_ALL=C printf '%q' "$ch") raw: $(LC_ALL=C grep -F "$ch" "$S/out" | LC_ALL=C cat -v)"
+  env LC_ALL="${utf8_loc:-C}" HANDOFF_PRIVKEY="$na/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>&1 || true
   env LC_ALL="${utf8_loc:-C}" HANDOFF_PRIVKEY="$na/handoff-identity.txt" bash ../agent-setup.sh --fingerprint >>"$S/out" 2>&1 || true
-  ! LC_ALL=C grep -qF "$ch" "$S/out" || fail "a line showed a key path's $(LC_ALL=C printf '%q' "$ch") raw: $(LC_ALL=C grep -F "$ch" "$S/out")"
-  LC_ALL=C grep -qF "PASS identity: the key at $S/jos$(LC_ALL=C printf '%q' "$ch" | sed "s/^\\\$'//; s/'\$//")/handoff-identity.txt" "$S/out" \
+  ! LC_ALL=C grep -qF "$ch" "$S/out" || fail "a line showed a key path's $(LC_ALL=C printf '%q' "$ch") raw: $(LC_ALL=C grep -F "$ch" "$S/out" | LC_ALL=C cat -v)"
+  LC_ALL=C grep -qF "PASS identity: the key at $(LC_ALL=C printf '%q' "$na/handoff-identity.txt") passes" "$S/out" \
     || fail "--check-setup's identity line for $(LC_ALL=C printf '%q' "$ch") is wrong: $(grep identity "$S/out")"
   rm -rf "$na"
 done
-echo "ok (a non-ASCII key directory works, and its path is shown escaped)"
+# An escaped path can't pass for another: a directory named with a literal
+# \303\251 shows otherwise than one with an é.
+lit="$S/n\\303\\251w"; real="$S/n"$'\xc3\xa9'"w"
+for d in "$lit" "$real"; do rm -rf "$d"; env HANDOFF_KEY_DIR="$d" bash ../agent-setup.sh >/dev/null 2>&1 || fail "setup into $(LC_ALL=C printf '%q' "$d") failed"; done
+a=$(env HANDOFF_PRIVKEY="$lit/handoff-identity.txt" bash ../agent-setup.sh --check-setup 2>&1 | grep '^PASS identity') || true
+b=$(env HANDOFF_PRIVKEY="$real/handoff-identity.txt" bash ../agent-setup.sh --check-setup 2>&1 | grep '^PASS identity') || true
+[ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ] || fail "a literal \\303\\251 and an é showed alike: $a"
+rm -rf "$lit" "$real"
+echo "ok (a non-ASCII key directory works, its path is shown escaped, and a command to paste names it)"
 # With a killed run's lock and no key, the identity line doesn't tell the
 # agent to run setup, which the lock would refuse.
 mkdir -p "$S/lock-nokey/.handoff-lock"; chmod 700 "$S/lock-nokey"
@@ -3862,7 +3881,7 @@ grep -q '^FAIL identity: .*writable by others' "$S/out" || fail "--check-setup g
 rmdir "$S/gw-nokey"
 # A key path with a control character gets no setup advice.
 env HANDOFF_PRIVKEY="$S/nl"$'\n'"PASS identity: forged/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-grep -qF "setup refuses a key path with a control character" "$S/out" || fail "--check-setup's advice for a key path with a newline: $(grep identity "$S/out")"
+grep -qF "setup refuses a key path with a control or hidden character" "$S/out" || fail "--check-setup's advice for a key path with a newline: $(grep identity "$S/out")"
 ! grep -q '^PASS identity: forged' "$S/out" || fail "a key path's newline started a line of --check-setup's output"
 # With a .previous.previous, --rotate refuses before its sweep: the
 # leftovers line says the user removes them, as in the overwrite refusal.
@@ -4008,7 +4027,7 @@ rm -r "$S/dashdir"
 # A key directory with a control character in its path is refused before
 # anything is made: the printed path could pass for other lines of output.
 nlkd="$S/a"$'\n'"recipient: age1fake"
-expect_refusal "setup into a key directory with a newline" 1 "has a control character in its path (a newline?); nothing was written" \
+expect_refusal "setup into a key directory with a newline" 1 "has a control or hidden character in its path (a newline?); nothing was written" \
   env HANDOFF_KEY_DIR="$nlkd" bash ../agent-setup.sh
 [ ! -e "$nlkd" ] || fail "setup made a key directory with a newline in its path"
 ! grep -q '^recipient: age1fake' "$S/err" || fail "the refusal printed the path's newline raw"
