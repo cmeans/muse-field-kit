@@ -146,7 +146,13 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     }
     $sb.ToString()
   }
-  function Format-Name([string]$s) { "'" + (Format-Shown $s).Replace("'", "''") + "'" }
+  # A PowerShell single-quoted string: PowerShell also ends one at U+2018-U+201B,
+  # so each of those is doubled too, as ' is (a folder named Chris<U+2019>s kit
+  # must not end the string, or a crafted one run code when pasted).
+  function Format-Name([string]$s) {
+    $q = "['" + [char]0x2018 + [char]0x2019 + [char]0x201A + [char]0x201B + ']'
+    "'" + ((Format-Shown $s) -replace $q, '$0$0') + "'"
+  }
 
   # --- arguments ----------------------------------------------------------
   if ($Help) { Write-Usage; Exit-Handoff 0 }
@@ -291,7 +297,11 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
         # it asks to recurse in Windows PowerShell 5.1, and yes deletes the
         # folder's contents (issue #83). Delete() removes only the link.
         if ($li.LinkType -ceq 'Junction' -or $li.PSIsContainer) {
-          Stop-Key "$kf is a link to a folder (a junction or a directory symlink): remove only the link with (Get-Item -LiteralPath $(Format-Name $keyfile) -Force).Delete(), then save the agent's recipient there as a plain file. Don't use Remove-Item on it: in Windows PowerShell 5.1 it can delete the folder's contents"
+          # The command names the path only if it prints as it is; otherwise
+          # it's run from the script's folder.
+          if ($kf -ceq $keyfile) { $del = "(Get-Item -LiteralPath $(Format-Name $keyfile) -Force).Delete()" }
+          else { $del = "(Get-Item -LiteralPath '.\handoff-$To.age' -Force).Delete(), run in this script's folder" }
+          Stop-Key "$kf is a link to a folder (a junction or a directory symlink): remove only the link with $del, then save the agent's recipient there as a plain file. Don't use Remove-Item on it: in Windows PowerShell 5.1 it can delete the folder's contents"
         }
         Stop-Key "$kf is a symlink that doesn't resolve to a file: remove the link itself (Remove-Item), then save the agent's recipient there as a plain file"
       }

@@ -128,7 +128,8 @@ function Invoke-Proc {
 }
 
 # A PowerShell single-quoted literal.
-function Q([string]$s) { "'" + $s.Replace("'", "''") + "'" }
+# A single-quoted PowerShell string; U+2018-U+201B end one too, so they're doubled as ' is.
+function Q([string]$s) { "'" + ($s -replace ("['" + [char]0x2018 + [char]0x2019 + [char]0x201A + [char]0x201B + ']'), '$0$0') + "'" }
 
 $script:drv = 0
 # Run handoff.ps1 at SCRIPT in a child PowerShell, as `& SCRIPT ARGTEXT`
@@ -466,17 +467,40 @@ Assert-True ($r.Exit -eq 1 -and $r.Out -cmatch '(?m)^FAIL recipient: .*handoff-l
 $linkTarget = Join-Path $S 'link-target'
 New-Item -ItemType Directory -Path $linkTarget | Out-Null
 [IO.File]::WriteAllText((Join-Path $linkTarget 'keep.txt'), 'keep')
+function New-DirLink([string]$path, [string]$target) {
+  if ($OnWindows) {
+    $r = Invoke-Proc -Exe "$env:ComSpec" -Argv @('/c', 'mklink', '/J', $path, $target)
+    if ($r.Exit -ne 0) { Fail "test setup: mklink /J $path failed: $($r.Out) $($r.Err)" }
+  } else { New-Link $path $target }
+}
+# Runs the remedy command the message prints, as a user pasting it would.
+function Invoke-PrintedDelete([string]$err, [string]$desc) {
+  $m = [regex]::Match($err, "\(Get-Item -LiteralPath '(?:[^'\u2018-\u201B]|['\u2018-\u201B]{2})*' -Force\)\.Delete\(\)")
+  Assert-True $m.Success "$($desc): no .Delete() command in the message: $err"
+  $global:PWNED = $false
+  Invoke-Expression $m.Value
+  Assert-True (-not $global:PWNED) "$($desc): the printed command ran code from the folder name"
+}
 $dirLink = Join-Path $K 'handoff-dirlink.age'
-if ($OnWindows) {
-  $r = Invoke-Proc -Exe "$env:ComSpec" -Argv @('/c', 'mklink', '/J', $dirLink, $linkTarget)
-  if ($r.Exit -ne 0) { Fail "test setup: mklink /J $dirLink failed: $($r.Out) $($r.Err)" }
-} else { New-Link $dirLink $linkTarget }
+New-DirLink $dirLink $linkTarget
 $r = Invoke-Handoff -Script $hk -ArgText '-To dirlink -Fingerprint'
 Assert-Refusal 'a link to a folder' 1 'handoff-dirlink.age is a link to a folder' $r
-Assert-True ($r.Err.Contains('-Force).Delete()') -and $r.Err.Contains("Don't use Remove-Item on it")) "the folder-link refusal doesn't give the link-only remedy: $($r.Err)"
+Assert-True ($r.Err.Contains("Don't use Remove-Item on it")) "the folder-link refusal doesn't warn off Remove-Item: $($r.Err)"
 Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) 'the folder-link refusal touched the target folder'
-(Get-Item -LiteralPath $dirLink -Force).Delete()   # the remedy, as the message gives it
-Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the folder-link remedy's Delete() removed the target's contents"
+Invoke-PrintedDelete $r.Err 'a link to a folder'
+Assert-True (-not (Test-Path -LiteralPath $dirLink)) "the printed remedy didn't remove the folder link"
+Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents"
+# In a folder whose name has typographic quotes (PowerShell ends a '...' string
+# at U+2018-U+201B too) and a subexpression, the printed command still names
+# the link, and runs nothing from the name.
+$quoteDir = Join-Path $S ('a' + [char]0x2019 + ' $($global:PWNED=$true) ' + [char]0x2018 + 'b')
+$hq = Install-Handoff $quoteDir $null
+New-DirLink (Join-Path $quoteDir 'handoff-muse.age') $linkTarget
+$r = Invoke-Handoff -Script $hq -ArgText '-Fingerprint'
+Assert-Refusal 'a folder link in a folder named with typographic quotes' 1 'is a link to a folder' $r
+Invoke-PrintedDelete $r.Err 'a folder link in a folder named with typographic quotes'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $quoteDir 'handoff-muse.age'))) "the printed remedy didn't remove the link in a quote-named folder"
+Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents (quote-named folder)"
 Say 'ok (a link to a folder gets a remedy that removes only the link)'
 # Paths and arguments with control, bidi or invisible characters are printed
 # with each one as <U+XXXX>, so none can reorder or hide part of a message
@@ -617,9 +641,9 @@ Remove-Item -LiteralPath $nulLead
 # file) gets the UTF-16 message, as -File and stdin do (#85).
 $u16nb = Join-Path $S 'u16-nobom.json'
 [IO.File]::WriteAllBytes($u16nb, [Text.Encoding]::Unicode.GetBytes($Pay))
-Assert-Refusal 'BOM-less UTF-16 piped as text' 1 'saved as UTF-16 without a byte-order mark' (Invoke-Handoff -Call "[IO.File]::ReadAllText($(Q $u16nb), [Text.Encoding]::UTF8) | & $(Q $hk)")
+Assert-Refusal 'BOM-less UTF-16 piped as text' 1 'saved as UTF-16 without a byte-order mark' (Invoke-Handoff -Call "Get-Content -LiteralPath $(Q $u16nb) | & $(Q $hk)")
 [IO.File]::WriteAllBytes($u16nb, [Text.Encoding]::BigEndianUnicode.GetBytes($Pay))
-Assert-Refusal 'BOM-less UTF-16BE piped as text' 1 'saved as UTF-16 without a byte-order mark' (Invoke-Handoff -Call "[IO.File]::ReadAllText($(Q $u16nb), [Text.Encoding]::UTF8) | & $(Q $hk)")
+Assert-Refusal 'BOM-less UTF-16BE piped as text' 1 'saved as UTF-16 without a byte-order mark' (Invoke-Handoff -Call "Get-Content -LiteralPath $(Q $u16nb) | & $(Q $hk)")
 Remove-Item -LiteralPath $u16nb
 # Run directly with -File and the payload on stdin (powershell -File
 # handoff.ps1 < payload.json, as from cmd): read as bytes
