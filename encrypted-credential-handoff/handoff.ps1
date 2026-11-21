@@ -128,7 +128,31 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
   }
   function Stop-Usage([string]$m) { [Console]::Error.WriteLine("handoff.ps1: $m"); Write-Usage; Exit-Handoff 2 }
   function Stop-Run([string]$m) { [Console]::Error.WriteLine("handoff.ps1: $m"); Exit-Handoff 1 }
-  function Format-Name([string]$s) { "'" + $s.Replace("'", "''") + "'" }
+  # Text from the user's folder, file names or command line, made safe to print
+  # (handoff.sh's has_ctl and qp): each control, bidi or invisible character
+  # (C0, DEL, C1, U+00AD, U+061C, U+200B-U+200F, U+2028-U+202E, U+2060-U+2064,
+  # U+2066-U+2069, U+FEFF) is shown as <U+XXXX>, so a name like u<U+202E>x
+  # can't reorder or hide part of a message line. Anything else is unchanged.
+  function Format-Shown([string]$s) {
+    if ($null -eq $s) { return $s }
+    $sb = New-Object Text.StringBuilder
+    foreach ($ch in $s.ToCharArray()) {
+      $v = [int]$ch
+      if ($v -lt 0x20 -or ($v -ge 0x7F -and $v -le 0x9F) -or $v -eq 0xAD -or $v -eq 0x61C -or
+          ($v -ge 0x200B -and $v -le 0x200F) -or ($v -ge 0x2028 -and $v -le 0x202E) -or
+          ($v -ge 0x2060 -and $v -le 0x2064) -or ($v -ge 0x2066 -and $v -le 0x2069) -or $v -eq 0xFEFF) {
+        [void]$sb.Append('<U+' + $v.ToString('X4') + '>')
+      } else { [void]$sb.Append($ch) }
+    }
+    $sb.ToString()
+  }
+  # A PowerShell single-quoted string: PowerShell also ends one at U+2018-U+201B,
+  # so each of those is doubled too, as ' is (a folder named Chris<U+2019>s kit
+  # must not end the string, or a crafted one run code when pasted).
+  function Format-Name([string]$s) {
+    $q = "['" + [char]0x2018 + [char]0x2019 + [char]0x201A + [char]0x201B + ']'
+    "'" + ((Format-Shown $s) -replace $q, '$0$0') + "'"
+  }
 
   # --- arguments ----------------------------------------------------------
   if ($Help) { Write-Usage; Exit-Handoff 0 }
@@ -136,7 +160,7 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
   $ToGiven = $PSBoundParameters.ContainsKey('To')
   foreach ($x in @($Rest)) {
     if ($null -eq $x) { continue }
-    if ($x.StartsWith('-')) { Stop-Usage "unknown option $x" }
+    if ($x.StartsWith('-')) { Stop-Usage "unknown option $(Format-Shown $x)" }
     Stop-Usage 'at most one FILE'
   }
   if ($Fingerprint -and $CheckSetup) { Stop-Usage 'one mode at a time' }
@@ -248,6 +272,7 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     # file in, and the current location isn't a stand-in for one.
     if (-not $dir) { Stop-Key 'save handoff.ps1 to a file and run that file: its recipient file is found beside it' $true }
     $keyfile = Join-Path $dir "handoff-$To.age"
+    $kf = Format-Shown $keyfile   # for messages only
 
     $attrs = $null
     try { $attrs = [IO.File]::GetAttributes($keyfile) } catch { }   # the entry itself, link or not
@@ -267,14 +292,29 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
       if ($null -ne $stream) { $stream.Dispose() }
       # The remedy says to remove the link first: saving "there"
       # (Set-Content, Copy-Item) writes through it and leaves the link.
-      if ($null -eq $stream) { Stop-Key "$keyfile is a symlink that doesn't resolve to a file: remove the link itself (Remove-Item), then save the agent's recipient there as a plain file" }
-      Stop-Key "$keyfile is a symlink: remove the link itself (Remove-Item, which leaves its target alone), then save the agent's recipient there as a plain file (a link can be repointed without its target changing)"
+      if ($null -eq $stream) {
+        # A link to a folder (a junction, or a directory symlink): Remove-Item on
+        # it asks to recurse in Windows PowerShell 5.1, and yes deletes the
+        # folder's contents (issue #83). Delete() removes only the link.
+        if ($li.LinkType -ceq 'Junction' -or $li.PSIsContainer) {
+          # The command names the full path only if it's printable ASCII: a
+          # character Format-Shown changes isn't the path any more, and Windows
+          # PowerShell 5.1 writes stderr in the console's code page, which turns
+          # a typographic quote into ' or ` (the pasted path then names nothing).
+          # Otherwise it's run from the script's folder, by the ASCII name.
+          if ($keyfile -cmatch '^[\x20-\x7E]*\z') { $del = "(Get-Item -LiteralPath $(Format-Name $keyfile) -Force).Delete()" }
+          else { $del = "(Get-Item -LiteralPath '.\handoff-$To.age' -Force).Delete(), run in this script's folder" }
+          Stop-Key "$kf is a link to a folder (a junction or a directory symlink): remove only the link with $del, then save the agent's recipient there as a plain file. Don't use Remove-Item on it: in Windows PowerShell 5.1 it can delete the folder's contents"
+        }
+        Stop-Key "$kf is a symlink that doesn't resolve to a file: remove the link itself (Remove-Item), then save the agent's recipient there as a plain file"
+      }
+      Stop-Key "$kf is a symlink: remove the link itself (Remove-Item, which leaves its target alone), then save the agent's recipient there as a plain file (a link can be repointed without its target changing)"
     }
     if ($null -eq $stream) {
-      if ([IO.Directory]::Exists($keyfile)) { Stop-Key "$keyfile is not a regular file" }
+      if ([IO.Directory]::Exists($keyfile)) { Stop-Key "$kf is not a regular file" }
       # A reparse point whose target won't open (a link Get-Item couldn't name).
-      if ($null -ne $attrs -and ($attrs -band [IO.FileAttributes]::ReparsePoint)) { Stop-Key "$keyfile is a symlink that doesn't resolve to a file" }
-      if ($null -ne $attrs) { Stop-Key "cannot read $keyfile" }
+      if ($null -ne $attrs -and ($attrs -band [IO.FileAttributes]::ReparsePoint)) { Stop-Key "$kf is a symlink that doesn't resolve to a file" }
+      if ($null -ne $attrs) { Stop-Key "cannot read $kf" }
 
       # A near miss beside it is named, from a short allow-list only: a _ or . in
       # place of the -, another case (handoff_muse.age, handoff-Muse.age), or an
@@ -313,18 +353,18 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
           # Only NAME's case differs (-To Muse, with handoff-muse.age there): the
           # remedy is the other -To, not a rename the default run would then miss.
           if ($near -ceq "handoff-$nm.age") {
-            Stop-Key "no recipient file for '$To': $keyfile doesn't exist, but $near does. Names are case-sensitive: did you mean -To $($nm)?" $true
+            Stop-Key "no recipient file for '$To': $kf doesn't exist, but $near does. Names are case-sensitive: did you mean -To $($nm)?" $true
           }
           # The case and something else differ (handoff_muse.age for -To Muse).
-          Stop-Key "no recipient file for '$To': $keyfile doesn't exist, but $near does. If that file is the agent's current recipient, rename it to handoff-$nm.age and run with -To $nm (names are case-sensitive), then compare -Fingerprint with the recipient the agent reports" $true
+          Stop-Key "no recipient file for '$To': $kf doesn't exist, but $near does. If that file is the agent's current recipient, rename it to handoff-$nm.age and run with -To $nm (names are case-sensitive), then compare -Fingerprint with the recipient the agent reports" $true
         }
-        Stop-Key "no recipient file for '$To': $keyfile doesn't exist, but $near does. If that file is the agent's current recipient, rename it to handoff-$To.age, then compare -Fingerprint with the recipient the agent reports" $true
+        Stop-Key "no recipient file for '$To': $kf doesn't exist, but $near does. If that file is the agent's current recipient, rename it to handoff-$To.age, then compare -Fingerprint with the recipient the agent reports" $true
       }
       # A 0.1.0 install: the RSA public key is beside it, the age recipient isn't.
       if ([IO.File]::Exists((Join-Path $dir "handoff-$To.pem"))) {
-        Stop-Key "found handoff-$To.pem but no $keyfile. Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$To.age beside handoff.ps1" $true
+        Stop-Key "found handoff-$To.pem but no $kf. Version 0.2.0 uses age, not RSA keys: ask your agent for its recipient (agent-setup.sh --fingerprint prints it) and save it as handoff-$To.age beside handoff.ps1" $true
       }
-      Stop-Key "no recipient file for '$To': $keyfile doesn't exist. Save the agent's recipient there (SETUP.md, setup step 3), or name another agent with -To NAME" $true
+      Stop-Key "no recipient file for '$To': $kf doesn't exist. Save the agent's recipient there (SETUP.md, setup step 3), or name another agent with -To NAME" $true
     }
 
     # One bounded read, and the size checked on what was read.
@@ -338,10 +378,10 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
         $size += $got
       }
     } catch { $readOk = $false } finally { $stream.Dispose() }
-    if (-not $readOk) { Stop-Key "cannot read $keyfile" }
-    if ($size -gt $MAX_KEY_BYTES) { Stop-Key "$keyfile is over $MAX_KEY_BYTES bytes; not a recipient file" }
+    if (-not $readOk) { Stop-Key "cannot read $kf" }
+    if ($size -gt $MAX_KEY_BYTES) { Stop-Key "$kf is over $MAX_KEY_BYTES bytes; not a recipient file" }
     if ($size -ge 2 -and (($buf[0] -eq 0xFF -and $buf[1] -eq 0xFE) -or ($buf[0] -eq 0xFE -and $buf[1] -eq 0xFF))) {
-      Stop-Key "$keyfile is saved as UTF-16: save it as UTF-8 or plain text"
+      Stop-Key "$kf is saved as UTF-16: save it as UTF-8 or plain text"
     }
     $start = 0
     if ($size -ge 3 -and $buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF) { $start = 3 }   # a UTF-8 byte-order mark
@@ -357,7 +397,7 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     # An identity (private key) here means it left the agent's machine.
     foreach ($l in $lines) {
       if ($l.StartsWith('AGE-SECRET-KEY-', [StringComparison]::Ordinal) -or $l.StartsWith('AGE-PLUGIN-', [StringComparison]::Ordinal)) {
-        Stop-Key "$keyfile holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
+        Stop-Key "$kf holds a private key. Only the agent's recipient (age1...) belongs here: delete this file now. If it's the agent's identity, it has left the agent's machine: treat it as leaked (README.md, Rotation, and compromise)"
       }
     }
     # Copied with more than the recipient: the "recipient: " agent-setup.sh
@@ -367,10 +407,10 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     # (Typographic quotes in UTF-8, as a chat app pastes them, read byte for
     # character here: E2 80 then 98, 99, 9C or 9D.)
     if ($text -cmatch '[Rr]ecipient:|["''`]|\xE2\u0080[\u0098\u0099\u009C\u009D]') { $extra ='. Keep only the age1... text, without "recipient:", quotes or backticks' }
-    if ($lines.Count -ne 1) { Stop-Key "$keyfile must hold exactly one age recipient line (age1...), as agent-setup.sh prints it$extra" }
+    if ($lines.Count -ne 1) { Stop-Key "$kf must hold exactly one age recipient line (age1...), as agent-setup.sh prints it$extra" }
     $RECIPIENT = $lines[0]
     if ($RECIPIENT -cnotmatch $RECIPIENT_RE) {
-      Stop-Key "$keyfile is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it$extra"
+      Stop-Key "$kf is not an age X25519 recipient (age1 and 58 more lowercase characters), as agent-setup.sh prints it$extra"
     }
     # The bech32 checksum: age itself rejects a recipient that fails it. Asked
     # now, on nothing, so a mistyped file is refused before the secret is typed.
@@ -378,9 +418,10 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
     $chk = $null
     if (-not ($CheckSetup -and $script:CsNoAge)) { $chk = Invoke-Age "-r $RECIPIENT" $null }
     if (($null -eq $chk -or $chk.Exit -ne 0) -and -not ($CheckSetup -and $script:CsNoAge)) {
-      Stop-Key "$keyfile is not a valid age recipient: age $AgeVersion did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
+      Stop-Key "$kf is not a valid age recipient: age $AgeVersion did not accept it. Check the file for a typo and copy it again from the agent, or check that age itself runs (age --version)"
     }
     $script:keyfile = $keyfile
+    $script:kf = $kf
     $script:RECIPIENT = $RECIPIENT
   }
   # --- -CheckSetup: prove the tools work on this machine, by running them -------
@@ -524,10 +565,10 @@ public static class HandoffCheckCleanup {
       try {
         Get-Recipient
         $probe = 'PASS'
-        $probeMsg = "$keyfile is a valid age X25519 recipient"
+        $probeMsg = "$kf is a valid age X25519 recipient"
         if (-not $haveAge) {
           $probe = 'INFO'
-          $probeMsg = "$keyfile has the shape of an age X25519 recipient; its checksum is not checked (no age)"
+          $probeMsg = "$kf has the shape of an age X25519 recipient; its checksum is not checked (no age)"
         }
         $saved = $script:RECIPIENT
       } catch {
@@ -596,7 +637,7 @@ public static class HandoffCheckCleanup {
   Get-Recipient
 
   if ($Fingerprint) {
-    [Console]::Error.WriteLine("key file: $keyfile")
+    [Console]::Error.WriteLine("key file: $kf")
     Write-Output "recipient: $RECIPIENT"
     Exit-Handoff 0
   }
@@ -700,11 +741,11 @@ end {
     $path = $null
     # (An empty FILE resolves to the current location: it gets "cannot read".)
     if ($File.Length -gt 0) { try { $path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($File) } catch { } }
-    if ($null -ne $path -and [IO.Directory]::Exists($path)) { Stop-Run "$File is a directory, not a payload file" }
+    if ($null -ne $path -and [IO.Directory]::Exists($path)) { Stop-Run "$(Format-Shown $File) is a directory, not a payload file" }
     $fs = $null
     try { $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite') } catch { }   # note: plaintext is already on disk in this path
     if ($null -ne $fs) { $bytes = Read-Capped $fs }
-    if ($null -eq $bytes) { Stop-Run "cannot read $File" }
+    if ($null -eq $bytes) { Stop-Run "cannot read $(Format-Shown $File)" }
     if (Test-Utf16NoBom $bytes) { Stop-Run $utf16Msg }
     $secret = ConvertFrom-Bytes $bytes
     [Array]::Clear($bytes, 0, $bytes.Length)
@@ -713,6 +754,16 @@ end {
     # One leading byte-order mark is dropped, as ConvertFrom-Bytes does for
     # bytes (and handoff.sh for its input); a second is refused below.
     if ($secret.Length -gt 0 -and $secret[0] -eq [char]0xFEFF) { $secret = $secret.Substring(1) }
+    # BOM-less UTF-16 read as single-byte text (Get-Content without -Encoding
+    # on such a file) arrives with a NUL after or before each character: the
+    # same test as Test-Utf16NoBom, on the characters (#85).
+    if ($secret.Length -ge 4) {
+      $lead = @(0x7B, 0x20, 0x09, 0x0D, 0x0A)
+      $c = @([int]$secret[0], [int]$secret[1], [int]$secret[2], [int]$secret[3])
+      if (($lead -contains $c[0] -and $c[1] -eq 0 -and $c[3] -eq 0) -or ($c[0] -eq 0 -and $lead -contains $c[1] -and $c[2] -eq 0)) {
+        $secret = $null; $piped.Clear(); Stop-Run $utf16Msg
+      }
+    }
   } elseif ([Console]::IsInputRedirected -and (-not $MyInvocation.ExpectingInput -or
             ($MyInvocation.PipelinePosition -eq 1 -and $MyInvocation.PipelineLength -gt 1))) {
     # stdin's bytes, when nothing is piped in (ExpectingInput false), or when
@@ -955,9 +1006,9 @@ end {
   [Array]::Clear($bytes, 0, $bytes.Length)
   if ($null -eq $enc -or $enc.Exit -ne 0 -or $enc.Out.Length -eq 0) { Stop-Run "age failed to encrypt (age $AgeVersion), aborting" }
   $blob = [Convert]::ToBase64String($enc.Out)
-  [Console]::Error.WriteLine("recipient: $RECIPIENT (from $keyfile)  <- compare with the recipient")
+  [Console]::Error.WriteLine("recipient: $RECIPIENT (from $kf)  <- compare with the recipient")
   [Console]::Error.WriteLine('   your agent reports for its key before trusting this output')
-  [Console]::Error.WriteLine("--- paste everything below into chat with $To (recipient file $keyfile) ---")
+  [Console]::Error.WriteLine("--- paste everything below into chat with $To (recipient file $kf) ---")
   Write-Output $blob
   [Console]::Error.WriteLine('--- end ---')
   Exit-Handoff 0

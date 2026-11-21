@@ -128,7 +128,8 @@ function Invoke-Proc {
 }
 
 # A PowerShell single-quoted literal.
-function Q([string]$s) { "'" + $s.Replace("'", "''") + "'" }
+# A single-quoted PowerShell string; U+2018-U+201B end one too, so they're doubled as ' is.
+function Q([string]$s) { "'" + ($s -replace ("['" + [char]0x2018 + [char]0x2019 + [char]0x201A + [char]0x201B + ']'), '$0$0') + "'" }
 
 $script:drv = 0
 # Run handoff.ps1 at SCRIPT in a child PowerShell, as `& SCRIPT ARGTEXT`
@@ -460,6 +461,89 @@ Assert-Refusal 'a link to a valid recipient file' 1 "handoff-linked.age is a sym
 Assert-Refusal 'encrypting to a linked recipient file' 1 'handoff-linked.age is a symlink' (Invoke-Handoff -Script $hk -ArgText '-To linked' -Pipe $PayFile)
 $r = Invoke-Handoff -Script $hk -ArgText '-To linked -CheckSetup'
 Assert-True ($r.Exit -eq 1 -and $r.Out -cmatch '(?m)^FAIL recipient: .*handoff-linked\.age is a symlink') "-CheckSetup didn't fail a linked recipient file: $($r.Out)"
+# A link to a folder (a junction on Windows, a directory symlink elsewhere)
+# gets a remedy that removes only the link: Remove-Item on one in Windows
+# PowerShell 5.1 can delete the folder's contents (issue #83).
+$linkTarget = Join-Path $S 'link-target'
+New-Item -ItemType Directory -Path $linkTarget | Out-Null
+[IO.File]::WriteAllText((Join-Path $linkTarget 'keep.txt'), 'keep')
+function New-DirLink([string]$path, [string]$target) {
+  if ($OnWindows) {
+    $r = Invoke-Proc -Exe "$env:ComSpec" -Argv @('/c', 'mklink', '/J', $path, $target)
+    if ($r.Exit -ne 0) { Fail "test setup: mklink /J $path failed: $($r.Out) $($r.Err)" }
+  } else { New-Link $path $target }
+}
+# Runs the remedy command the message prints, all of it as a user would paste
+# it (everything between "remove only the link with " and the rest of the
+# sentence), at a console's default error action, from the script's folder
+# FOLDER (which the relative form names it in).
+function Invoke-PrintedDelete([string]$err, [string]$desc, [string]$folder) {
+  $m = [regex]::Match($err, "remove only the link with (?<cmd>.+?)(?:, run in this script's folder)?, then save the agent's recipient there")
+  Assert-True $m.Success "$($desc): no remedy command in the message: $err"
+  $global:PWNED = $false
+  $ErrorActionPreference = 'Continue'
+  Push-Location -LiteralPath $folder
+  try { Invoke-Expression $m.Groups['cmd'].Value 2>$null } catch { } finally { Pop-Location }
+  $ErrorActionPreference = 'Stop'
+  Assert-True (-not $global:PWNED) "$($desc): the printed command ran code from the folder name"
+}
+$dirLink = Join-Path $K 'handoff-dirlink.age'
+New-DirLink $dirLink $linkTarget
+$r = Invoke-Handoff -Script $hk -ArgText '-To dirlink -Fingerprint'
+Assert-Refusal 'a link to a folder' 1 'handoff-dirlink.age is a link to a folder' $r
+Assert-True ($r.Err.Contains("Don't use Remove-Item on it")) "the folder-link refusal doesn't warn off Remove-Item: $($r.Err)"
+Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) 'the folder-link refusal touched the target folder'
+Invoke-PrintedDelete $r.Err 'a link to a folder' $K
+Assert-True (-not (Test-Path -LiteralPath $dirLink)) "the printed remedy didn't remove the folder link"
+Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents"
+# In a folder whose name has typographic quotes (PowerShell ends a '...' string
+# at U+2018-U+201B too) and a subexpression, the printed command still names
+# the link, and runs nothing from the name. (No : in it: Windows refuses one in
+# a file name.)
+$quoteDir = Join-Path $S ('a' + [char]0x2019 + ' $(Set-Variable PWNED $true -Scope Global) ' + [char]0x2018 + 'b')
+$hq = Install-Handoff $quoteDir $null
+New-DirLink (Join-Path $quoteDir 'handoff-muse.age') $linkTarget
+$r = Invoke-Handoff -Script $hq -ArgText '-Fingerprint'
+Assert-Refusal 'a folder link in a folder named with typographic quotes' 1 'is a link to a folder' $r
+# A path that isn't printable ASCII gets the script-folder form: a 5.1
+# console would mangle the quotes in a full path.
+Assert-True ($r.Err.Contains("(Get-Item -LiteralPath '.\handoff-muse.age' -Force).Delete(), run in this script's folder")) "a folder link in a non-ASCII folder didn't get the script-folder form: $($r.Err)"
+Invoke-PrintedDelete $r.Err 'a folder link in a folder named with typographic quotes' $quoteDir
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $quoteDir 'handoff-muse.age'))) "the printed remedy didn't remove the link in a quote-named folder"
+Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents (quote-named folder)"
+# In a folder whose printable-ASCII name holds a ' and a whole statement, the
+# full-path form's ' doubling is all that keeps the paste one command; and a
+# plain apostrophe (Chris's kit) works too.
+foreach ($nm in @("x' -Force).Delete() ; Set-Variable PWNED 1 -Scope Global ; (Get-Item -LiteralPath 'y", "Chris's kit")) {
+  $ad = Join-Path $S $nm
+  $ha = Install-Handoff $ad $null
+  New-DirLink (Join-Path $ad 'handoff-muse.age') $linkTarget
+  $r = Invoke-Handoff -Script $ha -ArgText '-Fingerprint'
+  Assert-Refusal "a folder link in a folder named $nm" 1 'is a link to a folder' $r
+  Assert-True (-not $r.Err.Contains("run in this script's folder")) "a printable-ASCII folder didn't get the full-path form: $($r.Err)"
+  Invoke-PrintedDelete $r.Err "a folder link in a folder named $nm" $S
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $ad 'handoff-muse.age'))) "the printed remedy didn't remove the link in the folder named $nm"
+  Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents (folder named $nm)"
+}
+Say 'ok (a link to a folder gets a remedy that removes only the link)'
+# Paths and arguments with control, bidi or invisible characters are printed
+# with each one as <U+XXXX>, so none can reorder or hide part of a message
+# (issue #82; handoff.sh's qp).
+$rlo = [string][char]0x202E
+$bidiDir = Join-Path $S ('u' + $rlo + 'x')
+$hb = Install-Handoff $bidiDir $RcptFile
+$r = Invoke-Handoff -Script $hb -ArgText '-Fingerprint'
+Assert-True ($r.Exit -eq 0 -and $r.Err.Contains('u<U+202E>x') -and -not $r.Err.Contains($rlo)) "-Fingerprint printed a bidi folder name raw: $($r.Err)"
+$r = Invoke-Handoff -Script $hb -ArgText "-File $(Q $bidiDir)"
+Assert-Refusal '-File naming a bidi folder' 1 'u<U+202E>x is a directory, not a payload file' $r
+Assert-True (-not $r.Err.Contains($rlo)) "-File printed a bidi folder name raw: $($r.Err)"
+$r = Invoke-Handoff -Script $hk -ArgText "-To other -Bo$($rlo)gus"
+Assert-Refusal 'a bidi unknown option' 2 'unknown option -Bo<U+202E>gus' $r
+Assert-True (-not $r.Err.Contains($rlo)) "an unknown option was printed raw: $($r.Err)"
+$r = Invoke-Handoff -Script $hk -ArgText "-To $(Q ('a' + $rlo + 'b'))"
+Assert-Refusal 'a bidi -To' 2 "(got 'a<U+202E>b')" $r
+Assert-True (-not $r.Err.Contains($rlo)) "-To was printed raw: $($r.Err)"
+Say 'ok (bidi characters in paths and arguments are shown as <U+XXXX>)'
 Say 'ok (links and directories)'
 
 # The shared table: the recipient-file cases that are a file's contents.
@@ -577,6 +661,14 @@ $r = Invoke-Handoff -Script $hk -ArgText "-File $(Q $nulLead)"
 Assert-Refusal 'a raw NUL right after {' 1 $jsonMsg $r
 Assert-True (-not $r.Err.Contains('UTF-16')) 'a raw NUL after { was called UTF-16'
 Remove-Item -LiteralPath $nulLead
+# BOM-less UTF-16 piped in as text (Get-Content without -Encoding on such a
+# file) gets the UTF-16 message, as -File and stdin do (#85).
+$u16nb = Join-Path $S 'u16-nobom.json'
+[IO.File]::WriteAllBytes($u16nb, [Text.Encoding]::Unicode.GetBytes($Pay))
+Assert-Refusal 'BOM-less UTF-16 piped as text' 1 'saved as UTF-16 without a byte-order mark' (Invoke-Handoff -Call "Get-Content -LiteralPath $(Q $u16nb) | & $(Q $hk)")
+[IO.File]::WriteAllBytes($u16nb, [Text.Encoding]::BigEndianUnicode.GetBytes($Pay))
+Assert-Refusal 'BOM-less UTF-16BE piped as text' 1 'saved as UTF-16 without a byte-order mark' (Invoke-Handoff -Call "Get-Content -LiteralPath $(Q $u16nb) | & $(Q $hk)")
+Remove-Item -LiteralPath $u16nb
 # Run directly with -File and the payload on stdin (powershell -File
 # handoff.ps1 < payload.json, as from cmd): read as bytes
 # and encrypted. Windows PowerShell 5.1 used to read it as an empty pipeline.
