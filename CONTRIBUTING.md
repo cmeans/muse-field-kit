@@ -76,6 +76,12 @@ Each kit is released on its own, with a tag `KIT-vX.Y.Z` (for example `encrypted
 - **CI passed** (or a job failed on a flake, and re-running the failed jobs made it pass): run Release again on the tag (Actions, Release, "Run workflow" on the tag, `dry_run` false).
 - **CI failed for real, or never ran on that commit:** delete the tag (`git push --delete origin encrypted-credential-handoff-vX.Y.Z`), so no setup picks a version that has no release; fix `main`; and release the fix under a new version.
 
+If it refuses because the tag no longer points at the built commit (it checks before attesting and again right before creating the release), the tag was moved during the run:
+
+- **Moved on purpose:** nothing to do for this run. Pushing the moved tag started a new Release run for its commit.
+- **Moved by mistake:** put the tag back on the built commit the message names (`git push --force origin <commit>:refs/tags/encrypted-credential-handoff-vX.Y.Z`), then run Release again on the tag. If the scripts were already attested, the new run attests the same files again, which is harmless.
+- **The tag couldn't be read** (the API call failed): run Release again on the tag. If the tag was deleted, release a new version instead.
+
 ## Contact
 
 Open an issue. This is a one-person project, so response times vary.

@@ -248,11 +248,11 @@ jobs:
           # A re-run then attests again once the tag is back on the built
           # commit (the release-exists check passes while there's none).
           if ! now=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha); then
-            echo "could not read $TAG from the API; the scripts were attested, but no release was created"
+            echo "could not read $TAG from the API; the scripts were attested, but no release was created. Run Release again on the tag (CONTRIBUTING.md, Releases)"
             exit 1
           fi
           if [ "$now" != "$GITHUB_SHA" ]; then
-            echo "$TAG now points at $now, not the built commit $GITHUB_SHA; the scripts were attested, but no release was created"
+            echo "$TAG now points at $now, not the built commit $GITHUB_SHA; the scripts were attested, but no release was created. If the tag was moved by mistake, put it back on $GITHUB_SHA and run Release again; if on purpose, its own run releases it (CONTRIBUTING.md, Releases)"
             exit 1
           fi
           gh release create "$TAG" \
