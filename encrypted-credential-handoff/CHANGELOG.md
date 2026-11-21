@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **`agent-setup.sh` quotes any printed path holding `=`, and matches safe characters by name, not by the locale's ranges** (refs #80 items 5, 7, 11, 12): zsh expands `=ls`; the by-hand notes also say how to see a name's bytes on BusyBox.
 - **`agent-setup.sh` removes only the temporary directories it made** (refs #80 items 1, 2, 6, 8): each holds a marker now. A user's `.handoff-tmp.backup/`, or a file named `.handoff-setup.*` or `.handoff-new.*`, is left alone by setup, `--rotate` and `--retire`.
 - **`handoff.ps1` shows control and bidi characters in paths and arguments as `<U+XXXX>`** (closes #82), **gives a link to a folder a remedy that removes only the link** (closes #83), and **calls piped BOM-less UTF-16 what it is** (refs #85).
 - **`consume.py` refuses a non-ASCII `--label`** (closes #77): under some locales one could never match its payload's `svc`; it now says so up front.
