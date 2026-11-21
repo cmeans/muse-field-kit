@@ -460,6 +460,42 @@ Assert-Refusal 'a link to a valid recipient file' 1 "handoff-linked.age is a sym
 Assert-Refusal 'encrypting to a linked recipient file' 1 'handoff-linked.age is a symlink' (Invoke-Handoff -Script $hk -ArgText '-To linked' -Pipe $PayFile)
 $r = Invoke-Handoff -Script $hk -ArgText '-To linked -CheckSetup'
 Assert-True ($r.Exit -eq 1 -and $r.Out -cmatch '(?m)^FAIL recipient: .*handoff-linked\.age is a symlink') "-CheckSetup didn't fail a linked recipient file: $($r.Out)"
+# A link to a folder (a junction on Windows, a directory symlink elsewhere)
+# gets a remedy that removes only the link: Remove-Item on one in Windows
+# PowerShell 5.1 can delete the folder's contents (issue #83).
+$linkTarget = Join-Path $S 'link-target'
+New-Item -ItemType Directory -Path $linkTarget | Out-Null
+[IO.File]::WriteAllText((Join-Path $linkTarget 'keep.txt'), 'keep')
+$dirLink = Join-Path $K 'handoff-dirlink.age'
+if ($OnWindows) {
+  $r = Invoke-Proc -Exe "$env:ComSpec" -Argv @('/c', 'mklink', '/J', $dirLink, $linkTarget)
+  if ($r.Exit -ne 0) { Fail "test setup: mklink /J $dirLink failed: $($r.Out) $($r.Err)" }
+} else { New-Link $dirLink $linkTarget }
+$r = Invoke-Handoff -Script $hk -ArgText '-To dirlink -Fingerprint'
+Assert-Refusal 'a link to a folder' 1 'handoff-dirlink.age is a link to a folder' $r
+Assert-True ($r.Err.Contains('-Force).Delete()') -and $r.Err.Contains("Don't use Remove-Item on it")) "the folder-link refusal doesn't give the link-only remedy: $($r.Err)"
+Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) 'the folder-link refusal touched the target folder'
+(Get-Item -LiteralPath $dirLink -Force).Delete()   # the remedy, as the message gives it
+Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the folder-link remedy's Delete() removed the target's contents"
+Say 'ok (a link to a folder gets a remedy that removes only the link)'
+# Paths and arguments with control, bidi or invisible characters are printed
+# with each one as <U+XXXX>, so none can reorder or hide part of a message
+# (issue #82; handoff.sh's qp).
+$rlo = [string][char]0x202E
+$bidiDir = Join-Path $S ('u' + $rlo + 'x')
+$hb = Install-Handoff $bidiDir $RcptFile
+$r = Invoke-Handoff -Script $hb -ArgText '-Fingerprint'
+Assert-True ($r.Exit -eq 0 -and $r.Err.Contains('u<U+202E>x') -and -not $r.Err.Contains($rlo)) "-Fingerprint printed a bidi folder name raw: $($r.Err)"
+$r = Invoke-Handoff -Script $hb -ArgText "-File $(Q $bidiDir)"
+Assert-Refusal '-File naming a bidi folder' 1 'u<U+202E>x is a directory, not a payload file' $r
+Assert-True (-not $r.Err.Contains($rlo)) "-File printed a bidi folder name raw: $($r.Err)"
+$r = Invoke-Handoff -Script $hk -ArgText "-To other -Bo$($rlo)gus"
+Assert-Refusal 'a bidi unknown option' 2 'unknown option -Bo<U+202E>gus' $r
+Assert-True (-not $r.Err.Contains($rlo)) "an unknown option was printed raw: $($r.Err)"
+$r = Invoke-Handoff -Script $hk -ArgText "-To $(Q ('a' + $rlo + 'b'))"
+Assert-Refusal 'a bidi -To' 2 "(got 'a<U+202E>b')" $r
+Assert-True (-not $r.Err.Contains($rlo)) "-To was printed raw: $($r.Err)"
+Say 'ok (bidi characters in paths and arguments are shown as <U+XXXX>)'
 Say 'ok (links and directories)'
 
 # The shared table: the recipient-file cases that are a file's contents.
@@ -577,6 +613,14 @@ $r = Invoke-Handoff -Script $hk -ArgText "-File $(Q $nulLead)"
 Assert-Refusal 'a raw NUL right after {' 1 $jsonMsg $r
 Assert-True (-not $r.Err.Contains('UTF-16')) 'a raw NUL after { was called UTF-16'
 Remove-Item -LiteralPath $nulLead
+# BOM-less UTF-16 piped in as text (Get-Content without -Encoding on such a
+# file) gets the UTF-16 message, as -File and stdin do (#85).
+$u16nb = Join-Path $S 'u16-nobom.json'
+[IO.File]::WriteAllBytes($u16nb, [Text.Encoding]::Unicode.GetBytes($Pay))
+Assert-Refusal 'BOM-less UTF-16 piped as text' 1 'saved as UTF-16 without a byte-order mark' (Invoke-Handoff -Call "[IO.File]::ReadAllText($(Q $u16nb), [Text.Encoding]::UTF8) | & $(Q $hk)")
+[IO.File]::WriteAllBytes($u16nb, [Text.Encoding]::BigEndianUnicode.GetBytes($Pay))
+Assert-Refusal 'BOM-less UTF-16BE piped as text' 1 'saved as UTF-16 without a byte-order mark' (Invoke-Handoff -Call "[IO.File]::ReadAllText($(Q $u16nb), [Text.Encoding]::UTF8) | & $(Q $hk)")
+Remove-Item -LiteralPath $u16nb
 # Run directly with -File and the payload on stdin (powershell -File
 # handoff.ps1 < payload.json, as from cmd): read as bytes
 # and encrypted. Windows PowerShell 5.1 used to read it as an empty pipeline.
