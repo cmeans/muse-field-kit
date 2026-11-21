@@ -4,9 +4,10 @@ name: PR Label Automation
 # Promotion when CI finishes lives in pr-labels-ci.yml (workflow_run trigger).
 # Adapted from mcp-clipboard and mcp-synology.
 #
-# Fork PRs: a pull_request run from a fork gets a read-only token, so none of
-# these jobs can label a fork's PR (and qa-gate.yml can't post its status).
-# The maintainer labels those by hand.
+# Fork PRs: a pull_request run from a fork gets a read-only token, so these
+# jobs couldn't label a fork's PR: each would fail with a 403 and show red.
+# Every job is skipped on a fork's PR instead (head repository != this one),
+# as qa-gate.yml is; the maintainer labels those by hand (issue #124).
 on:
   pull_request:
     branches: [main]
@@ -21,7 +22,9 @@ jobs:
   # labels. Dev Active stays (it coexists with Awaiting CI: CI runs, but
   # won't promote until Dev Active is removed).
   on-push:
-    if: github.event.action == 'opened' || github.event.action == 'synchronize'
+    if: >-
+      (github.event.action == 'opened' || github.event.action == 'synchronize')
+      && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Reset labels on new push
@@ -65,6 +68,7 @@ jobs:
   on-unlabel:
     if: >-
       github.event.action == 'unlabeled'
+      && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.label.name == 'Dev Active'
     runs-on: ubuntu-latest
     steps:
@@ -110,19 +114,25 @@ jobs:
               REMOVE="${REMOVE:+$REMOVE,}$LABEL"
             fi
           done
+          # Say what was found, so "still running" and "will never promote"
+          # can be told apart in the log (issue #124).
+          echo "CI on $HEAD_SHA: ${CONCLUSION:-not finished, or no run found}"
           case "$CONCLUSION" in
             success)
               if [ -n "$REMOVE" ]; then gh pr edit "$PR" --repo "$REPO" --remove-label "$REMOVE"; fi
               gh pr edit "$PR" --repo "$REPO" --add-label "Ready for QA"
               ;;
-            failure|timed_out)
-              if [ -n "$REMOVE" ]; then gh pr edit "$PR" --repo "$REPO" --remove-label "$REMOVE"; fi
-              gh pr edit "$PR" --repo "$REPO" --add-label "CI Failed"
-              ;;
-            *)
+            "")
               if ! echo "$PR_LABELS" | grep -q '"Awaiting CI"'; then
                 gh pr edit "$PR" --repo "$REPO" --add-label "Awaiting CI"
               fi
+              ;;
+            *)
+              # failure, timed_out, cancelled, startup_failure,
+              # action_required and the rest: a finished run that didn't
+              # pass is never promoted.
+              if [ -n "$REMOVE" ]; then gh pr edit "$PR" --repo "$REPO" --remove-label "$REMOVE"; fi
+              gh pr edit "$PR" --repo "$REPO" --add-label "CI Failed"
               ;;
           esac
 
@@ -130,6 +140,7 @@ jobs:
   on-label:
     if: >-
       github.event.action == 'labeled'
+      && github.event.pull_request.head.repo.full_name == github.repository
       && contains(fromJSON('["Ready for QA","QA Active","Dev Active","Ready for QA Signoff","QA Failed","QA Approved"]'), github.event.label.name)
     runs-on: ubuntu-latest
     steps:

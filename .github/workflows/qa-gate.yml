@@ -4,7 +4,11 @@ name: QA Gate
 # QA Approved label (the maintainer's sign-off). Adapted from mcp-synology.
 # "QA Gate" (the status context) is a required check in main's ruleset: if it
 # is renamed, update the ruleset, or every PR waits on a check that never comes.
-# On a fork's PR the token is read-only and no status is posted.
+# On a fork's PR the token is read-only, so posting would fail with a 403:
+# the job is skipped there instead, and the maintainer handles a fork's PR by
+# hand (issue #124). The job is named post-qa-gate-status, not after the
+# label: it is always green itself, and its name read like an approval next
+# to a pending QA Gate.
 on:
   pull_request:
     branches: [main]
@@ -15,7 +19,8 @@ permissions:
   pull-requests: read
 
 jobs:
-  qa-approved:
+  post-qa-gate-status:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Set QA status

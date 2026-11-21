@@ -1,8 +1,10 @@
 name: PR Label Automation (CI)
 
 # Label transitions when the CI workflow finishes on a PR: Awaiting CI ->
-# Ready for QA on success, -> CI Failed on failure. Skipped while Dev Active
-# is on (pr-labels.yml's on-unlabel takes over when it comes off).
+# Ready for QA on success, -> CI Failed on any other conclusion (failure,
+# timed_out, cancelled, startup_failure, action_required and the rest:
+# issue #124). Skipped while Dev Active is on (pr-labels.yml's on-unlabel
+# takes over when it comes off).
 #
 # NOTE: references the CI workflow by name ("CI"); if ci.yml's name changes,
 # update it here and in pr-labels.yml.
@@ -37,7 +39,7 @@ jobs:
       github.event_name == 'workflow_run'
       && github.event.workflow_run.event == 'pull_request'
       && github.event.workflow_run.head_repository.full_name == github.repository
-      && contains(fromJSON('["success","failure","timed_out"]'), github.event.workflow_run.conclusion)
+      && github.event.workflow_run.status == 'completed'
     runs-on: ubuntu-latest
     concurrency:
       group: pr-labels-ci-${{ github.event.workflow_run.head_sha }}
@@ -52,6 +54,7 @@ jobs:
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
           set -euo pipefail
+          echo "CI on $HEAD_SHA: $CONCLUSION"
           # The open PR whose head commit AND head repository match this run.
           # Never by branch name: a fork chooses its branch name, and a fork
           # branch named after a maintainer branch would relabel that PR. A
@@ -69,8 +72,12 @@ jobs:
             echo "Dev Active present — skipping"
             exit 0
           fi
-          if ! echo "$LABELS" | grep -qx "Awaiting CI"; then
-            echo "PR #$PR isn't at Awaiting CI — nothing to do"
+          # CI Failed counts too: a run cancelled for this same head (a
+          # reopen while CI runs, or a cancel and re-run) sets CI Failed,
+          # and the run that replaces it must still be able to promote
+          # (QA on #125). The head check below keeps a stale result out.
+          if ! echo "$LABELS" | grep -qx -e "Awaiting CI" -e "CI Failed"; then
+            echo "PR #$PR isn't at Awaiting CI or CI Failed — nothing to do"
             exit 0
           fi
 
@@ -84,11 +91,15 @@ jobs:
           fi
 
           if [ "$CONCLUSION" = success ]; then
-            REMOVE="Awaiting CI"
-            if echo "$LABELS" | grep -qx "CI Failed"; then REMOVE="$REMOVE,CI Failed"; fi
+            REMOVE=""
+            for L in "Awaiting CI" "CI Failed"; do
+              if echo "$LABELS" | grep -qx "$L"; then REMOVE="${REMOVE:+$REMOVE,}$L"; fi
+            done
             gh pr edit "$PR" --repo "$REPO" --remove-label "$REMOVE"
             gh pr edit "$PR" --repo "$REPO" --add-label "Ready for QA"
-          else
+          elif echo "$LABELS" | grep -qx "Awaiting CI"; then
             gh pr edit "$PR" --repo "$REPO" --remove-label "Awaiting CI"
             gh pr edit "$PR" --repo "$REPO" --add-label "CI Failed"
+          else
+            echo "PR #$PR is already at CI Failed"
           fi
