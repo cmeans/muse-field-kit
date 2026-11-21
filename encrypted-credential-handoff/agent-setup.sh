@@ -178,7 +178,9 @@ shown() {
 # directory made by hand: setup refuses one).
 sq() {
   if has_ctl "$1"; then return 1; fi
-  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+  # sed in C: in a UTF-8 locale, BSD sed skips a line with an invalid byte,
+  # which would leave a ' unescaped.
+  printf "'%s'" "$(printf '%s' "$1" | LC_ALL=C sed "s/'/'\\\\''/g")"
 }
 # sq only when the path needs it, as Python's shlex.quote does (except that =
 # is quoted too, below): a plain path
@@ -643,7 +645,10 @@ cs_out() {  # STATUS NAME DETAIL
        x=${x//$'\xef\xbf'[$'\xb0'-$'\xbb']/ }
        x=${x//$'\xf0\x9b\xb2'[$'\xa0'-$'\xa3']/ }
        x=${x//$'\xf0\x9d\x85'[$'\xb3'-$'\xba']/ }
-       x=${x//$'\xf3\xa0'[$'\x80'-$'\xbf']?/ }
+       x=${x//$'\xf3\xa0'[$'\x80'-$'\xbf'][$'\x80'-$'\xbf']/ }
+       # A cut-off tag sequence (not valid UTF-8) too, as has_ctl flags it.
+       x=${x//$'\xf3\xa0'[$'\x80'-$'\xbf']/ }
+       x=${x//$'\xf3\xa0'/ }
        printf '%s' "$x" )
   printf '%s %s: %s\n' "$1" "$2" "$d"
   [ "$1" != FAIL ] || cs_failed=1

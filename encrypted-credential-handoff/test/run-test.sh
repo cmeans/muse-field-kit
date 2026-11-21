@@ -115,6 +115,9 @@ section() {
 }
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# printf %q in C, as the scripts' qp: set in a subshell, since macOS's bash 3.2
+# doesn't switch a builtin's locale for an LC_ALL=C prefix.
+cq() { ( LC_ALL=C; printf '%q' "$1" ); }
 
 # Portable forms: the suite also runs on macOS, with BSD tools.
 # stat_of FMT FILE prints %a (the mode, octal), %u (the owner's uid) or %i
@@ -1691,8 +1694,8 @@ expect_refusal "arbitrary text at the identity path" 1 "is not an age identity f
 for c in $'\f' $'\v' $'\xe2\x80\xa8'; do
   { printf '# a comment%swith it inside\n' "$c"; cat "$TMPKEY"; } >"$S/id-ctl.txt"; chmod 600 "$S/id-ctl.txt"
   HANDOFF_PRIVKEY="$S/id-ctl.txt" consume --label example --check --blob-file blob-age.txt >/dev/null 2>"$S/err" \
-    || { cat "$S/err" >&2; fail "consume.py refused an identity with $(printf '%q' "$c") in a comment"; }
-  bash ../agent-setup.sh --fingerprint "$S/id-ctl.txt" >/dev/null 2>&1 || fail "agent-setup.sh refused an identity with $(printf '%q' "$c") in a comment"
+    || { cat "$S/err" >&2; fail "consume.py refused an identity with $(cq "$c") in a comment"; }
+  bash ../agent-setup.sh --fingerprint "$S/id-ctl.txt" >/dev/null 2>&1 || fail "agent-setup.sh refused an identity with $(cq "$c") in a comment"
 done
 echo "ok (an identity's comment may hold a form feed, a vertical tab or U+2028, in both tools)"
 # The environment age gets is built from scratch: none of the variables it reads
@@ -1881,9 +1884,6 @@ expect_refusal "handoff.sh --to muse with handoff_Muse.age beside it" 1 "but han
 rm -f "$S/hn/handoff_Muse.age"
 # A look-alike that a UTF-8 locale folds to ASCII (U+212A KELVIN SIGN lowers
 # to k) isn't a near miss: it would show as handoff-Kim.age (issue #27 item 1).
-# printf %q in C, as the scripts' qp: set in a subshell, since macOS's bash 3.2
-# doesn't switch a builtin's locale for an LC_ALL=C prefix.
-cq() { ( LC_ALL=C; printf '%q' "$1" ); }
 # The first of these names that this system takes as a UTF-8 locale (asked of
 # the locale itself: locale -a's list didn't match on macOS's runner).
 utf8_loc=
@@ -3888,6 +3888,18 @@ rc=0; env HANDOFF_PRIVKEY=$'~jos\xc3\xa9/k.txt' bash ../agent-setup.sh --fingerp
 LC_ALL=C grep -qF "HANDOFF_PRIVKEY \$'~jos\\303\\251/k.txt': only ~/ is expanded" "$S/err" || fail "the ~user refusal didn't escape the path: $(LC_ALL=C cat -v "$S/err")"
 env HANDOFF_PRIVKEY="\$'/home/jos\\303\\251/k.txt'" bash ../agent-setup.sh --check-setup >"$S/out" 2>&1 || true
 LC_ALL=C grep -qF "no key at \\\$\\'/home/jos" "$S/out" || fail "a relative path that looks escaped was shown as it is: $(grep identity "$S/out")"
+# sq escapes a ' even beside a byte that isn't valid UTF-8, in a UTF-8 locale
+# (BSD sed skips such a line unless it runs in C): the command, pasted, runs
+# nothing.
+if [ -n "${utf8_loc-}" ]; then
+  iv="$S/x"$'\xff'"y'; touch PWNED; '"
+  env LC_ALL="$utf8_loc" HANDOFF_PRIVKEY="$iv/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>&1 || true
+  cmd=$(LC_ALL=C sed -n 's/^INFO identity: no key at .* yet; \(HANDOFF_KEY_DIR=.*\) agent-setup\.sh makes it$/\1/p' "$S/out")
+  [ -n "$cmd" ] || fail "--check-setup gave no command for a path with an invalid byte and a quote: $(LC_ALL=C grep identity "$S/out" | LC_ALL=C cat -v)"
+  got=$(cd "$S" && LC_ALL="$utf8_loc" sh -c "$cmd env" | LC_ALL=C sed -n 's/^HANDOFF_KEY_DIR=//p')
+  [ "$got" = "$iv" ] && [ ! -e "$S/PWNED" ] || fail "the pasted command for a path with an invalid byte and a quote didn't run as data: $(printf '%s' "$cmd" | LC_ALL=C cat -v)"
+  rm -f "$S/PWNED"
+fi
 echo "ok (a non-ASCII key directory works, its path is shown escaped, and a command to paste names it)"
 # With a killed run's lock and no key, the identity line doesn't tell the
 # agent to run setup, which the lock would refuse.
