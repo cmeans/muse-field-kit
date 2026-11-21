@@ -3807,7 +3807,7 @@ rm -r "$S/dangle"
 # starts in the output.
 nld="$S/b"$'\n'"recipient: age1fake"
 mkdir -p "$nld/.handoff-lock"; chmod 700 "$nld"; cp "$TMPKEY" "$nld/k.txt"; chmod 600 "$nld/k.txt"
-expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "they remove the .handoff-lock directory with rmdir (never rm -r) by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name)" \
+expect_refusal "--rotate of a key in a directory with a newline, under a lock" 1 "they remove the .handoff-lock directory with rmdir (never rm -r) by hand: its path has a hidden or control character, so no command to paste is printed (LC_ALL=C ls -b shows such a name; where ls has no -b, as on BusyBox, ls | od -c does)" \
   env HANDOFF_PRIVKEY="$nld/k.txt" bash ../agent-setup.sh --rotate
 ! grep -q '^recipient: age1fake' "$S/err" || fail "the lock message for a directory with a newline printed it raw: $(cat "$S/err")"
 ! grep -qE "rmdir ['\$/]" "$S/err" || fail "the lock message printed a command for a directory with a newline: $(cat "$S/err")"
@@ -3850,10 +3850,29 @@ for c in "$c1" "$c2" "$c3"; do
   case "$c" in *"\$'"*) fail "a command to paste uses the \$'...' form: $c" ;; esac
 done
 if command -v dash >/dev/null 2>&1; then
-  (cd "$S" && dash -c "$c1 true; $c3 true; $(printf '%s' "$c2" | sed 's/^chmod -- go-w/: /')") || true
+  # Each command, run under dash, gives the path back exactly: the two
+  # assignments set it (env shows it), and chmod's argument is it.
+  got1=$(cd "$S" && LC_ALL=C dash -c "$c1 env" | LC_ALL=C sed -n 's/^HANDOFF_KEY_DIR=//p')
+  got3=$(cd "$S" && LC_ALL=C dash -c "$c3 env" | LC_ALL=C sed -n 's/^HANDOFF_PRIVKEY=//p')
+  got2=$(cd "$S" && LC_ALL=C dash -c "$(printf '%s' "$c2" | sed "s/^chmod -- go-w/printf '%s'/")")
+  [ "$got1" = "$pd" ] || fail "the HANDOFF_KEY_DIR command set another value under dash: $got1"
+  [ "$got3" = "$pd/handoff-identity.txt" ] || fail "the HANDOFF_PRIVKEY command set another value under dash: $got3"
+  [ "$got2" = "$pd" ] || fail "the chmod command names another path under dash: $got2"
   [ ! -e "$S/PWNED" ] && [ ! -e "$pd/PWNED" ] || fail "a printed command ran code under dash"
-  echo "ok (commands for a non-ASCII path with a quote run as data under dash)"
+  echo "ok (commands for a non-ASCII path with a quote run as data under dash, and give the path back)"
 fi
+# pq quotes a path starting with = or ~ (zsh expands =ls; any shell, ~).
+for p in '=ls' '~root' 'plain/path'; do
+  q=$(bash -c 'eval "$(sed -n "/^sq() {/,/^}/p; /^pq() {/,/^}/p; /^has_ctl() {/,/^}/p" ../agent-setup.sh)"; pq "$1"' _ "$p")
+  case "$p" in
+    plain/path) [ "$q" = "$p" ] || fail "pq quoted a plain path: $q" ;;
+    *) [ "$q" = "'$p'" ] || fail "pq left $p unquoted: $q" ;;
+  esac
+done
+# ...and leaves a non-ASCII letter quoted whatever the locale's collation.
+q=$(LC_ALL=en_US.UTF-8 bash -c 'eval "$(sed -n "/^sq() {/,/^}/p; /^pq() {/,/^}/p; /^has_ctl() {/,/^}/p" ../agent-setup.sh)"; pq "$1"' _ $'caf\xc3\xa9')
+[ "$q" = "'"$'caf\xc3\xa9'"'" ] || fail "pq left a non-ASCII letter unquoted: $q"
+echo "ok (pq quotes =, ~ and non-ASCII, and leaves a plain path bare)"
 rm -rf "$pd" "$S/PWNED"
 echo "ok (no command to paste uses printf %q's \$'...' form)"
 # Every rmdir printed for a plain path runs under dash as under bash, where
