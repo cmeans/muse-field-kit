@@ -7,7 +7,8 @@ name: PR Label Automation
 # Fork PRs: a pull_request run from a fork gets a read-only token, so these
 # jobs couldn't label a fork's PR: each would fail with a 403 and show red.
 # Every job is skipped on a fork's PR instead (head repository != this one),
-# as qa-gate.yml is; the maintainer labels those by hand (issue #124).
+# as qa-gate.yml is (for its own reason: pull requests here are
+# collaborators-only); the maintainer labels those by hand (issue #124).
 on:
   pull_request:
     branches: [main]
