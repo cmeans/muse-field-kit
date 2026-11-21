@@ -134,7 +134,9 @@ expand_home() {  # PATH WHAT
 # code points (U+00AD, U+034F, U+115F-60, U+17B4-5, U+180B-F, U+200B-D,
 # U+2060-6F, U+3164, U+FE00-F, U+FEFF, U+FFA0, U+FFF0-8, U+1BCA0-3,
 # U+1D173-A and U+E0000-E0FFF, the tags and variation selectors among them)
-# and the blanks U+2800 and U+FFF9-B. Checked in C, by bytes; cs_out folds the
+# and the blanks U+2800 and U+FFF9-B; as of Unicode 15.0, whose
+# Default_Ignorable_Code_Point set this matches exactly (a later version can
+# add one). Checked in C, by bytes; cs_out folds the
 # same list. Refusals and sq use it; a path shown in a message doesn't rely
 # on it (qp and shown escape every byte outside printable ASCII).
 has_ctl() {
@@ -158,12 +160,13 @@ qp() {
   ( LC_ALL=C; printf '%q' "$1" )
 }
 # A path shown as it is when every byte is printable ASCII (so a plain path
-# reads as before), and as qp shows it otherwise. The range is safe here: in
-# C, every bash compares a range by byte value.
+# reads as before), and as qp shows it otherwise, as is one that starts $'
+# (a relative path written to look like an escaped one). The range is safe
+# here: in C, every bash compares a range by byte value.
 shown() {
   ( LC_ALL=C
     case "$1" in
-      *[!' '-'~']*) printf '%q' "$1" ;;
+      *[!' '-'~']*|\$\'*) printf '%q' "$1" ;;
       *) printf '%s' "$1" ;;
     esac )
 }
@@ -502,7 +505,9 @@ lock_dir() {  # DIR
       if has_ctl "$abs"; then hint="they remove the .handoff-lock directory with rmdir (never rm -r) $by_hand_note"; else hint="they remove it with: rmdir $(sq "$abs")"; fi
       echo "Stop and report it to the user: if no run is going (one was killed), $hint" >&2
     else
-      echo "agent-setup.sh: cannot create the lock in $(qp "$1"): ${err//$'\n'/ }" >&2
+      # mkdir's reason only: its message repeats the path, raw.
+      err=${err%%$'\n'*}
+      echo "agent-setup.sh: cannot create the lock in $(qp "$1"): ${err##*: }" >&2
     fi
     exit 1
   fi
@@ -1191,7 +1196,7 @@ fi
 # absolute path below will have it.
 case "$KEY_DIR" in /*) kd_abs=$KEY_DIR ;; *) kd_abs=$PWD/$KEY_DIR ;; esac
 if has_ctl "$kd_abs"; then
-  echo "agent-setup.sh: the key directory $(qp "$kd_abs") has a control or hidden character in its path (LC_ALL=C ls -b shows it); nothing was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
+  echo "agent-setup.sh: the key directory $(qp "$kd_abs") has a control or hidden character in its path (the escaped form shows which); nothing was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
   exit 1
 fi
 PRIV="$KEY_DIR/handoff-identity.txt"
@@ -1240,7 +1245,7 @@ case "$KEY_DIR" in /*) ;; *) KEY_DIR="./$KEY_DIR" ;; esac  # not cd's "-" or a s
 KEY_DIR=$(cd -- "$KEY_DIR" && pwd)
 # Again on the path that is printed (the check above saw the logical one).
 if has_ctl "$KEY_DIR"; then
-  echo "agent-setup.sh: the key directory $(qp "$KEY_DIR") has a control or hidden character in its path (LC_ALL=C ls -b shows it); no key was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
+  echo "agent-setup.sh: the key directory $(qp "$KEY_DIR") has a control or hidden character in its path (the escaped form shows which); no key was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
   exit 1
 fi
 PRIV="$KEY_DIR/handoff-identity.txt"

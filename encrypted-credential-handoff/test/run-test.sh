@@ -3863,11 +3863,28 @@ grep -qxF "note: that path is shown escaped above; write it in every wrapper as 
 rm -rf "$eo"
 # cs_out folds every character has_ctl flags into a space, for text that
 # isn't a path (a tool's version, PATH).
+# One character per pattern.
 fns=$(sed -n -e '/^cs_out() {/,/^}/p' ../agent-setup.sh)
-for ch in $'\xf3\xa0\x80\x81' $'\xe1\xa0\x8b' $'\xf0\x9d\x85\xb3' $'\xef\xbf\xb0' $'\xe2\x81\xa5' $'\xe2\x80\xae'; do
+for ch in $'\x1b' $'\xc2\x85' $'\xc2\xad' $'\xd8\x9c' $'\xcd\x8f' $'\xe1\x85\x9f' $'\xe1\x9e\xb4' $'\xe1\xa0\x8b' \
+          $'\xe2\x80\x8b' $'\xe2\x80\xae' $'\xe2\x81\xa5' $'\xe2\xa0\x80' $'\xe3\x85\xa4' $'\xef\xb8\x8f' $'\xef\xbb\xbf' \
+          $'\xef\xbe\xa0' $'\xef\xbf\xb0' $'\xf0\x9b\xb2\xa0' $'\xf0\x9d\x85\xb3' $'\xf3\xa0\x80\x81'; do
   got=$(bash -c 'eval "$1"; cs_out INFO x "$2"' _ "$fns" "a${ch}b")
   [ "$got" = "INFO x: a b" ] || fail "cs_out didn't fold $(LC_ALL=C printf '%q' "$ch"): $(printf '%s' "$got" | LC_ALL=C cat -v)"
 done
+# The found-at lines of both scripts' --check-setup, the ~user refusal and a
+# relative path that looks escaped show the path escaped.
+fb="$S/Jos"$'\xc3\xa9'"/bin"; mkdir -p "$fb"
+printf '#!/bin/sh\nexit 3\n' >"$fb/age"; printf '#!/bin/sh\nexit 3\n' >"$fb/age-keygen"; chmod +x "$fb/age" "$fb/age-keygen"
+for sc in agent-setup.sh handoff.sh; do
+  env PATH="$fb:$PATH" bash "../$sc" --check-setup >"$S/out" 2>&1 || true
+  grep -qF "FAIL age: found at $(LC_ALL=C printf '%q' "$fb/age"), but" "$S/out" \
+    || fail "$sc's found-at line didn't show the path escaped: $(grep 'FAIL age' "$S/out" | LC_ALL=C cat -v)"
+done
+rm -rf "$S/Jos"$'\xc3\xa9'
+rc=0; env HANDOFF_PRIVKEY=$'~jos\xc3\xa9/k.txt' bash ../agent-setup.sh --fingerprint >/dev/null 2>"$S/err" || rc=$?
+grep -qF "HANDOFF_PRIVKEY \$'~jos\\303\\251/k.txt': only ~/ is expanded" "$S/err" || fail "the ~user refusal didn't escape the path: $(LC_ALL=C cat -v "$S/err")"
+env HANDOFF_PRIVKEY="\$'/home/jos\\303\\251/k.txt'" bash ../agent-setup.sh --check-setup >"$S/out" 2>&1 || true
+grep -qF "no key at \\\$\\'/home/jos" "$S/out" || fail "a relative path that looks escaped was shown as it is: $(grep identity "$S/out")"
 echo "ok (a non-ASCII key directory works, its path is shown escaped, and a command to paste names it)"
 # With a killed run's lock and no key, the identity line doesn't tell the
 # agent to run setup, which the lock would refuse.
@@ -4045,7 +4062,7 @@ rm -r "$S/dashdir"
 # A key directory with a control character in its path is refused before
 # anything is made: the printed path could pass for other lines of output.
 nlkd="$S/a"$'\n'"recipient: age1fake"
-expect_refusal "setup into a key directory with a newline" 1 "has a control or hidden character in its path (LC_ALL=C ls -b shows it); nothing was written" \
+expect_refusal "setup into a key directory with a newline" 1 "has a control or hidden character in its path (the escaped form shows which); nothing was written" \
   env HANDOFF_KEY_DIR="$nlkd" bash ../agent-setup.sh
 [ ! -e "$nlkd" ] || fail "setup made a key directory with a newline in its path"
 ! grep -q '^recipient: age1fake' "$S/err" || fail "the refusal printed the path's newline raw"
