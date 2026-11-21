@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **`handoff.ps1` shows control and bidi characters in paths and arguments as `<U+XXXX>`** (closes #82), **gives a link to a folder a remedy that removes only the link** (closes #83), and **calls piped BOM-less UTF-16 what it is** (refs #85).
 - **`consume.py` refuses a non-ASCII `--label`** (closes #77): under some locales one could never match its payload's `svc`; it now says so up front.
 - **Releases carry and attest the agent's scripts too** (refs #67 F9): `agent-setup.sh` and `consume.py` join `SHA256SUMS` and the attestations, and SETUP step 1 checks them after the checkout.
 - **CI lints with ruff 0.17.6** (refs #67 F22): `consume.py`'s two catch-all `except`s now name what they catch; behavior is unchanged.
