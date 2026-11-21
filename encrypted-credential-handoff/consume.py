@@ -99,10 +99,10 @@ Mapped variables come from the payload only: one the payload leaves out is
 removed from the command's environment, not inherited from the caller's.
 
 Every payload must carry "svc", and it must equal the --label the blob
-was fetched under; otherwise this helper refuses. A payload with unknown
-fields is noted by COUNT only; a payload with no known credential field
-at all is refused, so a typo'd payload can't silently launch a tool with
-no credentials.
+was fetched under; otherwise this helper refuses. Labels are ASCII. A
+payload with unknown fields is noted by COUNT only; a payload with no
+known credential field at all is refused, so a typo'd payload can't
+silently launch a tool with no credentials.
 
 `age` runs with an environment built from scratch (PATH only) and reads
 its identity only from the bytes this helper checked, on a pipe of its
@@ -121,6 +121,7 @@ Usage:
     consume.py --label test --check --blob-file blob.txt
     consume.py --label example --rewrap --blob-file store/example
     (during a rotation only: ROTATION.md step 4)
+    LABEL is ASCII, and the payload's svc must equal it.
 """
 # Run as ./consume.py, the helper is isolated (python3 -I, see the top of
 # the docstring): the caller's PYTHON* variables and user site-packages don't
@@ -1035,6 +1036,12 @@ def parse_args(argv):
         raise fail("two fields map to the same environment variable; refusing")
     if not label:
         raise fail("--label is required (the service label the blob was fetched under)")
+    # argv is decoded in the locale's encoding and svc as UTF-8, so a
+    # non-ASCII label could never match its own payload under some locales
+    # (issue #77). ASCII reads the same in all of them.
+    if not label.isascii():
+        raise fail(f"--label must be ASCII, and {label!a} isn't: fix the "
+                   "label (it must equal the payload's svc)")
     if check and do_rewrap:
         raise fail("--check and --rewrap can't be combined")
     if check and cmd:
