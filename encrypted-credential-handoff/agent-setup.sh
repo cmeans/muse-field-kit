@@ -392,11 +392,6 @@ rotate_would_sweep() {  # KEY
   if [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then return 1; fi
   if key_dir_unsafe_msg "$d" >/dev/null; then return 1; fi
   recipient_of "$k" >/dev/null 2>&1 || return 1
-  for f in "$d"/.handoff-new.*; do
-    [ -e "$f" ] || [ -L "$f" ] || continue
-    if [ "$f" = "$d/${k##*/}" ] || [ "$f" = "$d/${k##*/}.previous" ]; then continue; fi
-    if [ ! -f "$f" ] || [ -L "$f" ]; then return 1; fi
-  done
   return 0
 }
 
@@ -502,6 +497,9 @@ our_tmp_dir() {  # DIR
   local d="$1" b e has_mark=0 n=0
   b=${d##*/}
   [ -d "$d" ] && [ ! -L "$d" ] || return 1
+  # One this script made is 0700 and this account's: one it can't read or
+  # search lists as empty, so it isn't taken for one (a user's, mode 0300).
+  [ -r "$d" ] && [ -x "$d" ] || return 1
   for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     n=$((n + 1))
@@ -955,20 +953,8 @@ case "$mode" in
       echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was rotated. Stop and report it to the user (ROTATION.md: A .previous.previous file)" >&2
       exit 1
     fi
-    for f in "$dir"/.handoff-new.*; do
-      # A temporary key a killed --rotate left (the lock says none is running).
-      [ -e "$f" ] || [ -L "$f" ] || continue
-      # Never the key itself, whatever it's named (by its two names only: a
-      # temporary key hard-linked to the old key is still a temporary file).
-      # Compared as the glob spells them ($dir/name): a relative or doubled-
-      # slash KEY must still match.
-      if [ "$f" = "$dir/${key##*/}" ] || [ "$f" = "$dir/${prev##*/}" ]; then continue; fi
-      if [ ! -f "$f" ] || [ -L "$f" ]; then
-        echo "agent-setup.sh: $(qp "$f") is not a temporary key file; report it to the user" >&2; exit 1
-      fi
-      rm -f -- "$f"
-      echo "note: removed a temporary key a killed --rotate left behind: $(qp "$f")" >&2
-    done
+    # (A .handoff-new.* file is never swept: no version since 0.1.0 makes
+    # one, so one there is the user's, issue #80.)
     for f in "$dir"/.handoff-tmp.??????; do
       # The private directory of a killed --rotate or setup (the lock says
       # none is running), by its marker: never a user's directory of that name.
@@ -1080,17 +1066,10 @@ case "$mode" in
       echo "agent-setup.sh: $(qp "$prev") holds the current key: the rotation didn't finish, or a key file was replaced since. Nothing was deleted: stop, and do what ROTATION.md says for this refusal where you are (Rotation step 5 or step 1 case 4, or Compromise step 2 or 4)" >&2
       exit 1
     fi
-    # A killed setup or --rotate can leave a temporary file that is a hard
-    # link to the old key: removing only $prev would leave its data on disk.
-    kdir=$(dirname -- "$key")
-    for f in "$kdir"/.handoff-setup.* "$kdir"/.handoff-new.*; do
-      # As the glob spells them, so a relative or doubled-slash KEY matches.
-      if [ "$f" = "$kdir/${prev##*/}" ] || [ "$f" = "$kdir/${key##*/}" ]; then continue; fi
-      if [ -f "$f" ] && [ ! -L "$f" ] && [ "$f" -ef "$prev" ]; then
-        rm -f -- "$f"
-        echo "note: removed $(qp "$f"), another link to the previous key" >&2
-      fi
-    done
+    # Another link to the old key, whatever its name, is the refusal below:
+    # no version since 0.1.0 leaves one by a temporary name (a killed run's
+    # copy is inside its private directory, which --rotate swept), so one
+    # there is the user's (issue #80).
     # Another name for the old key (a backup copy made with ln) would keep it
     # on disk after this: refuse, so the user can find and remove it first.
     # find reads a path starting with - as a predicate: ./ in front. And a
