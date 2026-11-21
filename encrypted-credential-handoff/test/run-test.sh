@@ -3937,8 +3937,11 @@ if command -v dash >/dev/null 2>&1; then
 fi
 # pq quotes any path holding = (zsh expands =ls at a word's start and after a
 # : in an assignment) or ~, and leaves a plain path bare.
+# The functions are read here and passed in: bash 3.2 (macOS) brace-expanded
+# a sed script nested in double quotes inside the bash -c string.
+fns=$(sed -n -e '/^sq() {/,/^}/p' -e '/^pq() {/,/^}/p' -e '/^has_ctl() {/,/^}/p' ../agent-setup.sh)
 for p in '=ls' 'a:=ls' 'x==ls' '~root' 'plain/path'; do
-  q=$(bash -c 'eval "$(sed -n -e "/^sq() {/,/^}/p" -e "/^pq() {/,/^}/p" -e "/^has_ctl() {/,/^}/p" ../agent-setup.sh)"; pq "$1"' _ "$p")
+  q=$(bash -c 'eval "$1"; pq "$2"' _ "$fns" "$p")
   case "$p" in
     plain/path) [ "$q" = "$p" ] || fail "pq quoted a plain path: $q" ;;
     *) [ "$q" = "'$p'" ] || fail "pq left $p unquoted: $q" ;;
