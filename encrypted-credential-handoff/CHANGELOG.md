@@ -4,7 +4,7 @@
 
 ### Added
 
-- **A four-minute overview video in the README**: the problem, setup, a handoff, use time, the guard rails and what it doesn't protect against.
+- **A four-minute overview video in the README** (#140): the problem, setup, a handoff, use time, the guard rails and what it doesn't protect against.
 
 ### Changed
 
