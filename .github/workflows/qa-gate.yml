@@ -9,8 +9,12 @@ name: QA Gate
 # This status is not the merge gate: any workflow can post a "QA Gate" status
 # (the ruleset accepts any Actions run), and a label event in the minute after
 # a push, before pr-labels.yml removes QA Approved, re-reads the old approval.
-# The gate is main's ruleset: an approving review from the maintainer on the
-# most recent push (issue #67 F8).
+# The gate is main's ruleset (issue #67 F8): an approving review of the most
+# recent push from an account with write access that didn't open the PR. Today
+# that is the maintainer's account (which the QA sessions share): Dev's app
+# opens every PR, so it can't approve one, and workflows can't approve while
+# "Allow GitHub Actions to create and approve pull requests" stays off. An
+# installed app with Pull requests: write could approve too.
 # "QA Gate" (the status context) is a required check in main's ruleset: if it
 # is renamed, update the ruleset, or every PR waits on a check that never comes.
 #
