@@ -1,6 +1,6 @@
 # Changelog — Credential Lockbox
 
-## 0.3.0 — 2026-11-21 — renamed from encrypted-credential-handoff to Credential Lockbox, hidden characters refused
+## 0.3.0 — 2026-11-21 — renamed from encrypted-credential-handoff to Credential Lockbox
 
 The first release as Credential Lockbox, renamed from the encrypted credential handoff (`encrypted-credential-handoff`): the folder is `credential-lockbox/` and the skill `credential-lockbox`, so an install from 0.2.x moves to the new folder and reinstalls the skill; the scripts, the `HANDOFF_*` variables and the files on disk keep their names, and nothing about a handoff changes. Its security change is #139: `agent-setup.sh` refuses a key directory with any of Unicode 15.0's default-ignorable characters, and `agent-setup.sh`'s and `handoff.sh`'s messages show every byte of a path outside printable ASCII escaped (`handoff.ps1` doesn't have this list yet: a #85 row). It is also the first release whose `SHA256SUMS` and attestations cover the agent's scripts. Each PR went through Dev's pre-QA reviews and at least one QA round, was reviewed by Muse, and merged only once the author had applied `QA Approved`; the PRs record each round's findings. Behavior the docs describe was checked by running it, including the whole suite under a glibc bash 3.2 and with BSD grep and sed for the macOS paths. Open follow-ups: #85 (the backlog), #79, #80 (items 9 and 10), #119. As before, the reviewers were AI agent sessions in the author's setup, plus the author: peer review inside one shop, not a third-party audit.
 
