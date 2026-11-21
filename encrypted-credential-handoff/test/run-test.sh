@@ -986,6 +986,9 @@ expect_refusal "non-ASCII --label" 1 "--label must be ASCII" \
   consume --label 'svc-日本' --check --blob-file blob-age.txt
 expect_refusal "non-ASCII --label, C locale" 1 "--label must be ASCII" \
   env LC_ALL=C python3 -X utf8=0 -I ../consume.py --label 'svc-日本' --check --blob-file blob-age.txt
+# Before the key or the blob is read: neither exists here.
+expect_refusal "non-ASCII --label, before any read" 1 "--label must be ASCII" \
+  env HANDOFF_PRIVKEY=/nonexistent/key python3 -I ../consume.py --label 'svc-日本' --check --blob-file "$S/no-such-blob"
 printf '\377\376' > "$S/not-text.txt"
 expect_refusal "blob file not text" 1 "as text" \
   consume --label example --check --blob-file "$S/not-text.txt"
