@@ -2,7 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/cmeans/muse-field-kit?filter=credential-lockbox-*)](https://github.com/cmeans/muse-field-kit/releases?q=credential-lockbox&expanded=true)
 
-Hand your Muse a service credential **without the plaintext ever entering the chat**. Muse keeps it encrypted and decrypts it only at the moment a tool uses it; nothing shows it back, to Muse or to you.
+Hand your Muse a service credential **without the plaintext ever entering the chat**. Muse keeps it encrypted and decrypts it only at the moment a tool uses it; nothing in the design shows it back, to Muse or to you.
 
 An independent community project, not affiliated with or endorsed by Meta.
 

@@ -1,4 +1,4 @@
-# Security policy — credential-lockbox
+# Security policy — Credential Lockbox
 
 This folder is a security pattern; flaws in it matter more than most bugs.
 

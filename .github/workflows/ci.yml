@@ -291,7 +291,7 @@ jobs:
         # heading with a suffix, 9.9.9 has none. A new release adds its
         # version here, so a malformed heading fails CI before the tag.
         run: |
-          for want in 0.1.0 0.2.0; do
+          for want in 0.1.0 0.2.0 0.2.1; do
             v=$(.github/scripts/release-notes.sh "credential-lockbox-v$want" credential-lockbox/CHANGELOG.md "$RUNNER_TEMP/notes-real.md")
             [ "$v" = "$want" ]
             [ -s "$RUNNER_TEMP/notes-real.md" ]
