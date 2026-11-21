@@ -12,7 +12,7 @@ body:
     attributes:
       label: Folder
       options:
-        - encrypted-credential-handoff
+        - credential-lockbox
         - Other / the repository itself
     validations:
       required: true
@@ -21,7 +21,7 @@ body:
     attributes:
       label: Version
       description: The release tag you downloaded, or the commit you used (`git rev-parse --short HEAD`).
-      placeholder: "encrypted-credential-handoff-v0.2.1 or abc1234"
+      placeholder: "credential-lockbox-v1.2.3 or abc1234"
     validations:
       required: true
   - type: dropdown

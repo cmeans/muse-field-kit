@@ -1,8 +1,10 @@
-# Encrypted credential handoff
+# Credential Lockbox
 
-[![Release](https://img.shields.io/github/v/release/cmeans/muse-field-kit?filter=encrypted-credential-handoff-*)](https://github.com/cmeans/muse-field-kit/releases?q=encrypted-credential-handoff&expanded=true)
+[![Release](https://img.shields.io/github/v/release/cmeans/muse-field-kit?filter=credential-lockbox-*)](https://github.com/cmeans/muse-field-kit/releases?q=credential-lockbox&expanded=true)
 
-Hand your Muse a service credential **without the plaintext ever entering the chat**.
+Hand your Muse a service credential **without the plaintext ever entering the chat**. Muse keeps it encrypted and decrypts it only at the moment a tool uses it; nothing in the design shows it back, to Muse or to you.
+
+An independent community project, not affiliated with or endorsed by Meta.
 
 1. **You encrypt** a small JSON payload, such as `{"svc": "example", "username": "…", "password": "…"}`, on your own machine with `handoff.sh` (`handoff.ps1` on Windows), to your Muse's public key, its `age` recipient.
 2. **You paste the ciphertext** into chat. It's safe to send that way: only the private key on your Muse's computer opens it. Every copy that's kept, this chat included, becomes readable if that key ever leaks (invariant 2).
@@ -22,7 +24,7 @@ https://github.com/user-attachments/assets/14bc70a8-2d0f-497d-a598-b22efdd57401
 
 **Set it up:**
 
-> Set up the encrypted credential handoff from https://github.com/cmeans/muse-field-kit (folder `encrypted-credential-handoff`): clone it and work from the clone. Also install that folder as one of your skills, so its SKILL.md brings you back to the clone for later requests; run nothing from the installed copy. Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Tell me which release to download my script from and the commands for my platform, then give me your recipient to save as handoff-muse.age beside my copy of the script, computed from your identity file, and wait: I will run my script's setup check, tell you its result, and confirm the recipient my copy prints matches yours before we test with a dummy credential.
+> Set up the Credential Lockbox from https://github.com/cmeans/muse-field-kit (folder `credential-lockbox`): clone it and work from the clone. Also install that folder as one of your skills, so its SKILL.md brings you back to the clone for later requests; run nothing from the installed copy. Read README.md, then follow SETUP.md exactly. Use the scripts verbatim during setup; do not improvise the mechanism or write any decrypted value to disk. If you spot an improvement, propose it to me separately rather than applying it mid-setup. Tell me which release to download my script from and the commands for my platform, then give me your recipient to save as handoff-muse.age beside my copy of the script, computed from your identity file, and wait: I will run my script's setup check, tell you its result, and confirm the recipient my copy prints matches yours before we test with a dummy credential.
 
 **Stage a new credential (once set up):**
 

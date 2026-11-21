@@ -16,12 +16,12 @@ Tested on Windows 11 with Windows PowerShell 5.1 and PowerShell 7.6 (and 7.7, fo
 
 ## Get the script
 
-Each of this kit's releases carries `handoff.sh`, `handoff.ps1` and `SHA256SUMS`, byte for byte the files in this folder at that tag, with a build-provenance attestation for each script. Releases after 0.2.1 also carry your agent's scripts (`agent-setup.sh`, `consume.py`), which you don't need. Your agent tells you which release to use (the one its own scripts come from) and gives you only its recipient through chat: **it never sends you the script**, and a script that arrives as a file in chat isn't one to run (invariant 6 in [`README.md`](README.md)). Below, replace `X.Y.Z` with that release's version: its tag is `encrypted-credential-handoff-vX.Y.Z` (releases before 0.2.1 were tagged `vX.Y.Z`, so for 0.2.0 the commands below have `v0.2.0` in place of `encrypted-credential-handoff-vX.Y.Z`). This kit's releases are listed at <https://github.com/cmeans/muse-field-kit/releases?q=encrypted-credential-handoff&expanded=true>.
+Each of this kit's releases carries `handoff.sh`, `handoff.ps1` and `SHA256SUMS`, byte for byte the files in this folder at that tag, with a build-provenance attestation for each script. Releases after 0.2.1 also carry your agent's scripts (`agent-setup.sh`, `consume.py`), which you don't need. Your agent tells you which release to use (the one its own scripts come from) and gives you only its recipient through chat: **it never sends you the script**, and a script that arrives as a file in chat isn't one to run (invariant 6 in [`README.md`](README.md)). Below, replace `X.Y.Z` with that release's version: its tag is `credential-lockbox-vX.Y.Z` (releases through 0.2.1, before the rename, had other tags: for one of those, the commands below have its tag, `encrypted-credential-handoff-v0.2.1`, `v0.2.0` or `v0.1.0`, in place of `credential-lockbox-vX.Y.Z`). This kit's releases are listed at <https://github.com/cmeans/muse-field-kit/releases?q=credential-lockbox&expanded=true>.
 
 Download `handoff.ps1` and `SHA256SUMS` into the folder you'll run it from (on an older Windows PowerShell 5.1 that can't connect, run `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'` first):
 
 ```powershell
-$base = 'https://github.com/cmeans/muse-field-kit/releases/download/encrypted-credential-handoff-vX.Y.Z'
+$base = 'https://github.com/cmeans/muse-field-kit/releases/download/credential-lockbox-vX.Y.Z'
 Invoke-WebRequest -UseBasicParsing -Uri "$base/handoff.ps1" -OutFile handoff.ps1
 Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS" -OutFile SHA256SUMS
 ```
@@ -37,9 +37,9 @@ if ((Get-FileHash .\handoff.ps1 -Algorithm SHA256).Hash -ne $expected) { throw '
 
 Only then remove the Mark of the Web with `Unblock-File .\handoff.ps1`, and run it as “Running handoff.ps1 on Windows” says.
 
-**With `gh`,** you can also check where the file was built: `gh attestation verify .\handoff.ps1 --repo cmeans/muse-field-kit --signer-workflow cmeans/muse-field-kit/.github/workflows/release.yml --source-ref refs/tags/encrypted-credential-handoff-vX.Y.Z` proves it came from this repository's release workflow, run for that release's tag.
+**With `gh`,** you can also check where the file was built: `gh attestation verify .\handoff.ps1 --repo cmeans/muse-field-kit --signer-workflow cmeans/muse-field-kit/.github/workflows/release.yml --source-ref refs/tags/credential-lockbox-vX.Y.Z` proves it came from this repository's release workflow, run for that release's tag.
 
-**With Git,** `git clone --branch encrypted-credential-handoff-vX.Y.Z https://github.com/cmeans/muse-field-kit` gets the same files, in `muse-field-kit/encrypted-credential-handoff/`; run the script from there. Git isn't required.
+**With Git,** `git clone --branch credential-lockbox-vX.Y.Z https://github.com/cmeans/muse-field-kit` gets the same files, in `muse-field-kit/credential-lockbox/`; run the script from there. Git isn't required.
 
 **What the checksum proves, plainly:** `SHA256SUMS` comes from the same release page as the script, so it catches a damaged download and a copy swapped on the way (a chat attachment, a mirror), not a compromise of the GitHub account or repository. The attestation ties the file to the release workflow's run. Neither replaces the recipient comparison (invariant 6).
 

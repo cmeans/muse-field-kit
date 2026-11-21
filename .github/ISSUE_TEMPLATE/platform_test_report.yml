@@ -11,14 +11,14 @@ body:
     attributes:
       label: Folder
       options:
-        - encrypted-credential-handoff
+        - credential-lockbox
     validations:
       required: true
   - type: input
     id: version
     attributes:
       label: Version
-      placeholder: "encrypted-credential-handoff-v0.2.1 or abc1234"
+      placeholder: "credential-lockbox-v1.2.3 or abc1234"
     validations:
       required: true
   - type: input

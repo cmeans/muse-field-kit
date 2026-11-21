@@ -1,5 +1,5 @@
 #!/bin/bash
-# Known-answer interop test for the encrypted credential handoff.
+# Known-answer interop test for the Credential Lockbox.
 #
 # Verifies, against the reference implementation (../consume.py,
 # ../handoff.sh and ../agent-setup.sh):
@@ -2518,7 +2518,7 @@ subs = [
     ("/home/agent/bin/fetch-blob", f"{w}/bin/fetch-blob"),
     ("/home/agent/bin/store-blob", f"{w}/bin/store-blob"),
     ("HANDOFF_PRIVKEY=/home/agent/.config/handoff/handoff-identity.txt", f"HANDOFF_PRIVKEY={key}"),
-    ("/home/agent/muse-field-kit/encrypted-credential-handoff/consume.py", consume),
+    ("/home/agent/muse-field-kit/credential-lockbox/consume.py", consume),
     ("PATH=/usr/local/bin:/usr/bin:/bin", f"PATH={agedir}:{pydir}:/usr/bin:/bin"),
 ]
 for a, b in subs:

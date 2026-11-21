@@ -1,6 +1,6 @@
 # Interop test vectors
 
-Known-answer vectors for the encrypted credential handoff reference protocol (`age` X25519, one recipient, the binary age format, single-line base64).
+Known-answer vectors for the Credential Lockbox reference protocol (`age` X25519, one recipient, the binary age format, single-line base64).
 
 **The identity here is a published throwaway.** `test-dummy-identity.txt` protects nothing and must never be used for a real credential. Its presence in the repo is the point: anyone can check an implementation against these vectors.
 

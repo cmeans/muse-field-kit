@@ -5,13 +5,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        A change to a folder's mechanism (its SETUP.md lists what counts; for the credential handoff, for example the crypto or the payload schema) is decided with the maintainer and Muse before anyone writes it: say here what problem it solves, and the review happens on this issue.
+        A change to a folder's mechanism (its SETUP.md lists what counts; for the Credential Lockbox, for example the crypto or the payload schema) is decided with the maintainer and Muse before anyone writes it: say here what problem it solves, and the review happens on this issue.
   - type: dropdown
     id: folder
     attributes:
       label: Folder
       options:
-        - encrypted-credential-handoff
+        - credential-lockbox
         - A new folder (a pattern you'd like covered)
         - The repository itself
     validations:
