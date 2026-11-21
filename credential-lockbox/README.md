@@ -12,7 +12,7 @@ An independent community project, not affiliated with or endorsed by Meta.
 
 **Watch the four-minute overview:**
 
-https://github.com/user-attachments/assets/14bc70a8-2d0f-497d-a598-b22efdd57401
+https://github.com/user-attachments/assets/24c636e7-4f44-41fe-8164-1915014d5aec
 
 **Who it's for:** anyone whose agent needs credentials for programs it runs on its own machine that read them from their environment — MCP servers, CLIs, scripts that call an API — where the platform's browser-oriented saved logins can't reach. A PEM private key (a GitHub App's, say) travels too, in the payload's `private_key` field, and arrives the same way, as an environment variable. Not for website sign-in, or a program that needs the credential in a file, a config file or on stdin: this version delivers through the environment only. See [`DESIGN.md`](DESIGN.md#why-not-a-built-in-vault), “Why not a built-in vault?”.
 
