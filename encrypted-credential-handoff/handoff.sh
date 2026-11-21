@@ -70,28 +70,13 @@ MAX_NAME=64
 # run-test.sh checks this arithmetic against consume.py and a real blob.
 MAX_PAYLOAD=48696
 
-# Whether a string has a control character, or a UTF-8 character that breaks,
-# reorders or hides part of a line where it's shown: U+0085, U+2028, U+2029,
-# the bidi marks, embeddings, overrides and isolates (U+061C, U+200E-F,
-# U+202A-E, U+2066-9), and the invisible ones (U+00AD, U+200B-D, U+2060-4,
-# U+FEFF). Checked in C, by bytes (agent-setup.sh's has_ctl).
-has_ctl() {
-  ( LC_ALL=C
-    [[ "$1" =~ [[:cntrl:]] ]] && exit 0
-    case "$1" in
-      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xc2\xad'*|*$'\xd8\x9c'*) exit 0 ;;
-      *$'\xe2\x80'[$'\x8b'-$'\x8f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*) exit 0 ;;
-      *$'\xe2\x81'[$'\xa0'-$'\xa4']*|*$'\xe2\x81'[$'\xa6'-$'\xa9']*|*$'\xef\xbb\xbf'*) exit 0 ;;
-    esac
-    exit 1 )
-}
-# A path in a message, quoted as the shell would (printf %q): a name with a
-# newline or other control character can't pass for a line of output. One
-# has_ctl flags is quoted in C, so every such byte is escaped (in a UTF-8
-# locale, %q leaves a bidi override as it is).
+# A path in a message, quoted as the shell would (printf %q), in C: a name with
+# a newline or other control character can't pass for a line of output, and
+# every byte outside printable ASCII is escaped (\303\251 for an é), so no
+# character can hide, reorder or pass for another (in a UTF-8 locale, %q
+# leaves a bidi override or a tag character as it is). As agent-setup.sh's qp.
 qp() {
-  if has_ctl "$1"; then ( LC_ALL=C; printf '%q' "$1" ); return; fi
-  printf '%q' "$1"
+  ( LC_ALL=C; printf '%q' "$1" )
 }
 
 usage() {
@@ -249,7 +234,7 @@ check_setup() {
     if v=$(env -i PATH="${PATH-}" age --version </dev/null 2>/dev/null | head -n 1) && [ -n "$v" ]; then
       cs_out PASS age "$v"; have_age=1
     else
-      cs_out FAIL age "found at $p, but 'age --version' did not run; reinstall age (README.md, Installing age)"
+      cs_out FAIL age "found at $(qp "$p"), but 'age --version' did not run; reinstall age (README.md, Installing age)"
     fi
   else
     cs_out FAIL age "not found on PATH; install it (README.md, Installing age)"
@@ -261,7 +246,7 @@ check_setup() {
       v=$(env -i PATH="${PATH-}" age-keygen --version </dev/null 2>/dev/null | head -n 1)
       cs_out PASS age-keygen "${v:-made a throwaway identity}"; have_keygen=1
     else
-      cs_out FAIL age-keygen "found at $p, but it did not make an identity; reinstall age"
+      cs_out FAIL age-keygen "found at $(qp "$p"), but it did not make an identity; reinstall age"
     fi
   else
     cs_out INFO age-keygen "not found; this side never needs it. The round trip below is encrypt-only (decrypt skipped)"

@@ -121,7 +121,7 @@ expand_home() {  # PATH WHAT
   # shellcheck disable=SC2088  # matching a literal ~ is the point
   case "$1" in
     "~"|"~/"*) need_home "a ~ in $2"; printf '%s\n' "$HOME${1#\~}" ;;
-    "~"*) echo "agent-setup.sh: $2 $(sq "$1" || qp "$1"): only ~/ is expanded, not ~user; use an absolute path" >&2
+    "~"*) echo "agent-setup.sh: $2 $(if [ "$(shown "$1")" = "$1" ]; then sq "$1"; else qp "$1"; fi): only ~/ is expanded, not ~user; use an absolute path" >&2
           return 1 ;;
     *) printf '%s\n' "$1" ;;
   esac
@@ -130,25 +130,45 @@ expand_home() {  # PATH WHAT
 # Whether a string has a control character, or a UTF-8 character that breaks,
 # reorders or hides part of a line where it's shown: U+0085, U+2028, U+2029,
 # the bidi marks, embeddings, overrides and isolates (U+061C, U+200E-F,
-# U+202A-E, U+2066-9), and the invisible ones (U+00AD, U+200B-D, U+2060-4,
-# U+FEFF). Checked in C, by bytes; cs_out folds the same list.
+# U+202A-E, U+2066-9), and the invisible ones: Unicode's default-ignorable
+# code points (U+00AD, U+034F, U+115F-60, U+17B4-5, U+180B-F, U+200B-D,
+# U+2060-6F, U+3164, U+FE00-F, U+FEFF, U+FFA0, U+FFF0-8, U+1BCA0-3,
+# U+1D173-A and U+E0000-E0FFF, the tags and variation selectors among them)
+# and the blanks U+2800 and U+FFF9-B; as of Unicode 15.0, whose
+# Default_Ignorable_Code_Point set this matches exactly (a later version can
+# add one). Checked in C, by bytes; cs_out folds the
+# same list. Refusals and sq use it; a path shown in a message doesn't rely
+# on it (qp and shown escape every byte outside printable ASCII).
 has_ctl() {
   ( LC_ALL=C
     [[ "$1" =~ [[:cntrl:]] ]] && exit 0
     case "$1" in
-      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xc2\xad'*|*$'\xd8\x9c'*) exit 0 ;;
-      *$'\xe2\x80'[$'\x8b'-$'\x8f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*) exit 0 ;;
-      *$'\xe2\x81'[$'\xa0'-$'\xa4']*|*$'\xe2\x81'[$'\xa6'-$'\xa9']*|*$'\xef\xbb\xbf'*) exit 0 ;;
+      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xc2\xad'*|*$'\xd8\x9c'*|*$'\xcd\x8f'*) exit 0 ;;
+      *$'\xe1\x85'[$'\x9f'-$'\xa0']*|*$'\xe1\x9e'[$'\xb4'-$'\xb5']*|*$'\xe1\xa0'[$'\x8b'-$'\x8f']*) exit 0 ;;
+      *$'\xe2\x80'[$'\x8b'-$'\x8f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*|*$'\xe2\x81'[$'\xa0'-$'\xaf']*|*$'\xe2\xa0\x80'*) exit 0 ;;
+      *$'\xe3\x85\xa4'*|*$'\xef\xb8'[$'\x80'-$'\x8f']*|*$'\xef\xbb\xbf'*|*$'\xef\xbe\xa0'*|*$'\xef\xbf'[$'\xb0'-$'\xbb']*) exit 0 ;;
+      *$'\xf0\x9b\xb2'[$'\xa0'-$'\xa3']*|*$'\xf0\x9d\x85'[$'\xb3'-$'\xba']*|*$'\xf3\xa0'[$'\x80'-$'\xbf']*) exit 0 ;;
     esac
     exit 1 )
 }
-# A path in a message, quoted as the shell would (printf %q): a name with a
-# newline or other control character can't pass for a line of output. One
-# has_ctl flags is quoted in C, so every such byte is escaped (in a UTF-8
-# locale, %q leaves a bidi override as it is).
+# A path in a message, quoted as the shell would (printf %q), in C: a name with
+# a newline or other control character can't pass for a line of output, and
+# every byte outside printable ASCII is escaped (\303\251 for an é), so no
+# character can hide, reorder or pass for another (in a UTF-8 locale, %q
+# leaves a bidi override or a tag character as it is).
 qp() {
-  if has_ctl "$1"; then ( LC_ALL=C; printf '%q' "$1" ); return; fi
-  printf '%q' "$1"
+  ( LC_ALL=C; printf '%q' "$1" )
+}
+# A path shown as it is when every byte is printable ASCII (so a plain path
+# reads as before), and as qp shows it otherwise, as is one that starts $'
+# (a relative path written to look like an escaped one). The range is safe
+# here: in C, every bash compares a range by byte value.
+shown() {
+  ( LC_ALL=C
+    case "$1" in
+      *[!' '-'~']*|\$\'*) printf '%q' "$1" ;;
+      *) printf '%s' "$1" ;;
+    esac )
 }
 # A path single-quoted for a POSIX shell, for a command the user copies (and
 # may run as root, or under sh). A path has_ctl flags gets no command at all:
@@ -158,7 +178,9 @@ qp() {
 # directory made by hand: setup refuses one).
 sq() {
   if has_ctl "$1"; then return 1; fi
-  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+  # sed in C: in a UTF-8 locale, BSD sed skips a line with an invalid byte,
+  # which would leave a ' unescaped.
+  printf "'%s'" "$(printf '%s' "$1" | LC_ALL=C sed "s/'/'\\\\''/g")"
 }
 # sq only when the path needs it, as Python's shlex.quote does (except that =
 # is quoted too, below): a plain path
@@ -485,7 +507,9 @@ lock_dir() {  # DIR
       if has_ctl "$abs"; then hint="they remove the .handoff-lock directory with rmdir (never rm -r) $by_hand_note"; else hint="they remove it with: rmdir $(sq "$abs")"; fi
       echo "Stop and report it to the user: if no run is going (one was killed), $hint" >&2
     else
-      echo "agent-setup.sh: cannot create the lock in $(qp "$1"): ${err//$'\n'/ }" >&2
+      # mkdir's reason only: its message repeats the path, raw.
+      err=${err%%$'\n'*}
+      echo "agent-setup.sh: cannot create the lock in $(qp "$1"): ${err##*: }" >&2
     fi
     exit 1
   fi
@@ -596,7 +620,9 @@ usage() {
 cs_failed=0
 cs_out() {  # STATUS NAME DETAIL
   # Every character has_ctl flags becomes a space (a \r would let the rest
-  # of a path overprint the line), in C, by bytes.
+  # of a path overprint the line), in C, by bytes. A path in DETAIL comes
+  # through qp or shown, escaped already; a command to paste keeps its bytes
+  # (pq), since an escaped one would name another path.
   local d
   d=$( LC_ALL=C
        x=$3
@@ -604,11 +630,25 @@ cs_out() {  # STATUS NAME DETAIL
        x=${x//$'\xc2'[$'\x80'-$'\x9f']/ }
        x=${x//$'\xc2\xad'/ }
        x=${x//$'\xd8\x9c'/ }
+       x=${x//$'\xcd\x8f'/ }
+       x=${x//$'\xe1\x85'[$'\x9f'-$'\xa0']/ }
+       x=${x//$'\xe1\x9e'[$'\xb4'-$'\xb5']/ }
+       x=${x//$'\xe1\xa0'[$'\x8b'-$'\x8f']/ }
        x=${x//$'\xe2\x80'[$'\x8b'-$'\x8f']/ }
        x=${x//$'\xe2\x80'[$'\xa8'-$'\xae']/ }
-       x=${x//$'\xe2\x81'[$'\xa0'-$'\xa4']/ }
-       x=${x//$'\xe2\x81'[$'\xa6'-$'\xa9']/ }
+       x=${x//$'\xe2\x81'[$'\xa0'-$'\xaf']/ }
+       x=${x//$'\xe2\xa0\x80'/ }
+       x=${x//$'\xe3\x85\xa4'/ }
+       x=${x//$'\xef\xb8'[$'\x80'-$'\x8f']/ }
        x=${x//$'\xef\xbb\xbf'/ }
+       x=${x//$'\xef\xbe\xa0'/ }
+       x=${x//$'\xef\xbf'[$'\xb0'-$'\xbb']/ }
+       x=${x//$'\xf0\x9b\xb2'[$'\xa0'-$'\xa3']/ }
+       x=${x//$'\xf0\x9d\x85'[$'\xb3'-$'\xba']/ }
+       x=${x//$'\xf3\xa0'[$'\x80'-$'\xbf'][$'\x80'-$'\xbf']/ }
+       # A cut-off tag sequence (not valid UTF-8) too, as has_ctl flags it.
+       x=${x//$'\xf3\xa0'[$'\x80'-$'\xbf']/ }
+       x=${x//$'\xf3\xa0'/ }
        printf '%s' "$x" )
   printf '%s %s: %s\n' "$1" "$2" "$d"
   [ "$1" != FAIL ] || cs_failed=1
@@ -630,7 +670,7 @@ check_setup() {
     if v=$(env -i PATH="${PATH-}" age --version </dev/null 2>/dev/null | head -n 1) && [ -n "$v" ]; then
       cs_out PASS age "$v"; have_age=1
     else
-      cs_out FAIL age "found at $p, but 'age --version' did not run; reinstall age (README.md, Installing age)"
+      cs_out FAIL age "found at $(shown "$p"), but 'age --version' did not run; reinstall age (README.md, Installing age)"
     fi
   else
     cs_out FAIL age "not found on PATH; install it (README.md, Installing age) $(path_was)"
@@ -640,7 +680,7 @@ check_setup() {
       v=$(env -i PATH="${PATH-}" age-keygen --version </dev/null 2>/dev/null | head -n 1)
       cs_out PASS age-keygen "${v:-made a throwaway identity}"; have_keygen=1
     else
-      cs_out FAIL age-keygen "found at $p, but it did not make an identity; reinstall age"
+      cs_out FAIL age-keygen "found at $(shown "$p"), but it did not make an identity; reinstall age"
     fi
   else
     cs_out FAIL age-keygen "not found on PATH; install age (README.md, Installing age) $(path_was)"
@@ -772,7 +812,7 @@ password: $pwn bytes"
       # consume.py refuses it (issue #46): every wrapper with it would fail.
       kc=${k%.*}
       case "$kc" in ''|*/) kc= ;; *) kc=", $kc" ;; esac
-      cs_out FAIL identity "HANDOFF_PRIVKEY ($k) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$kc"
+      cs_out FAIL identity "HANDOFF_PRIVKEY ($(shown "$k")) names a rotation's old key (its name ends in .previous); a wrapper sets it to the current key$kc"
     elif [ ! -e "$k" ] && [ ! -L "$k" ]; then
       # Which setup makes it: plain setup only makes the default path, and
       # any setup names its key handoff-identity.txt. No setup advice where
@@ -785,36 +825,36 @@ password: $pwn bytes"
       lockd=no
       if [ -e "$kd/.handoff-lock" ] || [ -L "$kd/.handoff-lock" ]; then lockd=yes; fi
       if case "$k" in /*) false ;; *) true ;; esac; then
-        cs_out INFO identity "no key at $k from here; HANDOFF_PRIVKEY must be an absolute path, as the wrappers set it (SETUP.md step 1)"
+        cs_out INFO identity "no key at $(shown "$k") from here; HANDOFF_PRIVKEY must be an absolute path, as the wrappers set it (SETUP.md step 1)"
       elif has_ctl "$k"; then
-        cs_out INFO identity "no key at $(qp "$k") yet, and setup refuses a key path with a control character: check HANDOFF_PRIVKEY"
+        cs_out INFO identity "no key at $(qp "$k") yet, and setup refuses a key path with a control or hidden character: check HANDOFF_PRIVKEY"
       elif [ -d "$kd" ] && kmsg=$(key_dir_unsafe_msg "$kd"); then
         # Setup would refuse this directory too.
         cs_out FAIL identity "$kmsg"
       elif [ "${k##*/}" != handoff-identity.txt ]; then
-        cs_out INFO identity "no key at $k yet, and no setup makes that name (setup names its key handoff-identity.txt): check HANDOFF_PRIVKEY"
+        cs_out INFO identity "no key at $(shown "$k") yet, and no setup makes that name (setup names its key handoff-identity.txt): check HANDOFF_PRIVKEY"
       elif [ "$lockd" = yes ]; then
-        cs_out INFO identity "no key at $k yet; setup there is held up by the .handoff-lock the leftovers line below names"
+        cs_out INFO identity "no key at $(shown "$k") yet; setup there is held up by the .handoff-lock the leftovers line below names"
       elif [ -n "${HOME-}" ] && [ -z "${HANDOFF_KEY_DIR-}" ] && [ "$k" = "$(default_dir)/handoff-identity.txt" ]; then
         # (With HANDOFF_KEY_DIR set, plain setup would make its key there: the
         # next branch names the directory.)
-        cs_out INFO identity "no key at $k yet; agent-setup.sh with no argument makes it"; who=setup
+        cs_out INFO identity "no key at $(shown "$k") yet; agent-setup.sh with no argument makes it"; who=setup
       else
         # pq, not qp: a command to paste (has_ctl already ruled out a
         # path sq refuses, above).
-        cs_out INFO identity "no key at $k yet; HANDOFF_KEY_DIR=$(pq "$kd") agent-setup.sh makes it"; who=setup
+        cs_out INFO identity "no key at $(shown "$k") yet; HANDOFF_KEY_DIR=$(pq "$kd") agent-setup.sh makes it"; who=setup
       fi
     elif kmsg=$(key_dir_unsafe_msg "$(dirname -- "$k")"); then
       # consume.py refuses such a directory: every wrapper would fail.
       cs_out FAIL identity "$kmsg"
     elif [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then
-      cs_out FAIL identity "$k.previous.previous exists: the keys aren't where a rotation keeps them (ROTATION.md: A .previous.previous file)"
+      cs_out FAIL identity "$(shown "$k.previous.previous") exists: the keys aren't where a rotation keeps them (ROTATION.md: A .previous.previous file)"
     elif recipient_of "$k" >/dev/null 2>"$newd/kerr"; then
-      cs_out PASS identity "the key at $k passes the identity checks (owner-only, one plain age identity)"
+      cs_out PASS identity "the key at $(shown "$k") passes the identity checks (owner-only, one plain age identity)"
       if rotate_would_sweep "$k"; then who=rotate; fi
     else
       kmsg=$(head -n 1 "$newd/kerr" 2>/dev/null)
-      cs_out FAIL identity "${kmsg:-the key at $k did not pass the identity checks}"
+      cs_out FAIL identity "${kmsg:-the key at $(shown "$k") did not pass the identity checks}"
     fi
     # A killed run's lock would stop the next --rotate; say so now, with the
     # remover the identity line above chose (who).
@@ -1161,13 +1201,13 @@ fi
 # absolute path below will have it.
 case "$KEY_DIR" in /*) kd_abs=$KEY_DIR ;; *) kd_abs=$PWD/$KEY_DIR ;; esac
 if has_ctl "$kd_abs"; then
-  echo "agent-setup.sh: the key directory $(qp "$kd_abs") has a control character in its path (a newline?); nothing was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
+  echo "agent-setup.sh: the key directory $(qp "$kd_abs") has a control or hidden character in its path (the escaped form shows which); nothing was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
   exit 1
 fi
 PRIV="$KEY_DIR/handoff-identity.txt"
 
 if [ -e "$PRIV" ] || [ -L "$PRIV" ]; then  # a dangling symlink there too
-  echo "refusing to overwrite existing key: $PRIV" >&2
+  echo "refusing to overwrite existing key: $(shown "$PRIV")" >&2
   # pq, not %q (dash); setup refused a path sq won't quote, above.
   echo "if a setup was cut short, this is its key: HANDOFF_PRIVKEY=$(pq "$PRIV") agent-setup.sh --public-key shows it; to replace it, see ROTATION.md" >&2
   # --rotate sweeps only for a key it would rotate, and only if it would
@@ -1210,7 +1250,7 @@ case "$KEY_DIR" in /*) ;; *) KEY_DIR="./$KEY_DIR" ;; esac  # not cd's "-" or a s
 KEY_DIR=$(cd -- "$KEY_DIR" && pwd)
 # Again on the path that is printed (the check above saw the logical one).
 if has_ctl "$KEY_DIR"; then
-  echo "agent-setup.sh: the key directory $(qp "$KEY_DIR") has a control character in its path (a newline?); no key was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
+  echo "agent-setup.sh: the key directory $(qp "$KEY_DIR") has a control or hidden character in its path (the escaped form shows which); no key was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
   exit 1
 fi
 PRIV="$KEY_DIR/handoff-identity.txt"
@@ -1249,26 +1289,26 @@ chmod -- 600 "$new"
 RCPT=$(recipient_of "$new" 2>/dev/null) \
   || { echo "the new key didn't check out (a full disk?); nothing was written" >&2; exit 1; }
 ln -- "$new" "$PRIV" || {
-  echo "could not link the new key into place at $PRIV; nothing was written (the key directory needs hard links, SETUP.md step 1, or a key appeared meanwhile)" >&2
+  echo "could not link the new key into place at $(shown "$PRIV"); nothing was written (the key directory needs hard links, SETUP.md step 1, or a key appeared meanwhile)" >&2
   exit 1
 }
 if [ -d "$PRIV" ]; then
   # $PRIV became a directory meanwhile, and ln put the key inside it.
   rm -f -- "$PRIV/${new##*/}"
-  echo "could not link the new key into place at $PRIV (it is now a directory); nothing was written" >&2
+  echo "could not link the new key into place at $(shown "$PRIV") (it is now a directory); nothing was written" >&2
   exit 1
 fi
 if [ ! "$PRIV" -ef "$new" ]; then
   # Linked, then the temporary copy went (the lock should prevent that):
   # the key at $PRIV may be this run's, or another run's.
-  echo "agent-setup.sh: linked the new key into place at $PRIV, but its temporary copy has gone (another run?): don't trust this run's recipient. Run HANDOFF_PRIVKEY=$(pq "$PRIV") agent-setup.sh --public-key to see the key that is there, and report it to the user." >&2
+  echo "agent-setup.sh: linked the new key into place at $(shown "$PRIV"), but its temporary copy has gone (another run?): don't trust this run's recipient. Run HANDOFF_PRIVKEY=$(pq "$PRIV") agent-setup.sh --public-key to see the key that is there, and report it to the user." >&2
   exit 1
 fi
 # The temporary name is a second hard link to the live key: removed at once,
 # not left for the EXIT trap (a kill before it would leave it).
 rm -rf -- "$newd"; newd=""; new=""
 
-echo "identity written to $PRIV (mode 600) — never copy it off this machine"
+echo "identity written to $(shown "$PRIV") (mode 600) — never copy it off this machine"
 echo
 echo "recipient: $RCPT"
 echo "report this recipient to the human; they compare it with handoff.sh's output"
@@ -1277,7 +1317,7 @@ show_recipient "$RCPT"
 echo
 echo "consume side: the decrypt helper reads \$HANDOFF_PRIVKEY"
 echo "(default ~/.config/handoff/handoff-identity.txt)."
-echo "this key lives at: $PRIV"
+echo "this key lives at: $(shown "$PRIV")"
 # One form of the path, the one above (issue #5 item 4): the wrappers set
 # HANDOFF_PRIVKEY to it as written, quoted if the shell needs it.
 if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-identity.txt" ]; then
@@ -1290,4 +1330,8 @@ fi
 shell_special='[][[:space:][:cntrl:]'\''"\\$`*?#~&;|<>(){}!^]'
 if ( LC_ALL=C; [[ "$PRIV" =~ $shell_special ]] ); then
   echo "note: that path has characters a shell reads specially: quote it in every wrapper, as HANDOFF_PRIVKEY=$(sq "$PRIV")"
+elif [ "$(shown "$PRIV")" != "$PRIV" ]; then
+  # Shown escaped above ($'...', which sh and dash don't read): the form to
+  # write, with its bytes as they are.
+  echo "note: that path is shown escaped above; write it in every wrapper as HANDOFF_PRIVKEY=$(sq "$PRIV")"
 fi
