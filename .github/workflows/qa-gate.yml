@@ -1,9 +1,16 @@
 name: QA Gate
 
 # Posts a "QA Gate" commit status that is success only while the PR has the
-# QA Approved label and the maintainer (MAINTAINER below) applied it last: the
-# bots can label too, and their QA Approved counts for nothing. Adapted from
-# mcp-synology.
+# QA Approved label and the maintainer's account (MAINTAINER below) applied it
+# last: the bots can label too, and their QA Approved counts for nothing. (The
+# QA sessions work under the maintainer's account for now, so this can't tell
+# them apart.) Adapted from mcp-synology.
+#
+# This status is not the merge gate: any workflow can post a "QA Gate" status
+# (the ruleset accepts any Actions run), and a label event in the minute after
+# a push, before pr-labels.yml removes QA Approved, re-reads the old approval.
+# The gate is main's ruleset: an approving review from the maintainer on the
+# most recent push (issue #67 F8).
 # "QA Gate" (the status context) is a required check in main's ruleset: if it
 # is renamed, update the ruleset, or every PR waits on a check that never comes.
 #
@@ -15,10 +22,6 @@ name: QA Gate
 # status, and every value from the event reaches the script through env:.
 # (GitHub doesn't start pull_request_target for some branch names, such as
 # ones that look like a SHA: such a PR gets no QA Gate, and waits.)
-# This file alone can't stop another workflow posting a "QA Gate" status (the
-# ruleset accepts it from any Actions run): .github/CODEOWNERS makes every
-# change under .github/ need the maintainer's review, which main's ruleset
-# requires.
 #
 # Fork PRs are skipped (pull requests here are collaborators-only, and the
 # label workflows skip them too); the maintainer handles one by hand (issue

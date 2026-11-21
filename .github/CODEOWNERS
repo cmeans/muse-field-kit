@@ -1,4 +1,0 @@
-# Every change under .github/ (workflows, scripts, this file) needs the
-# maintainer's review: main's ruleset requires code-owner review, and the
-# QA Gate status can come from any workflow (issue #67 F8).
-/.github/ @cmeans
