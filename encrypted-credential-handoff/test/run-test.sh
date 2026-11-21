@@ -1881,6 +1881,9 @@ expect_refusal "handoff.sh --to muse with handoff_Muse.age beside it" 1 "but han
 rm -f "$S/hn/handoff_Muse.age"
 # A look-alike that a UTF-8 locale folds to ASCII (U+212A KELVIN SIGN lowers
 # to k) isn't a near miss: it would show as handoff-Kim.age (issue #27 item 1).
+# printf %q in C, as the scripts' qp: set in a subshell, since macOS's bash 3.2
+# doesn't switch a builtin's locale for an LC_ALL=C prefix.
+cq() { ( LC_ALL=C; printf '%q' "$1" ); }
 # The first of these names that this system takes as a UTF-8 locale (asked of
 # the locale itself: locale -a's list didn't match on macOS's runner).
 utf8_loc=
@@ -2233,10 +2236,10 @@ if [ -n "${utf8_loc-}" ]; then
   ! LC_ALL=C grep -q $'\xe2\x80\xae' "$S/err" || fail "a bidi override in an unknown option was printed raw"
   # ...and so is any other byte outside printable ASCII: a tag character, an é.
   for ch in $'\xf3\xa0\x80\x81' $'\xc3\xa9'; do
-    expect_refusal "handoff.sh --to with $(LC_ALL=C printf '%q' "$ch")" 2 "--to NAME takes only letters" \
+    expect_refusal "handoff.sh --to with $(cq "$ch")" 2 "--to NAME takes only letters" \
       env LC_ALL="$utf8_loc" bash "$S/hd/handoff.sh" --to "a${ch}b" --fingerprint
-    ! LC_ALL=C grep -qF "$ch" "$S/err" || fail "$(LC_ALL=C printf '%q' "$ch") in --to was printed raw"
-    grep -qF "(got $(LC_ALL=C printf '%q' "a${ch}b"))" "$S/err" || fail "--to's refusal didn't show the name escaped: $(cat "$S/err")"
+    ! LC_ALL=C grep -qF "$ch" "$S/err" || fail "$(cq "$ch") in --to was printed raw"
+    LC_ALL=C grep -qF "(got $(cq "a${ch}b"))" "$S/err" || fail "--to's refusal didn't show the name escaped: $(cat "$S/err")"
   done
 fi
 # The hint is for a long line at the terminal only: the same refusal from a
@@ -3791,7 +3794,7 @@ echo "ok (the leftovers line's remover follows the identity line)"
 ! grep -q $'\r' "$S/out" || fail "--check-setup printed a key path's carriage return"
 for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x81\xa6' $'\xe2\x80\x8f' $'\xef\xbb\xbf' $'\xf3\xa0\x80\x81' $'\xef\xb8\x8f' $'\xe3\x85\xa4' $'\xe1\x85\x9f'; do
   env HANDOFF_PRIVKEY="$S/u${ch}PASS identity: forged/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-  ! LC_ALL=C grep -qF "$ch" "$S/out" || fail "--check-setup printed a key path's $(LC_ALL=C printf '%q' "$ch")"
+  ! LC_ALL=C grep -qF "$ch" "$S/out" || fail "--check-setup printed a key path's $(cq "$ch")"
 done
 # printf %q leaves a bidi override as it is in a UTF-8 locale: qp quotes such
 # a path in C, so --fingerprint's key file: line escapes it.
@@ -3816,9 +3819,9 @@ for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x80\xae' $'\xe2\x81\xa6' $'\xe2\x80
           $'\xf3\xa0\x80\x81' $'\xf3\xa0\x81\xbf' $'\xef\xb8\x8f' $'\xf3\xa0\x84\x80' $'\xe1\xa0\x8e' $'\xe2\x81\xaa' $'\xe2\x81\xaf' $'\xef\xbf\xb9' $'\xcd\x8f' $'\xe3\x85\xa4' \
           $'\xe1\x85\x9f' $'\xe1\x85\xa0' $'\xef\xbe\xa0' $'\xe2\xa0\x80' \
           $'\xe1\xa0\x8b' $'\xe1\xa0\x8f' $'\xe1\x9e\xb4' $'\xe2\x81\xa5' $'\xef\xbf\xb0' $'\xf0\x9b\xb2\xa0' $'\xf0\x9d\x85\xb3' $'\xf3\xa0\x82\x80' $'\xf3\xa0\xbf\xbf'; do
-  expect_refusal "setup into a key directory with $(LC_ALL=C printf '%q' "$ch")" 1 "has a control or hidden character in its path" \
+  expect_refusal "setup into a key directory with $(cq "$ch")" 1 "has a control or hidden character in its path" \
     env HANDOFF_KEY_DIR="$S/sep${ch}recipient: age1fake" bash ../agent-setup.sh
-  [ ! -e "$S/sep${ch}recipient: age1fake" ] || fail "setup made a key directory with $(LC_ALL=C printf '%q' "$ch")"
+  [ ! -e "$S/sep${ch}recipient: age1fake" ] || fail "setup made a key directory with $(cq "$ch")"
 done
 # A key directory with other non-ASCII (an é, or U+1F600, which no list
 # names) is allowed. A message shows its path escaped (setup's, --check-setup's
@@ -3828,37 +3831,37 @@ for ch in $'\xc3\xa9' $'\xf0\x9f\x98\x80'; do
   na="$S/jos${ch} x"; rm -rf "$na"
   # Before setup, --check-setup's command makes the key where HANDOFF_PRIVKEY points.
   env LC_ALL="${utf8_loc:-C}" HANDOFF_PRIVKEY="$na/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>&1 || true
-  LC_ALL=C grep -qF "INFO identity: no key at $(LC_ALL=C printf '%q' "$na/handoff-identity.txt") yet; HANDOFF_KEY_DIR='$na' agent-setup.sh makes it" "$S/out" \
-    || fail "--check-setup's no-key line for $(LC_ALL=C printf '%q' "$ch"): $(LC_ALL=C grep identity "$S/out" | LC_ALL=C cat -v)"
+  LC_ALL=C grep -qF "INFO identity: no key at $(cq "$na/handoff-identity.txt") yet; HANDOFF_KEY_DIR='$na' agent-setup.sh makes it" "$S/out" \
+    || fail "--check-setup's no-key line for $(cq "$ch"): $(LC_ALL=C grep identity "$S/out" | LC_ALL=C cat -v)"
   cmd=$(LC_ALL=C sed -n 's/^INFO identity: no key at .* yet; \(HANDOFF_KEY_DIR=.*\) agent-setup\.sh makes it$/\1/p' "$S/out")
-  (cd .. && eval "env LC_ALL=${utf8_loc:-C} $cmd bash ./agent-setup.sh") >"$S/out" 2>&1 || { cat "$S/out" >&2; fail "the pasted command for $(LC_ALL=C printf '%q' "$ch") failed"; }
-  [ -f "$na/handoff-identity.txt" ] || fail "the pasted command for $(LC_ALL=C printf '%q' "$ch") made the key elsewhere"
-  grep -qxF "this key lives at: $(LC_ALL=C printf '%q' "$na/handoff-identity.txt")" "$S/out" \
-    || fail "setup didn't print the escaped key path for $(LC_ALL=C printf '%q' "$ch"): $(grep 'lives at' "$S/out")"
+  (cd .. && eval "env LC_ALL=${utf8_loc:-C} $cmd bash ./agent-setup.sh") >"$S/out" 2>&1 || { cat "$S/out" >&2; fail "the pasted command for $(cq "$ch") failed"; }
+  [ -f "$na/handoff-identity.txt" ] || fail "the pasted command for $(cq "$ch") made the key elsewhere"
+  LC_ALL=C grep -qxF "this key lives at: $(cq "$na/handoff-identity.txt")" "$S/out" \
+    || fail "setup didn't print the escaped key path for $(cq "$ch"): $(grep 'lives at' "$S/out")"
   ! LC_ALL=C grep -F "$ch" "$S/out" | LC_ALL=C grep -vqE "HANDOFF_PRIVKEY='" \
-    || fail "a setup message showed $(LC_ALL=C printf '%q' "$ch") raw: $(LC_ALL=C grep -F "$ch" "$S/out" | LC_ALL=C cat -v)"
+    || fail "a setup message showed $(cq "$ch") raw: $(LC_ALL=C grep -F "$ch" "$S/out" | LC_ALL=C cat -v)"
   env LC_ALL="${utf8_loc:-C}" HANDOFF_PRIVKEY="$na/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>&1 || true
   env LC_ALL="${utf8_loc:-C}" HANDOFF_PRIVKEY="$na/handoff-identity.txt" bash ../agent-setup.sh --fingerprint >>"$S/out" 2>&1 || true
-  ! LC_ALL=C grep -qF "$ch" "$S/out" || fail "a line showed a key path's $(LC_ALL=C printf '%q' "$ch") raw: $(LC_ALL=C grep -F "$ch" "$S/out" | LC_ALL=C cat -v)"
-  LC_ALL=C grep -qF "PASS identity: the key at $(LC_ALL=C printf '%q' "$na/handoff-identity.txt") passes" "$S/out" \
-    || fail "--check-setup's identity line for $(LC_ALL=C printf '%q' "$ch") is wrong: $(grep identity "$S/out")"
+  ! LC_ALL=C grep -qF "$ch" "$S/out" || fail "a line showed a key path's $(cq "$ch") raw: $(LC_ALL=C grep -F "$ch" "$S/out" | LC_ALL=C cat -v)"
+  LC_ALL=C grep -qF "PASS identity: the key at $(cq "$na/handoff-identity.txt") passes" "$S/out" \
+    || fail "--check-setup's identity line for $(cq "$ch") is wrong: $(grep identity "$S/out")"
   rm -rf "$na"
 done
 # An escaped path can't pass for another: a directory named with a literal
 # \303\251 shows otherwise than one with an é.
 lit="$S/n\\303\\251w"; real="$S/n"$'\xc3\xa9'"w"
-for d in "$lit" "$real"; do rm -rf "$d"; env HANDOFF_KEY_DIR="$d" bash ../agent-setup.sh >/dev/null 2>&1 || fail "setup into $(LC_ALL=C printf '%q' "$d") failed"; done
+for d in "$lit" "$real"; do rm -rf "$d"; env HANDOFF_KEY_DIR="$d" bash ../agent-setup.sh >/dev/null 2>&1 || fail "setup into $(cq "$d") failed"; done
 a=$(env HANDOFF_PRIVKEY="$lit/handoff-identity.txt" bash ../agent-setup.sh --check-setup 2>&1 | grep '^PASS identity') || true
 b=$(env HANDOFF_PRIVKEY="$real/handoff-identity.txt" bash ../agent-setup.sh --check-setup 2>&1 | grep '^PASS identity') || true
 case "$a" in *"the key at $lit/handoff-identity.txt passes"*) ;; *) fail "a literal \\303\\251 directory's identity line: $a" ;; esac
-case "$b" in *"the key at $(LC_ALL=C printf '%q' "$real/handoff-identity.txt") passes"*) ;; *) fail "an é directory's identity line: $b" ;; esac
+case "$b" in *"the key at $(cq "$real/handoff-identity.txt") passes"*) ;; *) fail "an é directory's identity line: $b" ;; esac
 rm -rf "$lit" "$real"
 # Setup's note for a path shown escaped but with nothing a shell reads
 # specially: the form to write in a wrapper, bytes as they are (sh and dash
 # don't read $'...').
 eo="$S/n"$'\xc3\xa9'"o"; rm -rf "$eo"
 env HANDOFF_KEY_DIR="$eo" bash ../agent-setup.sh >"$S/out" 2>&1 || fail "setup into an é directory failed"
-grep -qxF "note: that path is shown escaped above; write it in every wrapper as HANDOFF_PRIVKEY='$eo/handoff-identity.txt'" "$S/out" \
+LC_ALL=C grep -qxF "note: that path is shown escaped above; write it in every wrapper as HANDOFF_PRIVKEY='$eo/handoff-identity.txt'" "$S/out" \
   || fail "setup gave no wrapper form for an escaped path: $(grep note "$S/out")"
 rm -rf "$eo"
 # cs_out folds every character has_ctl flags into a space, for text that
@@ -3869,7 +3872,7 @@ for ch in $'\x1b' $'\xc2\x85' $'\xc2\xad' $'\xd8\x9c' $'\xcd\x8f' $'\xe1\x85\x9f
           $'\xe2\x80\x8b' $'\xe2\x80\xae' $'\xe2\x81\xa5' $'\xe2\xa0\x80' $'\xe3\x85\xa4' $'\xef\xb8\x8f' $'\xef\xbb\xbf' \
           $'\xef\xbe\xa0' $'\xef\xbf\xb0' $'\xf0\x9b\xb2\xa0' $'\xf0\x9d\x85\xb3' $'\xf3\xa0\x80\x81'; do
   got=$(bash -c 'eval "$1"; cs_out INFO x "$2"' _ "$fns" "a${ch}b")
-  [ "$got" = "INFO x: a b" ] || fail "cs_out didn't fold $(LC_ALL=C printf '%q' "$ch"): $(printf '%s' "$got" | LC_ALL=C cat -v)"
+  [ "$got" = "INFO x: a b" ] || fail "cs_out didn't fold $(cq "$ch"): $(printf '%s' "$got" | LC_ALL=C cat -v)"
 done
 # The found-at lines of both scripts' --check-setup, the ~user refusal and a
 # relative path that looks escaped show the path escaped.
@@ -3877,14 +3880,14 @@ fb="$S/Jos"$'\xc3\xa9'"/bin"; mkdir -p "$fb"
 printf '#!/bin/sh\nexit 3\n' >"$fb/age"; printf '#!/bin/sh\nexit 3\n' >"$fb/age-keygen"; chmod +x "$fb/age" "$fb/age-keygen"
 for sc in agent-setup.sh handoff.sh; do
   env PATH="$fb:$PATH" bash "../$sc" --check-setup >"$S/out" 2>&1 || true
-  grep -qF "FAIL age: found at $(LC_ALL=C printf '%q' "$fb/age"), but" "$S/out" \
+  LC_ALL=C grep -qF "FAIL age: found at $(cq "$fb/age"), but" "$S/out" \
     || fail "$sc's found-at line didn't show the path escaped: $(grep 'FAIL age' "$S/out" | LC_ALL=C cat -v)"
 done
 rm -rf "$S/Jos"$'\xc3\xa9'
 rc=0; env HANDOFF_PRIVKEY=$'~jos\xc3\xa9/k.txt' bash ../agent-setup.sh --fingerprint >/dev/null 2>"$S/err" || rc=$?
-grep -qF "HANDOFF_PRIVKEY \$'~jos\\303\\251/k.txt': only ~/ is expanded" "$S/err" || fail "the ~user refusal didn't escape the path: $(LC_ALL=C cat -v "$S/err")"
+LC_ALL=C grep -qF "HANDOFF_PRIVKEY \$'~jos\\303\\251/k.txt': only ~/ is expanded" "$S/err" || fail "the ~user refusal didn't escape the path: $(LC_ALL=C cat -v "$S/err")"
 env HANDOFF_PRIVKEY="\$'/home/jos\\303\\251/k.txt'" bash ../agent-setup.sh --check-setup >"$S/out" 2>&1 || true
-grep -qF "no key at \\\$\\'/home/jos" "$S/out" || fail "a relative path that looks escaped was shown as it is: $(grep identity "$S/out")"
+LC_ALL=C grep -qF "no key at \\\$\\'/home/jos" "$S/out" || fail "a relative path that looks escaped was shown as it is: $(grep identity "$S/out")"
 echo "ok (a non-ASCII key directory works, its path is shown escaped, and a command to paste names it)"
 # With a killed run's lock and no key, the identity line doesn't tell the
 # agent to run setup, which the lock would refuse.
