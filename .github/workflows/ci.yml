@@ -261,8 +261,6 @@ jobs:
             || { echo "SHA256SUMS names or order wrong"; cat SHA256SUMS; exit 1; }
           [ "$(grep -Ec '^[0-9a-f]{64}  (agent-setup\.sh|consume\.py|handoff\.(ps1|sh))$' SHA256SUMS)" -eq 4 ] \
             || { echo "SHA256SUMS is not in sha256sum format"; cat SHA256SUMS; exit 1; }
-          # A changed byte must fail the check.
-          mkdir "$RUNNER_TEMP/tampered"
           # A changed byte in any of the four must fail the check.
           for f in agent-setup.sh consume.py handoff.ps1 handoff.sh; do
             rm -rf "$RUNNER_TEMP/tampered"
@@ -405,13 +403,15 @@ jobs:
           done
           .github/scripts/readme-block.sh encrypted-credential-handoff/INSTALL-windows.md verify-windows > /dev/null
       - name: release-assets.sh refuses a tree with a missing script
-        # A copy of the script in a tree that has handoff.ps1 but not
-        # handoff.sh: exit status 1, and no output directory.
+        # A copy of the script in a tree that has the other three scripts but
+        # not handoff.sh: exit status 1, and no output directory.
         run: |
           t="$RUNNER_TEMP/broken-tree"
           mkdir -p "$t/.github/scripts" "$t/encrypted-credential-handoff"
           cp .github/scripts/release-assets.sh "$t/.github/scripts/"
-          cp encrypted-credential-handoff/handoff.ps1 "$t/encrypted-credential-handoff/"
+          for f in agent-setup.sh consume.py handoff.ps1; do
+            cp "encrypted-credential-handoff/$f" "$t/encrypted-credential-handoff/"
+          done
           rc=0
           "$t/.github/scripts/release-assets.sh" "$RUNNER_TEMP/broken-out" 2>"$RUNNER_TEMP/broken.err" || rc=$?
           cat "$RUNNER_TEMP/broken.err"
