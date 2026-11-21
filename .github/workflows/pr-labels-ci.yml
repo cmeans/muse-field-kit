@@ -72,8 +72,12 @@ jobs:
             echo "Dev Active present — skipping"
             exit 0
           fi
-          if ! echo "$LABELS" | grep -qx "Awaiting CI"; then
-            echo "PR #$PR isn't at Awaiting CI — nothing to do"
+          # CI Failed counts too: a run cancelled for this same head (a
+          # reopen while CI runs, or a cancel and re-run) sets CI Failed,
+          # and the run that replaces it must still be able to promote
+          # (QA on #125). The head check below keeps a stale result out.
+          if ! echo "$LABELS" | grep -qx -e "Awaiting CI" -e "CI Failed"; then
+            echo "PR #$PR isn't at Awaiting CI or CI Failed — nothing to do"
             exit 0
           fi
 
@@ -87,11 +91,15 @@ jobs:
           fi
 
           if [ "$CONCLUSION" = success ]; then
-            REMOVE="Awaiting CI"
-            if echo "$LABELS" | grep -qx "CI Failed"; then REMOVE="$REMOVE,CI Failed"; fi
+            REMOVE=""
+            for L in "Awaiting CI" "CI Failed"; do
+              if echo "$LABELS" | grep -qx "$L"; then REMOVE="${REMOVE:+$REMOVE,}$L"; fi
+            done
             gh pr edit "$PR" --repo "$REPO" --remove-label "$REMOVE"
             gh pr edit "$PR" --repo "$REPO" --add-label "Ready for QA"
-          else
+          elif echo "$LABELS" | grep -qx "Awaiting CI"; then
             gh pr edit "$PR" --repo "$REPO" --remove-label "Awaiting CI"
             gh pr edit "$PR" --repo "$REPO" --add-label "CI Failed"
+          else
+            echo "PR #$PR is already at CI Failed"
           fi
