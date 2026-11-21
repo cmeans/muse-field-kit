@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **A four-minute overview video in the README** (#140): the problem, setup, a handoff, use time, the guard rails and what it doesn't protect against.
+
 ### Changed
 
 - **`agent-setup.sh` and `handoff.sh` messages show a path's bytes outside printable ASCII escaped, and setup refuses every default-ignorable character (tags, variation selectors, blank fillers)** (refs #80 items 3, 4): a key directory such as `/home/josé` still works, and a command to paste still names it.
