@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **A four-minute overview video in the README** (#140): the problem, setup, a handoff, use time, the guard rails and what it doesn't protect against.
+
 ### Changed
 
 - **`agent-setup.sh` quotes any printed path holding `=`, and matches safe characters by name, not by the locale's ranges** (refs #80 items 5, 7, 11, 12): zsh expands `=ls`; the by-hand notes also say how to see a name's bytes on BusyBox.

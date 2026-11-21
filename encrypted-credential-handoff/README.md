@@ -8,6 +8,10 @@ Hand your Muse a service credential **without the plaintext ever entering the ch
 2. **You paste the ciphertext** into chat. It's safe to send that way: only the private key on your Muse's computer opens it. Every copy that's kept, this chat included, becomes readable if that key ever leaks (invariant 2).
 3. **At use time, a helper on Muse's side decrypts it in memory** and replaces itself with the one tool that needs it, the values in that tool's environment: decryption and use happen in that single process. The plaintext is never written to disk, and the helper prints nothing derived from it. What reaches Muse is the tool's own output, which is why each credential is wired to a tool that doesn't print it, and only that tool.
 
+**Watch the four-minute overview:**
+
+https://github.com/user-attachments/assets/14bc70a8-2d0f-497d-a598-b22efdd57401
+
 **Who it's for:** anyone whose agent needs credentials for programs it runs on its own machine that read them from their environment — MCP servers, CLIs, scripts that call an API — where the platform's browser-oriented saved logins can't reach. A PEM private key (a GitHub App's, say) travels too, in the payload's `private_key` field, and arrives the same way, as an environment variable. Not for website sign-in, or a program that needs the credential in a file, a config file or on stdin: this version delivers through the environment only. See [`DESIGN.md`](DESIGN.md#why-not-a-built-in-vault), “Why not a built-in vault?”.
 
 **What it needs:** on your side, [`age`](https://github.com/FiloSottile/age#installation) and, for `handoff.sh`, bash and `jq` 1.6 or newer (Linux, macOS); on Windows, `age` and the PowerShell that ships with Windows, nothing else. On the agent's side (Linux or macOS), bash, `age` and Python 3.7 or newer. No OpenSSL anywhere. “Installing age” and “Getting the scripts” say how; “Platform” says what runs where, and `DESIGN.md`, “What CI tests”, what is tested.
