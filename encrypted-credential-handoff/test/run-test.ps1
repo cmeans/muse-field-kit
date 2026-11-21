@@ -473,14 +473,18 @@ function New-DirLink([string]$path, [string]$target) {
     if ($r.Exit -ne 0) { Fail "test setup: mklink /J $path failed: $($r.Out) $($r.Err)" }
   } else { New-Link $path $target }
 }
-# Runs the remedy command the message prints, as a user pasting it would
-# (from the script's folder FOLDER, which a relative form names it in).
+# Runs the remedy command the message prints, all of it as a user would paste
+# it (everything between "remove only the link with " and the rest of the
+# sentence), at a console's default error action, from the script's folder
+# FOLDER (which the relative form names it in).
 function Invoke-PrintedDelete([string]$err, [string]$desc, [string]$folder) {
-  $m = [regex]::Match($err, "\(Get-Item -LiteralPath '(?:[^'\u2018-\u201B]|['\u2018-\u201B]{2})*' -Force\)\.Delete\(\)")
-  Assert-True $m.Success "$($desc): no .Delete() command in the message: $err"
+  $m = [regex]::Match($err, "remove only the link with (?<cmd>.+?)(?:, run in this script's folder)?, then save the agent's recipient there")
+  Assert-True $m.Success "$($desc): no remedy command in the message: $err"
   $global:PWNED = $false
+  $ErrorActionPreference = 'Continue'
   Push-Location -LiteralPath $folder
-  try { Invoke-Expression $m.Value } finally { Pop-Location }
+  try { Invoke-Expression $m.Groups['cmd'].Value 2>$null } catch { } finally { Pop-Location }
+  $ErrorActionPreference = 'Stop'
   Assert-True (-not $global:PWNED) "$($desc): the printed command ran code from the folder name"
 }
 $dirLink = Join-Path $K 'handoff-dirlink.age'
@@ -507,6 +511,20 @@ Assert-True ($r.Err.Contains("(Get-Item -LiteralPath '.\handoff-muse.age' -Force
 Invoke-PrintedDelete $r.Err 'a folder link in a folder named with typographic quotes' $quoteDir
 Assert-True (-not (Test-Path -LiteralPath (Join-Path $quoteDir 'handoff-muse.age'))) "the printed remedy didn't remove the link in a quote-named folder"
 Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents (quote-named folder)"
+# In a folder whose printable-ASCII name holds a ' and a whole statement, the
+# full-path form's ' doubling is all that keeps the paste one command; and a
+# plain apostrophe (Chris's kit) works too.
+foreach ($nm in @("x' -Force).Delete() ; Set-Variable PWNED 1 -Scope Global ; (Get-Item -LiteralPath 'y", "Chris's kit")) {
+  $ad = Join-Path $S $nm
+  $ha = Install-Handoff $ad $null
+  New-DirLink (Join-Path $ad 'handoff-muse.age') $linkTarget
+  $r = Invoke-Handoff -Script $ha -ArgText '-Fingerprint'
+  Assert-Refusal "a folder link in a folder named $nm" 1 'is a link to a folder' $r
+  Assert-True (-not $r.Err.Contains("run in this script's folder")) "a printable-ASCII folder didn't get the full-path form: $($r.Err)"
+  Invoke-PrintedDelete $r.Err "a folder link in a folder named $nm" $S
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $ad 'handoff-muse.age'))) "the printed remedy didn't remove the link in the folder named $nm"
+  Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents (folder named $nm)"
+}
 Say 'ok (a link to a folder gets a remedy that removes only the link)'
 # Paths and arguments with control, bidi or invisible characters are printed
 # with each one as <U+XXXX>, so none can reorder or hide part of a message
