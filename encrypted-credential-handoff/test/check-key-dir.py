@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import consume  # noqa: E402
+import consume
 
 
 def fail(msg):

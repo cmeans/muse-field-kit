@@ -304,7 +304,7 @@ def check_age() -> str:
     try:
         out = subprocess.run(
             ["age", "--version"], capture_output=True, env=age_env(),
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, check=False,
         )
     except FileNotFoundError:
         raise age_missing("age") from None
@@ -379,7 +379,7 @@ def decode_blob(blob_b64: str) -> bytes:
         raise fail(f"the blob is over {MAX_BLOB_FILE} characters; not a blob")
     try:
         raw = base64.b64decode(compact, validate=True)
-    except Exception:
+    except ValueError:  # binascii.Error, or a non-ASCII character
         # Padding inside the text: one blob's "==" followed by another's.
         if re.search(r"={1,2}[A-Za-z0-9+/]", compact):
             raise fail("input is not valid base64: it looks like several blobs "
@@ -531,6 +531,7 @@ def load_key(privkey: str) -> "tuple[str, bytes]":
     try:
         proc = subprocess.run(
             ["age-keygen", "-y"], input=data, capture_output=True, env=age_env(),
+            check=False,
         )
     except FileNotFoundError:
         raise age_missing("age-keygen") from None
@@ -575,6 +576,7 @@ def age_decrypt(raw: bytes, identity: bytes) -> "bytes | None":
             proc = subprocess.run(
                 ["age", "-d", "-i", fd_path],
                 input=raw, capture_output=True, env=age_env(), pass_fds=(r,),
+                check=False,
             )
         except FileNotFoundError:
             raise age_missing("age") from None
@@ -843,7 +845,9 @@ def write_atomically(path: str, data: bytes) -> None:
 def parse_payload(plaintext: bytes) -> dict:
     try:
         payload = json.loads(plaintext.decode("utf-8"))
-    except Exception:
+    except (ValueError, RecursionError):
+        # UnicodeDecodeError and JSONDecodeError are ValueErrors; nesting
+        # deeper than the interpreter allows raises RecursionError.
         raise fail("decrypted payload is not valid JSON")
     if not isinstance(payload, dict):
         raise fail("decrypted payload is not a JSON object")
@@ -860,7 +864,7 @@ def age_encrypt(plaintext: bytes, recipient: str) -> bytes:
     try:
         proc = subprocess.run(
             ["age", "-r", recipient], input=plaintext, capture_output=True,
-            env=age_env(),
+            env=age_env(), check=False,
         )
     except FileNotFoundError:
         raise age_missing("age") from None
@@ -1128,7 +1132,9 @@ def fix_std_fds() -> None:
         if null != fd:
             os.dup2(null, fd)
             os.close(null)
-        stream = open(fd, "w" if fd else "r", closefd=False)
+        # It replaces sys.stdin/stdout/stderr for the life of the process,
+        # so there is no block to close it in.
+        stream = open(fd, "w" if fd else "r", closefd=False)  # noqa: SIM115
         setattr(sys, name, stream)
 
 
@@ -1152,7 +1158,7 @@ def help_asked(argv) -> bool:
 
 def main() -> int:
     fix_std_fds()
-    if sys.version_info < (3, 7):
+    if sys.version_info < (3, 7):  # noqa: UP036 (it runs on older interpreters)
         # capture_output and text= need 3.7; say so instead of a traceback.
         print("consume.py: requires Python 3.7 or later", file=sys.stderr)
         return 1

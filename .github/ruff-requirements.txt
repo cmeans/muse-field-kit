@@ -3,5 +3,5 @@
 # To upgrade, change the version and take the wheel's sha256 from
 # https://pypi.org/project/ruff/#files, and change the version in
 # CONTRIBUTING.md's local ruff command too.
-ruff==0.15.7 \
-    --hash=sha256:dce0896488562f09a27b9c91b1f58a097457143931f3c4d519690dea54e624c5
+ruff==0.17.6 \
+    --hash=sha256:aa3b08254a732acba246891089a152c47c5733dc36b8ecb76ce8602f8326e5e4

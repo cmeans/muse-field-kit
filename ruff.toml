@@ -1,0 +1,12 @@
+# ruff settings for ci.yml's lint step (version pinned in
+# .github/ruff-requirements.txt).
+
+# consume.py runs on Python 3.7 and later, and says so on anything older
+# (main's version check), so lint for 3.7 rather than ruff's default.
+target-version = "py37"
+
+[lint]
+# UP031 (use format specifiers instead of % formatting): kept off. The %
+# formatting in the test scripts is correct, and rewriting it would change
+# working test code for style alone.
+ignore = ["UP031"]

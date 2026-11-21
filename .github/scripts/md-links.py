@@ -32,7 +32,7 @@ CODE_NAME = re.compile(r'`([A-Za-z0-9_./-]+\.md)`')
 SECTION = re.compile(r'(?:\'s|’s)?,?\s+[“"]([^”"]{1,80})[”"]')
 MARK = re.compile('\0([^\0]*)\0([^\0]*)\0')
 # "a `SECURITY.md`", "its SETUP.md": any folder's file of that name, not one file.
-GENERIC = re.compile(r'(?:\b(?:a|an|its|their|each|every|that folder\'s|a folder\'s)\s+)$', re.I)
+GENERIC = re.compile(r'(?:\b(?:a|an|its|their|each|every|that folder\'s|a folder\'s)\s+)$', re.IGNORECASE)
 
 
 def slug(heading):
@@ -171,7 +171,7 @@ def process(root, doc, fix):
             end = lm.start() if lm else len(line)
             buf = mark_mentions(root, doc, lineno, line[pos:end], problems)
 
-            def link(m, buf=buf):
+            def link(m, buf=buf, linked=linked, lineno=lineno):
                 label, tgt = m.group(1), m.group(2)
                 if tgt in linked:
                     return label
