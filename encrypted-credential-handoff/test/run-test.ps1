@@ -473,12 +473,14 @@ function New-DirLink([string]$path, [string]$target) {
     if ($r.Exit -ne 0) { Fail "test setup: mklink /J $path failed: $($r.Out) $($r.Err)" }
   } else { New-Link $path $target }
 }
-# Runs the remedy command the message prints, as a user pasting it would.
-function Invoke-PrintedDelete([string]$err, [string]$desc) {
+# Runs the remedy command the message prints, as a user pasting it would
+# (from the script's folder FOLDER, which a relative form names it in).
+function Invoke-PrintedDelete([string]$err, [string]$desc, [string]$folder) {
   $m = [regex]::Match($err, "\(Get-Item -LiteralPath '(?:[^'\u2018-\u201B]|['\u2018-\u201B]{2})*' -Force\)\.Delete\(\)")
   Assert-True $m.Success "$($desc): no .Delete() command in the message: $err"
   $global:PWNED = $false
-  Invoke-Expression $m.Value
+  Push-Location -LiteralPath $folder
+  try { Invoke-Expression $m.Value } finally { Pop-Location }
   Assert-True (-not $global:PWNED) "$($desc): the printed command ran code from the folder name"
 }
 $dirLink = Join-Path $K 'handoff-dirlink.age'
@@ -487,7 +489,7 @@ $r = Invoke-Handoff -Script $hk -ArgText '-To dirlink -Fingerprint'
 Assert-Refusal 'a link to a folder' 1 'handoff-dirlink.age is a link to a folder' $r
 Assert-True ($r.Err.Contains("Don't use Remove-Item on it")) "the folder-link refusal doesn't warn off Remove-Item: $($r.Err)"
 Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) 'the folder-link refusal touched the target folder'
-Invoke-PrintedDelete $r.Err 'a link to a folder'
+Invoke-PrintedDelete $r.Err 'a link to a folder' $K
 Assert-True (-not (Test-Path -LiteralPath $dirLink)) "the printed remedy didn't remove the folder link"
 Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents"
 # In a folder whose name has typographic quotes (PowerShell ends a '...' string
@@ -499,7 +501,10 @@ $hq = Install-Handoff $quoteDir $null
 New-DirLink (Join-Path $quoteDir 'handoff-muse.age') $linkTarget
 $r = Invoke-Handoff -Script $hq -ArgText '-Fingerprint'
 Assert-Refusal 'a folder link in a folder named with typographic quotes' 1 'is a link to a folder' $r
-Invoke-PrintedDelete $r.Err 'a folder link in a folder named with typographic quotes'
+# A path that isn't printable ASCII gets the script-folder form: a 5.1
+# console would mangle the quotes in a full path.
+Assert-True ($r.Err.Contains("(Get-Item -LiteralPath '.\handoff-muse.age' -Force).Delete(), run in this script's folder")) "a folder link in a non-ASCII folder didn't get the script-folder form: $($r.Err)"
+Invoke-PrintedDelete $r.Err 'a folder link in a folder named with typographic quotes' $quoteDir
 Assert-True (-not (Test-Path -LiteralPath (Join-Path $quoteDir 'handoff-muse.age'))) "the printed remedy didn't remove the link in a quote-named folder"
 Assert-True (Test-Path -LiteralPath (Join-Path $linkTarget 'keep.txt')) "the printed remedy removed the target's contents (quote-named folder)"
 Say 'ok (a link to a folder gets a remedy that removes only the link)'

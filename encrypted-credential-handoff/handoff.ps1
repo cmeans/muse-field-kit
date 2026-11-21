@@ -297,9 +297,12 @@ stdout is ONLY the base64 ciphertext; all prompts go to stderr.
         # it asks to recurse in Windows PowerShell 5.1, and yes deletes the
         # folder's contents (issue #83). Delete() removes only the link.
         if ($li.LinkType -ceq 'Junction' -or $li.PSIsContainer) {
-          # The command names the path only if it prints as it is; otherwise
-          # it's run from the script's folder.
-          if ($kf -ceq $keyfile) { $del = "(Get-Item -LiteralPath $(Format-Name $keyfile) -Force).Delete()" }
+          # The command names the full path only if it's printable ASCII: a
+          # character Format-Shown changes isn't the path any more, and Windows
+          # PowerShell 5.1 writes stderr in the console's code page, which turns
+          # a typographic quote into ' or ` (the pasted path then names nothing).
+          # Otherwise it's run from the script's folder, by the ASCII name.
+          if ($keyfile -cmatch '^[\x20-\x7E]*\z') { $del = "(Get-Item -LiteralPath $(Format-Name $keyfile) -Force).Delete()" }
           else { $del = "(Get-Item -LiteralPath '.\handoff-$To.age' -Force).Delete(), run in this script's folder" }
           Stop-Key "$kf is a link to a folder (a junction or a directory symlink): remove only the link with $del, then save the agent's recipient there as a plain file. Don't use Remove-Item on it: in Windows PowerShell 5.1 it can delete the folder's contents"
         }
