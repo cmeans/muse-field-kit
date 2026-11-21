@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **CI runs the whole suite as root too, and with a Latin-1 locale** (refs #79, #85): root is how Muse's agent runs it.
 - **The README drops its "Coming from 0.1.0?" note** (#122): nobody outside the project installed 0.1.0. The two refusals for a 0.1.0 RSA key no longer point at the README for it.
 
 ## 0.2.1 — 2026-11-20 — rotation and stores, hardened

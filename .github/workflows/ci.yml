@@ -551,6 +551,7 @@ jobs:
             bash -c 'set -e
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
+              # Unpinned on purpose: see the Install step of the macos job.
               apt-get install -y -qq age jq python3 openssl >/dev/null
               echo "uid: $(id -u)"; age --version; jq --version; python3 --version
               cp -r /w /root/w
