@@ -3809,20 +3809,22 @@ grep -qF "HANDOFF_KEY_DIR=$S/kdhome/.config/handoff agent-setup.sh makes it" "$S
 # override, as it does a control character.
 # Also the invisible ones issue #80 item 3 found: tag characters (U+E0001,
 # U+E007F), variation selectors (U+FE0F, U+E0100), U+180E, U+206A, U+206F,
-# U+FFF9, U+034F and U+3164, and the blank fillers U+115F, U+1160, U+FFA0 and
-# U+2800.
+# U+FFF9, U+034F and U+3164, the blank fillers U+115F, U+1160, U+FFA0 and
+# U+2800, and the rest of Unicode's default-ignorables (U+180B, U+180F,
+# U+17B4, U+2065, U+FFF0, U+1BCA0, U+1D173, U+E0080, U+E0FFF).
 for ch in $'\xe2\x80\xa8' $'\xc2\x85' $'\xe2\x80\xae' $'\xe2\x81\xa6' $'\xe2\x80\x8f' $'\xe2\x80\x8b' $'\xd8\x9c' $'\xef\xbb\xbf' $'\xc2\xad' $'\xe2\x81\xa0' \
           $'\xf3\xa0\x80\x81' $'\xf3\xa0\x81\xbf' $'\xef\xb8\x8f' $'\xf3\xa0\x84\x80' $'\xe1\xa0\x8e' $'\xe2\x81\xaa' $'\xe2\x81\xaf' $'\xef\xbf\xb9' $'\xcd\x8f' $'\xe3\x85\xa4' \
-          $'\xe1\x85\x9f' $'\xe1\x85\xa0' $'\xef\xbe\xa0' $'\xe2\xa0\x80'; do
+          $'\xe1\x85\x9f' $'\xe1\x85\xa0' $'\xef\xbe\xa0' $'\xe2\xa0\x80' \
+          $'\xe1\xa0\x8b' $'\xe1\xa0\x8f' $'\xe1\x9e\xb4' $'\xe2\x81\xa5' $'\xef\xbf\xb0' $'\xf0\x9b\xb2\xa0' $'\xf0\x9d\x85\xb3' $'\xf3\xa0\x82\x80' $'\xf3\xa0\xbf\xbf'; do
   expect_refusal "setup into a key directory with $(LC_ALL=C printf '%q' "$ch")" 1 "has a control or hidden character in its path" \
     env HANDOFF_KEY_DIR="$S/sep${ch}recipient: age1fake" bash ../agent-setup.sh
   [ ! -e "$S/sep${ch}recipient: age1fake" ] || fail "setup made a key directory with $(LC_ALL=C printf '%q' "$ch")"
 done
-# A key directory with other non-ASCII (an é, or U+E0080, which no list
+# A key directory with other non-ASCII (an é, or U+1F600, which no list
 # names) is allowed. A message shows its path escaped (setup's, --check-setup's
 # and --fingerprint's lines); a command to paste keeps the bytes, so it names
 # the same directory (issue #80 item 3, the maintainer's choice).
-for ch in $'\xc3\xa9' $'\xf3\xa0\x82\x80'; do
+for ch in $'\xc3\xa9' $'\xf0\x9f\x98\x80'; do
   na="$S/jos${ch} x"; rm -rf "$na"
   # Before setup, --check-setup's command makes the key where HANDOFF_PRIVKEY points.
   env LC_ALL="${utf8_loc:-C}" HANDOFF_PRIVKEY="$na/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>&1 || true
@@ -3848,8 +3850,24 @@ lit="$S/n\\303\\251w"; real="$S/n"$'\xc3\xa9'"w"
 for d in "$lit" "$real"; do rm -rf "$d"; env HANDOFF_KEY_DIR="$d" bash ../agent-setup.sh >/dev/null 2>&1 || fail "setup into $(LC_ALL=C printf '%q' "$d") failed"; done
 a=$(env HANDOFF_PRIVKEY="$lit/handoff-identity.txt" bash ../agent-setup.sh --check-setup 2>&1 | grep '^PASS identity') || true
 b=$(env HANDOFF_PRIVKEY="$real/handoff-identity.txt" bash ../agent-setup.sh --check-setup 2>&1 | grep '^PASS identity') || true
-[ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ] || fail "a literal \\303\\251 and an é showed alike: $a"
+case "$a" in *"the key at $lit/handoff-identity.txt passes"*) ;; *) fail "a literal \\303\\251 directory's identity line: $a" ;; esac
+case "$b" in *"the key at $(LC_ALL=C printf '%q' "$real/handoff-identity.txt") passes"*) ;; *) fail "an é directory's identity line: $b" ;; esac
 rm -rf "$lit" "$real"
+# Setup's note for a path shown escaped but with nothing a shell reads
+# specially: the form to write in a wrapper, bytes as they are (sh and dash
+# don't read $'...').
+eo="$S/n"$'\xc3\xa9'"o"; rm -rf "$eo"
+env HANDOFF_KEY_DIR="$eo" bash ../agent-setup.sh >"$S/out" 2>&1 || fail "setup into an é directory failed"
+grep -qxF "note: that path is shown escaped above; write it in every wrapper as HANDOFF_PRIVKEY='$eo/handoff-identity.txt'" "$S/out" \
+  || fail "setup gave no wrapper form for an escaped path: $(grep note "$S/out")"
+rm -rf "$eo"
+# cs_out folds every character has_ctl flags into a space, for text that
+# isn't a path (a tool's version, PATH).
+fns=$(sed -n -e '/^cs_out() {/,/^}/p' ../agent-setup.sh)
+for ch in $'\xf3\xa0\x80\x81' $'\xe1\xa0\x8b' $'\xf0\x9d\x85\xb3' $'\xef\xbf\xb0' $'\xe2\x81\xa5' $'\xe2\x80\xae'; do
+  got=$(bash -c 'eval "$1"; cs_out INFO x "$2"' _ "$fns" "a${ch}b")
+  [ "$got" = "INFO x: a b" ] || fail "cs_out didn't fold $(LC_ALL=C printf '%q' "$ch"): $(printf '%s' "$got" | LC_ALL=C cat -v)"
+done
 echo "ok (a non-ASCII key directory works, its path is shown escaped, and a command to paste names it)"
 # With a killed run's lock and no key, the identity line doesn't tell the
 # agent to run setup, which the lock would refuse.
@@ -4027,7 +4045,7 @@ rm -r "$S/dashdir"
 # A key directory with a control character in its path is refused before
 # anything is made: the printed path could pass for other lines of output.
 nlkd="$S/a"$'\n'"recipient: age1fake"
-expect_refusal "setup into a key directory with a newline" 1 "has a control or hidden character in its path (a newline?); nothing was written" \
+expect_refusal "setup into a key directory with a newline" 1 "has a control or hidden character in its path (LC_ALL=C ls -b shows it); nothing was written" \
   env HANDOFF_KEY_DIR="$nlkd" bash ../agent-setup.sh
 [ ! -e "$nlkd" ] || fail "setup made a key directory with a newline in its path"
 ! grep -q '^recipient: age1fake' "$S/err" || fail "the refusal printed the path's newline raw"

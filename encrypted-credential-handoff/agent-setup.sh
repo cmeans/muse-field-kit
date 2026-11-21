@@ -121,7 +121,7 @@ expand_home() {  # PATH WHAT
   # shellcheck disable=SC2088  # matching a literal ~ is the point
   case "$1" in
     "~"|"~/"*) need_home "a ~ in $2"; printf '%s\n' "$HOME${1#\~}" ;;
-    "~"*) echo "agent-setup.sh: $2 $(sq "$1" || qp "$1"): only ~/ is expanded, not ~user; use an absolute path" >&2
+    "~"*) echo "agent-setup.sh: $2 $(if [ "$(shown "$1")" = "$1" ]; then sq "$1"; else qp "$1"; fi): only ~/ is expanded, not ~user; use an absolute path" >&2
           return 1 ;;
     *) printf '%s\n' "$1" ;;
   esac
@@ -130,22 +130,22 @@ expand_home() {  # PATH WHAT
 # Whether a string has a control character, or a UTF-8 character that breaks,
 # reorders or hides part of a line where it's shown: U+0085, U+2028, U+2029,
 # the bidi marks, embeddings, overrides and isolates (U+061C, U+200E-F,
-# U+202A-E, U+2066-9), and the invisible ones (U+00AD, U+034F, U+180E,
-# U+200B-D, U+2060-4, U+206A-F, U+3164, U+FE00-F, U+FEFF, U+FFF9-B, the tags
-# U+E0000-7F, the variation selectors U+E0100-EF, and the blank fillers
-# U+115F, U+1160, U+2800 and U+FFA0). Checked in C, by bytes; cs_out folds the
+# U+202A-E, U+2066-9), and the invisible ones: Unicode's default-ignorable
+# code points (U+00AD, U+034F, U+115F-60, U+17B4-5, U+180B-F, U+200B-D,
+# U+2060-6F, U+3164, U+FE00-F, U+FEFF, U+FFA0, U+FFF0-8, U+1BCA0-3,
+# U+1D173-A and U+E0000-E0FFF, the tags and variation selectors among them)
+# and the blanks U+2800 and U+FFF9-B. Checked in C, by bytes; cs_out folds the
 # same list. Refusals and sq use it; a path shown in a message doesn't rely
 # on it (qp and shown escape every byte outside printable ASCII).
 has_ctl() {
   ( LC_ALL=C
     [[ "$1" =~ [[:cntrl:]] ]] && exit 0
     case "$1" in
-      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xc2\xad'*|*$'\xd8\x9c'*|*$'\xcd\x8f'*|*$'\xe1\xa0\x8e'*) exit 0 ;;
-      *$'\xe2\x80'[$'\x8b'-$'\x8f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*) exit 0 ;;
-      *$'\xe2\x81'[$'\xa0'-$'\xa4']*|*$'\xe2\x81'[$'\xa6'-$'\xa9']*|*$'\xe2\x81'[$'\xaa'-$'\xaf']*) exit 0 ;;
-      *$'\xe3\x85\xa4'*|*$'\xef\xb8'[$'\x80'-$'\x8f']*|*$'\xef\xbb\xbf'*|*$'\xef\xbf'[$'\xb9'-$'\xbb']*) exit 0 ;;
-      *$'\xf3\xa0'[$'\x80'-$'\x81']*|*$'\xf3\xa0'[$'\x84'-$'\x87']*) exit 0 ;;
-      *$'\xe1\x85'[$'\x9f'-$'\xa0']*|*$'\xef\xbe\xa0'*|*$'\xe2\xa0\x80'*) exit 0 ;;
+      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xc2\xad'*|*$'\xd8\x9c'*|*$'\xcd\x8f'*) exit 0 ;;
+      *$'\xe1\x85'[$'\x9f'-$'\xa0']*|*$'\xe1\x9e'[$'\xb4'-$'\xb5']*|*$'\xe1\xa0'[$'\x8b'-$'\x8f']*) exit 0 ;;
+      *$'\xe2\x80'[$'\x8b'-$'\x8f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*|*$'\xe2\x81'[$'\xa0'-$'\xaf']*|*$'\xe2\xa0\x80'*) exit 0 ;;
+      *$'\xe3\x85\xa4'*|*$'\xef\xb8'[$'\x80'-$'\x8f']*|*$'\xef\xbb\xbf'*|*$'\xef\xbe\xa0'*|*$'\xef\xbf'[$'\xb0'-$'\xbb']*) exit 0 ;;
+      *$'\xf0\x9b\xb2'[$'\xa0'-$'\xa3']*|*$'\xf0\x9d\x85'[$'\xb3'-$'\xba']*|*$'\xf3\xa0'[$'\x80'-$'\xbf']*) exit 0 ;;
     esac
     exit 1 )
 }
@@ -624,21 +624,21 @@ cs_out() {  # STATUS NAME DETAIL
        x=${x//$'\xc2\xad'/ }
        x=${x//$'\xd8\x9c'/ }
        x=${x//$'\xcd\x8f'/ }
-       x=${x//$'\xe1\xa0\x8e'/ }
+       x=${x//$'\xe1\x85'[$'\x9f'-$'\xa0']/ }
+       x=${x//$'\xe1\x9e'[$'\xb4'-$'\xb5']/ }
+       x=${x//$'\xe1\xa0'[$'\x8b'-$'\x8f']/ }
        x=${x//$'\xe2\x80'[$'\x8b'-$'\x8f']/ }
        x=${x//$'\xe2\x80'[$'\xa8'-$'\xae']/ }
-       x=${x//$'\xe2\x81'[$'\xa0'-$'\xa4']/ }
-       x=${x//$'\xe2\x81'[$'\xa6'-$'\xa9']/ }
-       x=${x//$'\xe2\x81'[$'\xaa'-$'\xaf']/ }
+       x=${x//$'\xe2\x81'[$'\xa0'-$'\xaf']/ }
+       x=${x//$'\xe2\xa0\x80'/ }
        x=${x//$'\xe3\x85\xa4'/ }
        x=${x//$'\xef\xb8'[$'\x80'-$'\x8f']/ }
        x=${x//$'\xef\xbb\xbf'/ }
-       x=${x//$'\xef\xbf'[$'\xb9'-$'\xbb']/ }
-       x=${x//$'\xf3\xa0'[$'\x80'-$'\x81']?/ }
-       x=${x//$'\xf3\xa0'[$'\x84'-$'\x87']?/ }
-       x=${x//$'\xe1\x85'[$'\x9f'-$'\xa0']/ }
        x=${x//$'\xef\xbe\xa0'/ }
-       x=${x//$'\xe2\xa0\x80'/ }
+       x=${x//$'\xef\xbf'[$'\xb0'-$'\xbb']/ }
+       x=${x//$'\xf0\x9b\xb2'[$'\xa0'-$'\xa3']/ }
+       x=${x//$'\xf0\x9d\x85'[$'\xb3'-$'\xba']/ }
+       x=${x//$'\xf3\xa0'[$'\x80'-$'\xbf']?/ }
        printf '%s' "$x" )
   printf '%s %s: %s\n' "$1" "$2" "$d"
   [ "$1" != FAIL ] || cs_failed=1
@@ -1191,7 +1191,7 @@ fi
 # absolute path below will have it.
 case "$KEY_DIR" in /*) kd_abs=$KEY_DIR ;; *) kd_abs=$PWD/$KEY_DIR ;; esac
 if has_ctl "$kd_abs"; then
-  echo "agent-setup.sh: the key directory $(qp "$kd_abs") has a control or hidden character in its path (a newline?); nothing was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
+  echo "agent-setup.sh: the key directory $(qp "$kd_abs") has a control or hidden character in its path (LC_ALL=C ls -b shows it); nothing was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
   exit 1
 fi
 PRIV="$KEY_DIR/handoff-identity.txt"
@@ -1240,7 +1240,7 @@ case "$KEY_DIR" in /*) ;; *) KEY_DIR="./$KEY_DIR" ;; esac  # not cd's "-" or a s
 KEY_DIR=$(cd -- "$KEY_DIR" && pwd)
 # Again on the path that is printed (the check above saw the logical one).
 if has_ctl "$KEY_DIR"; then
-  echo "agent-setup.sh: the key directory $(qp "$KEY_DIR") has a control or hidden character in its path (a newline?); no key was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
+  echo "agent-setup.sh: the key directory $(qp "$KEY_DIR") has a control or hidden character in its path (LC_ALL=C ls -b shows it); no key was written. Choose another directory (HANDOFF_KEY_DIR)." >&2
   exit 1
 fi
 PRIV="$KEY_DIR/handoff-identity.txt"
@@ -1320,4 +1320,8 @@ fi
 shell_special='[][[:space:][:cntrl:]'\''"\\$`*?#~&;|<>(){}!^]'
 if ( LC_ALL=C; [[ "$PRIV" =~ $shell_special ]] ); then
   echo "note: that path has characters a shell reads specially: quote it in every wrapper, as HANDOFF_PRIVKEY=$(sq "$PRIV")"
+elif [ "$(shown "$PRIV")" != "$PRIV" ]; then
+  # Shown escaped above ($'...', which sh and dash don't read): the form to
+  # write, with its bytes as they are.
+  echo "note: that path is shown escaped above; write it in every wrapper as HANDOFF_PRIVKEY=$(sq "$PRIV")"
 fi

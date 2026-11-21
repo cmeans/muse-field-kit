@@ -234,7 +234,7 @@ check_setup() {
     if v=$(env -i PATH="${PATH-}" age --version </dev/null 2>/dev/null | head -n 1) && [ -n "$v" ]; then
       cs_out PASS age "$v"; have_age=1
     else
-      cs_out FAIL age "found at $p, but 'age --version' did not run; reinstall age (README.md, Installing age)"
+      cs_out FAIL age "found at $(qp "$p"), but 'age --version' did not run; reinstall age (README.md, Installing age)"
     fi
   else
     cs_out FAIL age "not found on PATH; install it (README.md, Installing age)"
@@ -246,7 +246,7 @@ check_setup() {
       v=$(env -i PATH="${PATH-}" age-keygen --version </dev/null 2>/dev/null | head -n 1)
       cs_out PASS age-keygen "${v:-made a throwaway identity}"; have_keygen=1
     else
-      cs_out FAIL age-keygen "found at $p, but it did not make an identity; reinstall age"
+      cs_out FAIL age-keygen "found at $(qp "$p"), but it did not make an identity; reinstall age"
     fi
   else
     cs_out INFO age-keygen "not found; this side never needs it. The round trip below is encrypt-only (decrypt skipped)"
