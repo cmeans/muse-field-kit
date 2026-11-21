@@ -136,6 +136,7 @@ jobs:
           echo "HANDOFF_TEST_OTHER_OWNER_DIR=$RUNNER_TEMP/other-owner-dir" >> "$GITHUB_ENV"
           echo "HANDOFF_TEST_ROOT_DIR=$RUNNER_TEMP/root-dir" >> "$GITHUB_ENV"
       - name: Install age from apt
+        # Unpinned on purpose: see the macos job's Install step.
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq age
@@ -445,10 +446,10 @@ jobs:
         env:
           GOFLAGS: -mod=mod
           GONOSUMDB: ""
-          AGE_VERSION: ${{ matrix.age }}
+          MATRIX_AGE: ${{ matrix.age }}
         run: |
           mkdir -p "$RUNNER_TEMP/age-bin"
-          GOBIN="$RUNNER_TEMP/age-bin" go install "filippo.io/age/cmd/...@$AGE_VERSION"
+          GOBIN="$RUNNER_TEMP/age-bin" go install "filippo.io/age/cmd/...@$MATRIX_AGE"
           echo "$RUNNER_TEMP/age-bin" >> "$GITHUB_PATH"
       - name: Tool versions
         run: |
@@ -468,13 +469,13 @@ jobs:
         # input rules and platform facilities that don't depend on the age
         # version, and 5 needs the root-owned key and a terminal.
         env:
-          AGE_VERSION: ${{ matrix.age }}
+          MATRIX_AGE: ${{ matrix.age }}
         run: |
           set -o pipefail
           export HANDOFF_TEST_ONLY="1a 1b 1c 1d 2a 2b 3a 4a 4b 5a 6 8"
           ./encrypted-credential-handoff/test/run-test.sh | tee "$RUNNER_TEMP/run-test.log"
-          if ! grep -q "^age: .*$AGE_VERSION" "$RUNNER_TEMP/run-test.log"; then
-            echo "age --version does not show $AGE_VERSION: the matrix did not test that version"
+          if ! grep -q "^age: .*$MATRIX_AGE" "$RUNNER_TEMP/run-test.log"; then
+            echo "age --version does not show $MATRIX_AGE: the matrix did not test that version"
             exit 1
           fi
           if grep -E '^(skip:|n/a on this OS)' "$RUNNER_TEMP/run-test.log"; then
@@ -730,6 +731,7 @@ jobs:
           name: windows-interop-blobs
           path: ${{ runner.temp }}/windows-interop
       - name: Install age from apt
+        # Unpinned on purpose: see the macos job's Install step.
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq age
