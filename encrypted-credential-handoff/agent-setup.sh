@@ -130,25 +130,40 @@ expand_home() {  # PATH WHAT
 # Whether a string has a control character, or a UTF-8 character that breaks,
 # reorders or hides part of a line where it's shown: U+0085, U+2028, U+2029,
 # the bidi marks, embeddings, overrides and isolates (U+061C, U+200E-F,
-# U+202A-E, U+2066-9), and the invisible ones (U+00AD, U+200B-D, U+2060-4,
-# U+FEFF). Checked in C, by bytes; cs_out folds the same list.
+# U+202A-E, U+2066-9), and the invisible ones (U+00AD, U+034F, U+180E,
+# U+200B-D, U+2060-4, U+206A-F, U+3164, U+FE00-F, U+FEFF, U+FFF9-B, the tags
+# U+E0000-7F and the variation selectors U+E0100-EF). Checked in C, by bytes;
+# cs_out folds the same list. A refusal uses it; what's printed doesn't rely
+# on it (qp and cs_out escape every byte outside printable ASCII).
 has_ctl() {
   ( LC_ALL=C
     [[ "$1" =~ [[:cntrl:]] ]] && exit 0
     case "$1" in
-      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xc2\xad'*|*$'\xd8\x9c'*) exit 0 ;;
+      *$'\xc2'[$'\x80'-$'\x9f']*|*$'\xc2\xad'*|*$'\xd8\x9c'*|*$'\xcd\x8f'*|*$'\xe1\xa0\x8e'*) exit 0 ;;
       *$'\xe2\x80'[$'\x8b'-$'\x8f']*|*$'\xe2\x80'[$'\xa8'-$'\xae']*) exit 0 ;;
-      *$'\xe2\x81'[$'\xa0'-$'\xa4']*|*$'\xe2\x81'[$'\xa6'-$'\xa9']*|*$'\xef\xbb\xbf'*) exit 0 ;;
+      *$'\xe2\x81'[$'\xa0'-$'\xa4']*|*$'\xe2\x81'[$'\xa6'-$'\xa9']*|*$'\xe2\x81'[$'\xaa'-$'\xaf']*) exit 0 ;;
+      *$'\xe3\x85\xa4'*|*$'\xef\xb8'[$'\x80'-$'\x8f']*|*$'\xef\xbb\xbf'*|*$'\xef\xbf'[$'\xb9'-$'\xbb']*) exit 0 ;;
+      *$'\xf3\xa0'[$'\x80'-$'\x81']*|*$'\xf3\xa0'[$'\x84'-$'\x87']*) exit 0 ;;
     esac
     exit 1 )
 }
-# A path in a message, quoted as the shell would (printf %q): a name with a
-# newline or other control character can't pass for a line of output. One
-# has_ctl flags is quoted in C, so every such byte is escaped (in a UTF-8
-# locale, %q leaves a bidi override as it is).
+# A path in a message, quoted as the shell would (printf %q), in C: a name with
+# a newline or other control character can't pass for a line of output, and
+# every byte outside printable ASCII is escaped (\303\251 for an é), so no
+# character can hide, reorder or pass for another (in a UTF-8 locale, %q
+# leaves a bidi override or a tag character as it is).
 qp() {
-  if has_ctl "$1"; then ( LC_ALL=C; printf '%q' "$1" ); return; fi
-  printf '%q' "$1"
+  ( LC_ALL=C; printf '%q' "$1" )
+}
+# A path shown as it is when every byte is printable ASCII (so a plain path
+# reads as before), and as qp shows it otherwise. The range is safe here: in
+# C, every bash compares a range by byte value.
+shown() {
+  ( LC_ALL=C
+    case "$1" in
+      *[!' '-'~']*) printf '%q' "$1" ;;
+      *) printf '%s' "$1" ;;
+    esac )
 }
 # A path single-quoted for a POSIX shell, for a command the user copies (and
 # may run as root, or under sh). A path has_ctl flags gets no command at all:
@@ -591,7 +606,8 @@ usage() {
 cs_failed=0
 cs_out() {  # STATUS NAME DETAIL
   # Every character has_ctl flags becomes a space (a \r would let the rest
-  # of a path overprint the line), in C, by bytes.
+  # of a path overprint the line), and every other byte outside printable
+  # ASCII is shown as qp shows it (\303\251 for an é), in C, by bytes.
   local d
   d=$( LC_ALL=C
        x=$3
@@ -599,11 +615,32 @@ cs_out() {  # STATUS NAME DETAIL
        x=${x//$'\xc2'[$'\x80'-$'\x9f']/ }
        x=${x//$'\xc2\xad'/ }
        x=${x//$'\xd8\x9c'/ }
+       x=${x//$'\xcd\x8f'/ }
+       x=${x//$'\xe1\xa0\x8e'/ }
        x=${x//$'\xe2\x80'[$'\x8b'-$'\x8f']/ }
        x=${x//$'\xe2\x80'[$'\xa8'-$'\xae']/ }
        x=${x//$'\xe2\x81'[$'\xa0'-$'\xa4']/ }
        x=${x//$'\xe2\x81'[$'\xa6'-$'\xa9']/ }
+       x=${x//$'\xe2\x81'[$'\xaa'-$'\xaf']/ }
+       x=${x//$'\xe3\x85\xa4'/ }
+       x=${x//$'\xef\xb8'[$'\x80'-$'\x8f']/ }
        x=${x//$'\xef\xbb\xbf'/ }
+       x=${x//$'\xef\xbf'[$'\xb9'-$'\xbb']/ }
+       x=${x//$'\xf3\xa0'[$'\x80'-$'\x81']?/ }
+       x=${x//$'\xf3\xa0'[$'\x84'-$'\x87']?/ }
+       case $x in
+         *[$'\x80'-$'\xff']*)
+           # printf %q of one byte, in C, is $'\ooo' on every bash.
+           y="" q=""
+           while [ -n "$x" ]; do
+             c=${x:0:1}; x=${x:1}
+             case $c in
+               [$'\x80'-$'\xff']) printf -v q '%q' "$c"; q=${q#\$\'}; y+=${q%\'} ;;
+               *) y+=$c ;;
+             esac
+           done
+           x=$y ;;
+       esac
        printf '%s' "$x" )
   printf '%s %s: %s\n' "$1" "$2" "$d"
   [ "$1" != FAIL ] || cs_failed=1
@@ -1162,7 +1199,7 @@ fi
 PRIV="$KEY_DIR/handoff-identity.txt"
 
 if [ -e "$PRIV" ] || [ -L "$PRIV" ]; then  # a dangling symlink there too
-  echo "refusing to overwrite existing key: $PRIV" >&2
+  echo "refusing to overwrite existing key: $(shown "$PRIV")" >&2
   # sq, not %q (dash); setup refused a path sq won't quote, above.
   echo "if a setup was cut short, this is its key: HANDOFF_PRIVKEY=$(pq "$PRIV") agent-setup.sh --public-key shows it; to replace it, see ROTATION.md" >&2
   # --rotate sweeps only for a key it would rotate, and only if it would
@@ -1244,13 +1281,13 @@ chmod -- 600 "$new"
 RCPT=$(recipient_of "$new" 2>/dev/null) \
   || { echo "the new key didn't check out (a full disk?); nothing was written" >&2; exit 1; }
 ln -- "$new" "$PRIV" || {
-  echo "could not link the new key into place at $PRIV; nothing was written (the key directory needs hard links, SETUP.md step 1, or a key appeared meanwhile)" >&2
+  echo "could not link the new key into place at $(shown "$PRIV"); nothing was written (the key directory needs hard links, SETUP.md step 1, or a key appeared meanwhile)" >&2
   exit 1
 }
 if [ -d "$PRIV" ]; then
   # $PRIV became a directory meanwhile, and ln put the key inside it.
   rm -f -- "$PRIV/${new##*/}"
-  echo "could not link the new key into place at $PRIV (it is now a directory); nothing was written" >&2
+  echo "could not link the new key into place at $(shown "$PRIV") (it is now a directory); nothing was written" >&2
   exit 1
 fi
 if [ ! "$PRIV" -ef "$new" ]; then
@@ -1263,7 +1300,7 @@ fi
 # not left for the EXIT trap (a kill before it would leave it).
 rm -rf -- "$newd"; newd=""; new=""
 
-echo "identity written to $PRIV (mode 600) — never copy it off this machine"
+echo "identity written to $(shown "$PRIV") (mode 600) — never copy it off this machine"
 echo
 echo "recipient: $RCPT"
 echo "report this recipient to the human; they compare it with handoff.sh's output"
@@ -1272,7 +1309,7 @@ show_recipient "$RCPT"
 echo
 echo "consume side: the decrypt helper reads \$HANDOFF_PRIVKEY"
 echo "(default ~/.config/handoff/handoff-identity.txt)."
-echo "this key lives at: $PRIV"
+echo "this key lives at: $(shown "$PRIV")"
 # One form of the path, the one above (issue #5 item 4): the wrappers set
 # HANDOFF_PRIVKEY to it as written, quoted if the shell needs it.
 if [ -z "${HOME-}" ] || [ "$PRIV" != "$(default_dir)/handoff-identity.txt" ]; then
