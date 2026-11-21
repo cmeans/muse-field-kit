@@ -2231,6 +2231,13 @@ if [ -n "${utf8_loc-}" ]; then
   expect_refusal "handoff.sh an unknown option with a bidi override" 2 "unknown option" \
     env LC_ALL="$utf8_loc" bash "$S/hd/handoff.sh" "--x"$'\xe2\x80\xae'"y"
   ! LC_ALL=C grep -q $'\xe2\x80\xae' "$S/err" || fail "a bidi override in an unknown option was printed raw"
+  # ...and so is any other byte outside printable ASCII: a tag character, an é.
+  for ch in $'\xf3\xa0\x80\x81' $'\xc3\xa9'; do
+    expect_refusal "handoff.sh --to with $(LC_ALL=C printf '%q' "$ch")" 2 "--to NAME takes only letters" \
+      env LC_ALL="$utf8_loc" bash "$S/hd/handoff.sh" --to "a${ch}b" --fingerprint
+    ! LC_ALL=C grep -qF "$ch" "$S/err" || fail "$(LC_ALL=C printf '%q' "$ch") in --to was printed raw"
+    grep -qF "(got $(LC_ALL=C printf '%q' "a${ch}b"))" "$S/err" || fail "--to's refusal didn't show the name escaped: $(cat "$S/err")"
+  done
 fi
 # The hint is for a long line at the terminal only: the same refusal from a
 # pipe has none, and nor does a short line typed at the prompt.
