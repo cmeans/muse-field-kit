@@ -988,6 +988,9 @@ expect_refusal "age not installed" 1 "age not found" \
 grep -qF "PATH was '/nonexistent'" "$S/err" || fail "the age-not-found message doesn't name the PATH it searched"
 expect_refusal "input not base64" 1 "not valid base64" \
   consume --label example --check --blob '!!not base64!!'
+# A non-ASCII character makes b64decode raise ValueError, not binascii.Error.
+expect_refusal "blob with a non-ASCII character" 1 "not valid base64" \
+  consume --label example --check --blob 'QUJD€REVG'
 python3 -c '
 import base64, sys
 raw = bytearray(base64.b64decode(open(sys.argv[1]).read()))
@@ -1254,6 +1257,12 @@ expect_refusal "payload without svc" 1 "no 'svc' field" \
   consume --label example --check --blob "$(enc '{"username":"mk-Zq9-user"}')"
 expect_refusal "payload not JSON" 1 "not valid JSON" \
   consume --label example --check --blob "$(enc 'mk-Zq9 not json')"
+# parse_payload's other two errors: bytes that aren't UTF-8 (UnicodeDecodeError)
+# and nesting deeper than the interpreter allows (RecursionError).
+expect_refusal "payload not UTF-8" 1 "not valid JSON" \
+  consume --label example --check --blob "$(enc $'\xff\xfe{}')"
+expect_refusal "payload nested too deep" 1 "not valid JSON" \
+  consume --label example --check --blob "$(enc "$("$PY" -c 'print("[" * 20000, end="")')")"
 expect_refusal "payload not a JSON object" 1 "not a JSON object" \
   consume --label example --check --blob "$(enc '["mk-Zq9"]')"
 expect_refusal "credential not a string" 1 "not a string" \
