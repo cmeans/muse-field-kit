@@ -223,7 +223,7 @@ jobs:
             exit 1
           fi
 
-  # The release asset set (handoff.sh, handoff.ps1, SHA256SUMS) builds, is
+  # The release asset set (the four scripts and SHA256SUMS) builds, is
   # byte-identical to the tree, and INSTALL-linux-macos.md's verify command works on it.
   # release.yml builds the same set with the same script.
   assets:
@@ -240,35 +240,38 @@ jobs:
           ls -l "$RUNNER_TEMP/assets"
       - name: The build is deterministic
         run: |
-          for f in handoff.sh handoff.ps1 SHA256SUMS; do
+          for f in agent-setup.sh consume.py handoff.ps1 handoff.sh SHA256SUMS; do
             cmp "$RUNNER_TEMP/assets/$f" "$RUNNER_TEMP/assets-again/$f"
           done
-      - name: Assets are byte-identical to the tree, and the set is exactly three files
+      - name: Assets are byte-identical to the tree, and the set is exactly five files
         run: |
-          for f in handoff.sh handoff.ps1; do
+          for f in agent-setup.sh consume.py handoff.ps1 handoff.sh; do
             cmp "$RUNNER_TEMP/assets/$f" "encrypted-credential-handoff/$f"
           done
-          [ "$(cd "$RUNNER_TEMP/assets" && printf "%s\n" * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS handoff.ps1 handoff.sh " ] \
+          [ "$(cd "$RUNNER_TEMP/assets" && printf "%s\n" * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS agent-setup.sh consume.py handoff.ps1 handoff.sh " ] \
             || { echo "unexpected asset set"; ls -l "$RUNNER_TEMP/assets"; exit 1; }
-      - name: SHA256SUMS is sha256sum -c clean, two sorted LF lines
+      - name: SHA256SUMS is sha256sum -c clean, four sorted LF lines
         run: |
           cd "$RUNNER_TEMP/assets"
           sha256sum -c SHA256SUMS
-          [ "$(wc -l < SHA256SUMS)" -eq 2 ] || { echo "SHA256SUMS must have exactly two lines"; exit 1; }
+          [ "$(wc -l < SHA256SUMS)" -eq 4 ] || { echo "SHA256SUMS must have exactly four lines"; exit 1; }
           if grep -q $'\r' SHA256SUMS; then echo "CR in SHA256SUMS"; exit 1; fi
           [ "$(tail -c 1 SHA256SUMS | od -An -c | tr -d ' ')" = '\n' ] || { echo "SHA256SUMS must end in LF"; exit 1; }
-          [ "$(awk '{print $2}' SHA256SUMS | tr '\n' ' ')" = "handoff.ps1 handoff.sh " ] \
+          [ "$(awk '{print $2}' SHA256SUMS | tr '\n' ' ')" = "agent-setup.sh consume.py handoff.ps1 handoff.sh " ] \
             || { echo "SHA256SUMS names or order wrong"; cat SHA256SUMS; exit 1; }
-          [ "$(grep -Ec '^[0-9a-f]{64}  handoff\.(ps1|sh)$' SHA256SUMS)" -eq 2 ] \
+          [ "$(grep -Ec '^[0-9a-f]{64}  (agent-setup\.sh|consume\.py|handoff\.(ps1|sh))$' SHA256SUMS)" -eq 4 ] \
             || { echo "SHA256SUMS is not in sha256sum format"; cat SHA256SUMS; exit 1; }
-          # A changed byte must fail the check.
-          mkdir "$RUNNER_TEMP/tampered"
-          cp handoff.sh handoff.ps1 SHA256SUMS "$RUNNER_TEMP/tampered/"
-          echo "# tampered" >> "$RUNNER_TEMP/tampered/handoff.sh"
-          if (cd "$RUNNER_TEMP/tampered" && sha256sum -c SHA256SUMS); then
-            echo "sha256sum -c passed on a tampered script"
-            exit 1
-          fi
+          # A changed byte in any of the four must fail the check.
+          for f in agent-setup.sh consume.py handoff.ps1 handoff.sh; do
+            rm -rf "$RUNNER_TEMP/tampered"
+            mkdir "$RUNNER_TEMP/tampered"
+            cp agent-setup.sh consume.py handoff.ps1 handoff.sh SHA256SUMS "$RUNNER_TEMP/tampered/"
+            echo "# tampered" >> "$RUNNER_TEMP/tampered/$f"
+            if (cd "$RUNNER_TEMP/tampered" && sha256sum -c SHA256SUMS); then
+              echo "sha256sum -c passed on a tampered $f"
+              exit 1
+            fi
+          done
       - name: INSTALL-linux-macos.md's verify command works on the assets
         # The command is read from INSTALL-linux-macos.md between its verify-macos-linux
         # markers, so a doc change that breaks it (or drops the markers)
@@ -400,13 +403,15 @@ jobs:
           done
           .github/scripts/readme-block.sh encrypted-credential-handoff/INSTALL-windows.md verify-windows > /dev/null
       - name: release-assets.sh refuses a tree with a missing script
-        # A copy of the script in a tree that has handoff.ps1 but not
-        # handoff.sh: exit status 1, and no output directory.
+        # A copy of the script in a tree that has the other three scripts but
+        # not handoff.sh: exit status 1, and no output directory.
         run: |
           t="$RUNNER_TEMP/broken-tree"
           mkdir -p "$t/.github/scripts" "$t/encrypted-credential-handoff"
           cp .github/scripts/release-assets.sh "$t/.github/scripts/"
-          cp encrypted-credential-handoff/handoff.ps1 "$t/encrypted-credential-handoff/"
+          for f in agent-setup.sh consume.py handoff.ps1; do
+            cp "encrypted-credential-handoff/$f" "$t/encrypted-credential-handoff/"
+          done
           rc=0
           "$t/.github/scripts/release-assets.sh" "$RUNNER_TEMP/broken-out" 2>"$RUNNER_TEMP/broken.err" || rc=$?
           cat "$RUNNER_TEMP/broken.err"
@@ -635,7 +640,7 @@ jobs:
         run: |
           command -v sha256sum shasum || true
           .github/scripts/release-assets.sh "$RUNNER_TEMP/assets"
-          for f in handoff.sh handoff.ps1; do
+          for f in agent-setup.sh consume.py handoff.ps1 handoff.sh; do
             cmp "$RUNNER_TEMP/assets/$f" "encrypted-credential-handoff/$f"
           done
           block=$(.github/scripts/readme-block.sh encrypted-credential-handoff/INSTALL-linux-macos.md verify-macos-linux)
@@ -647,7 +652,7 @@ jobs:
           cd "$RUNNER_TEMP/sh-only"
           bash -euo pipefail -c "$cmd"
           # SHA256SUMS keeps the sha256sum shape: 64 hex, two spaces, a name.
-          [ "$(grep -Ec '^[0-9a-f]{64}  handoff\.(ps1|sh)$' "$RUNNER_TEMP/assets/SHA256SUMS")" -eq 2 ]
+          [ "$(grep -Ec '^[0-9a-f]{64}  (agent-setup\.sh|consume\.py|handoff\.(ps1|sh))$' "$RUNNER_TEMP/assets/SHA256SUMS")" -eq 4 ]
 
   # The Windows side (handoff.ps1) only: no bash, and consume.py, agent-setup.sh
   # and run-test.sh are never run here (the agent side is out of scope on

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build the release asset set for the client scripts: copies handoff.sh and
-# handoff.ps1 from encrypted-credential-handoff/ into OUTDIR and writes
+# Build the release asset set: copies the user's scripts (handoff.sh,
+# handoff.ps1) and the agent's (agent-setup.sh, consume.py) from
+# encrypted-credential-handoff/ into OUTDIR and writes
 # OUTDIR/SHA256SUMS (sha256sum format, LF endings, sorted by name).
 # Deterministic: the same tree gives the same bytes. Runs on Linux and macOS.
 set -euo pipefail
@@ -12,7 +13,7 @@ fi
 out=$1
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 src="$root/encrypted-credential-handoff"
-assets="handoff.ps1 handoff.sh" # sorted, so SHA256SUMS is sorted
+assets="agent-setup.sh consume.py handoff.ps1 handoff.sh" # sorted (LC_ALL=C), so SHA256SUMS is sorted
 
 for f in $assets; do
   [ -f "$src/$f" ] || { echo "release-assets.sh: missing $src/$f" >&2; exit 1; }
