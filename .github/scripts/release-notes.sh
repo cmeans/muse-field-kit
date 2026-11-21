@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # release-notes.sh TAG CHANGELOG OUTFILE
 # Checks the tag is exactly KIT-vX.Y.Z (KIT: lowercase letters, digits and
-# single hyphens, such as encrypted-credential-handoff), that CHANGELOG is
+# single hyphens, such as credential-lockbox), that CHANGELOG is
 # that kit's (its directory is named KIT), and that CHANGELOG has a
 # "## X.Y.Z" heading (optionally followed by " — DATE ..."); writes that
 # section's body to OUTFILE (the release notes). Prints the version on
@@ -18,7 +18,7 @@ outfile=$3
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 if ! printf '%s\n' "$tag" | LC_ALL=C command grep -Eqx '[a-z0-9]+(-[a-z0-9]+)*-v[0-9]+\.[0-9]+\.[0-9]+'; then
-  echo "release-notes.sh: tag '$tag' is not KIT-vX.Y.Z (such as encrypted-credential-handoff-v0.2.1)" >&2
+  echo "release-notes.sh: tag '$tag' is not KIT-vX.Y.Z (such as credential-lockbox-v1.2.3)" >&2
   exit 1
 fi
 kit=${tag%-v*}

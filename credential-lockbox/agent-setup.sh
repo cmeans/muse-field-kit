@@ -3,7 +3,7 @@
 # decrypt the blobs, e.g. your Muse's VM): once to make the identity, and
 # again for recipients and rotations.
 #
-# Makes an age identity (X25519) for the encrypted credential handoff:
+# Makes an age identity (X25519) for the Credential Lockbox:
 #   identity:  ~/.config/handoff/handoff-identity.txt  (mode 0600, NEVER shared)
 #   recipient: printed at the end, for the user to save as handoff-<name>.age beside handoff.sh
 # The recipient is the identity's public key, one line (age1…). The human

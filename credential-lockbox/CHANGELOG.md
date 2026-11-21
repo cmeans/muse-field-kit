@@ -1,8 +1,10 @@
-# Changelog — encrypted-credential-handoff
+# Changelog — Credential Lockbox
 
 ## Unreleased
 
 ### Changed
+
+- **Renamed Credential Lockbox**: the folder is `credential-lockbox/`, the skill `credential-lockbox`, and releases are tagged `credential-lockbox-vX.Y.Z`. Releases through 0.2.1 keep their `encrypted-credential-handoff-v*` tags. The scripts and the `HANDOFF_*` variables keep their names.
 
 - **`agent-setup.sh` quotes any printed path holding `=`, and matches safe characters by name, not by the locale's ranges** (refs #80 items 5, 7, 11, 12): zsh expands `=ls`; the by-hand notes also say how to see a name's bytes on BusyBox.
 - **`agent-setup.sh` removes only the temporary directories it made** (refs #80 items 1, 2, 6, 8): each holds a marker now. A user's `.handoff-tmp.backup/`, or a file named `.handoff-setup.*` or `.handoff-new.*`, is left alone by setup, `--rotate` and `--retire`.

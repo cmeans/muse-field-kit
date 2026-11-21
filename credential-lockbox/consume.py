@@ -8,7 +8,7 @@ coreutils lack. To Python they are the start of this docstring. Keep line
 makes sh print an error on every run. run-test.sh checks the launcher is
 silent.)
 
-Consume-side template for the encrypted credential handoff.
+Consume-side template for the Credential Lockbox.
 
 Fetches nothing itself: the caller (a per-service wrapper) fetches the
 base64 blob from wherever ciphertexts are stored and supplies it by

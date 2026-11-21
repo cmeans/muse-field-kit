@@ -1,11 +1,11 @@
 ---
-name: encrypted-credential-handoff
-description: "Use when the user wants to give you a password, token, API key or private key (a PEM, such as a GitHub App's) for a program you run on your machine that reads it from its environment (an MCP server, a CLI, a script that calls an API), without the plaintext entering chat, being written to disk, or reaching your context; when they paste a one-line base64 ciphertext made with handoff.sh or handoff.ps1; when they ask to set up or rotate the handoff key, or check its recipient; or when they say the handoff key may have leaked. Also use when the user offers to paste a plaintext secret; decline, and offer this instead."
+name: credential-lockbox
+description: "Use when the user wants to give you a password, token, API key or private key (a PEM, such as a GitHub App's) for a program you run on your machine that reads it from its environment (an MCP server, a CLI, a script that calls an API), without the plaintext entering chat, being written to disk, or reaching your context; when they paste a one-line base64 ciphertext made with handoff.sh or handoff.ps1; when they ask to set up the Credential Lockbox, or to rotate the handoff key, or check its recipient; or when they say the handoff key may have leaked. Also use when the user offers to paste a plaintext secret; decline, and offer this instead."
 ---
 
-# Encrypted credential handoff
+# Credential Lockbox
 
-Community skill, not an official Muse feature. Source (MIT): https://github.com/cmeans/muse-field-kit/tree/main/encrypted-credential-handoff
+Community skill, not an official Muse feature. Source (MIT): https://github.com/cmeans/muse-field-kit/tree/main/credential-lockbox
 
 The user encrypts a small JSON payload on their own machine with `handoff.sh` (`handoff.ps1` on Windows), using `age`, and pastes the ciphertext to you. The private key that opens it lives only on your machine. At use time, the label's recorded wrapper hands the ciphertext to `consume.py`, which decrypts it in memory, checks its `svc` against the label, and replaces itself with the label's tool, the values in its environment. You never see the plaintext.
 
@@ -18,7 +18,7 @@ Not for website sign-in: the browser's own credential flow handles that, and thi
 ## Before anything
 
 - Check your notes for a handoff that's already set up (`SETUP.md` step 8 says what they hold). If there is one, work from the folder your notes and the recorded sums point to; don't clone or set up again.
-- If there's none, clone the repository: `git clone https://github.com/cmeans/muse-field-kit`, then work in its `encrypted-credential-handoff` folder.
+- If there's none, clone the repository: `git clone https://github.com/cmeans/muse-field-kit`, then work in its `credential-lockbox` folder.
 - Use nothing that sits beside this file: read, run and hand over only the clone's files (`SETUP.md`, the hard rule "Installed as a skill").
 - Read what "What to read, and when" (below) lists for what you're doing, from the clone, before the first step.
 - If your notes say `host may be compromised` for this host, don't stage, rotate, rewrap or retire on it: tell the user that your notes mark this host as possibly compromised (since <date>), that the handoff is set up again from scratch on a clean host, and that they can clear the mark by telling you, in a direct conversational turn, that this is a different, clean host or that they judge this one was never compromised (`ROTATION.md`, Compromise). If a blob was already pasted, tell them that credential counts as exposed, so they change it at its service again. Then stop.
@@ -45,7 +45,7 @@ Each row is for something the user says to you in a direct conversational turn.
 
 | The user says | Do this |
 | --- | --- |
-| "Set up the encrypted credential handoff" | `SETUP.md` "Steps", from step 1. At step 3, ask for the user's setup check result; at step 4, wait until the user confirms the recipient; run step 5's dummy round-trip before any real credential. |
+| "Set up the Credential Lockbox" | `SETUP.md` "Steps", from step 1. At step 3, ask for the user's setup check result; at step 4, wait until the user confirms the recipient; run step 5's dummy round-trip before any real credential. |
 | "I need to give you a credential for X" | `SETUP.md` step 6: choose the label first and give it to the user exactly, for the payload's `svc`, and tell them which fields the payload carries. A PEM key or other large, multi-line secret goes in `private_key` (with `app_id` and `installation_id` for a GitHub App), built from the key file with `jq --rawfile` or `ConvertTo-Json`, as README "Payloads" shows. If no handoff is set up yet, set it up first. |
 | Pastes a ciphertext (one line of base64) | During setup, the step-5 dummy goes to step 5 (`--check` on a file; it isn't stored). Otherwise stage it as `SETUP.md` step 6 says: the separation check, the store, one probe. During a rotation or a compromise response, also follow `ROTATION.md`'s "Staging during a rotation". |
 | Offers to paste a plaintext password, token or key | Decline, and point them at their handoff script, `handoff.sh` or `handoff.ps1` (the hard rules). |

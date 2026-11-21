@@ -1,11 +1,11 @@
-# Test a new store for the credential handoff
+# Test a new store for the Credential Lockbox
 
 Use this prompt to test a remote store that [`STORES.md`](STORES.md) doesn't list as tested. Give the whole prompt to your agent, and name the store you want tested where it says `[store]`.
 
 ---
 
 Test whether `[store]` can hold the encrypted blobs for the credential
-handoff in this folder (`encrypted-credential-handoff`). Work only from
+handoff in this folder (`credential-lockbox`). Work only from
 this folder's files, the `age` tool, and the store's own connection.
 At the end, give me the scorecard at the bottom of this prompt, filled in.
 
@@ -31,7 +31,7 @@ password field padded with the letter `x` to reach the size.
 In bash (the files go in a new private folder from `mktemp -d`, never at a fixed name in `/tmp`, where another user of the machine could have put a link first):
 
 ```sh
-cd encrypted-credential-handoff
+cd credential-lockbox
 T=$(mktemp -d)
 R=$(cat test/handoff-test.age)
 for t in 400 2700 8000 64000; do
@@ -49,7 +49,7 @@ echo "temp folder: $T"
 In PowerShell (a new folder with a random name in the temp folder; the payload is dummy, so its temp file is safe to delete):
 
 ```powershell
-cd encrypted-credential-handoff
+cd credential-lockbox
 $TempDir = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $TempDir | Out-Null
 $R = (Get-Content .\test\handoff-test.age -Raw).Trim()

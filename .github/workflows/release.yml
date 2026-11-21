@@ -13,7 +13,7 @@ name: Release
 # Publishing rule (one step in build, "decide", sets the output publish
 # depends on):
 #   - a push of a release tag, KIT-vX.Y.Z (such as
-#     encrypted-credential-handoff-v0.2.1), publishes;
+#     credential-lockbox-v1.2.3), publishes;
 #   - a workflow_dispatch publishes only with dry_run == 'false' AND when run
 #     on such a tag (github.ref matches refs/tags/*-v*);
 #   - every other case is a dry run: the assets are built and verified,
@@ -21,7 +21,7 @@ name: Release
 #     publishes.
 # A dry run on a branch has no tag, so it skips the checks that need one (the
 # tagged commit is on main and passed CI; the CHANGELOG heading) and builds
-# the assets only. Only encrypted-credential-handoff has release assets
+# the assets only. Only credential-lockbox has release assets
 # today; a tag for another kit is refused until its assets are added here.
 # The repository's "release tags" ruleset lets only the maintainer create,
 # move or delete a v* or *-v* tag.
@@ -103,10 +103,10 @@ jobs:
             echo "$TAG ($GITHUB_SHA) is not on main"
             exit 1
           fi
-          # The kit is the tag's prefix; only encrypted-credential-handoff
+          # The kit is the tag's prefix; only credential-lockbox
           # has release assets (release-assets.sh).
           kit=${TAG%-v*}
-          if [ "$kit" != encrypted-credential-handoff ]; then
+          if [ "$kit" != credential-lockbox ]; then
             echo "$TAG is for kit '$kit', which has no release assets in this workflow"
             exit 1
           fi
@@ -140,7 +140,7 @@ jobs:
           sha256sum -c SHA256SUMS
           [ "$(wc -l < SHA256SUMS)" -eq 4 ]
           for f in agent-setup.sh consume.py handoff.ps1 handoff.sh; do
-            cmp "$f" "$GITHUB_WORKSPACE/encrypted-credential-handoff/$f"
+            cmp "$f" "$GITHUB_WORKSPACE/credential-lockbox/$f"
           done
           [ "$(printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS agent-setup.sh consume.py handoff.ps1 handoff.sh " ]
 
@@ -261,7 +261,7 @@ jobs:
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "encrypted-credential-handoff $VERSION" \
+            --title "Credential Lockbox $VERSION" \
             --notes-file "$RUNNER_TEMP/notes/notes.md" \
             "$RUNNER_TEMP/assets/handoff.sh" \
             "$RUNNER_TEMP/assets/handoff.ps1" \

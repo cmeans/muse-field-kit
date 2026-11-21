@@ -65,7 +65,7 @@ Every command below takes the key path the wrappers use: for a non-default locat
      PATH=/usr/local/bin:/usr/bin:/bin \
      HOME=/home/agent LANG=C.UTF-8 \
      HANDOFF_PRIVKEY=/home/agent/.config/handoff/handoff-identity.txt \
-     /home/agent/muse-field-kit/encrypted-credential-handoff/consume.py --label example \
+     /home/agent/muse-field-kit/credential-lockbox/consume.py --label example \
        --rewrap --blob-file /srv/store/example.blob
    ```
 
@@ -96,7 +96,7 @@ Every command below takes the key path the wrappers use: for a non-default locat
      PATH=/usr/local/bin:/usr/bin:/bin \
      HOME=/home/agent LANG=C.UTF-8 \
      HANDOFF_PRIVKEY=/home/agent/.config/handoff/handoff-identity.txt \
-     /home/agent/muse-field-kit/encrypted-credential-handoff/consume.py --label "$label" \
+     /home/agent/muse-field-kit/credential-lockbox/consume.py --label "$label" \
        --rewrap --blob-file "$f"
    if [ "$(cksum <"$f")" = "$before" ]; then rm -f "$f"; echo "store unchanged" >&2; exit 0; fi
    fetch >"$f.now" || { rm -f "$f.now"; echo "re-fetch failed; store unchanged, $f kept" >&2; exit 4; }
