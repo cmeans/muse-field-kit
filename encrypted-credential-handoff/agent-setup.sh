@@ -392,11 +392,6 @@ rotate_would_sweep() {  # KEY
   if [ -e "$k.previous.previous" ] || [ -L "$k.previous.previous" ]; then return 1; fi
   if key_dir_unsafe_msg "$d" >/dev/null; then return 1; fi
   recipient_of "$k" >/dev/null 2>&1 || return 1
-  for f in "$d"/.handoff-new.*; do
-    [ -e "$f" ] || [ -L "$f" ] || continue
-    if [ "$f" = "$d/${k##*/}" ] || [ "$f" = "$d/${k##*/}.previous" ]; then continue; fi
-    if [ ! -f "$f" ] || [ -L "$f" ]; then return 1; fi
-  done
   return 0
 }
 
@@ -492,33 +487,67 @@ lock_dir() {  # DIR
   lock=$l  # only once it's ours, so cleanup never removes another run's
 }
 
+# Whether DIR is a private directory this script made (issue #80 items 1, 2):
+# mktemp's .handoff-tmp.XXXXXX holds a marker, written first, and at most the
+# key age-keygen makes there (<name>.key). Empty counts too (a run killed
+# between mktemp and the marker). Anything else by that name, a user's own
+# .handoff-tmp.backup/ with files in it, is never removed. One made before the
+# marker (0.2.0, 0.2.1) holds only <name>.key: it counts when that file is
+# provably this script's copy, the same file as a KEY given (the live key or
+# its .previous), which no user's directory holds by accident.
+TMP_MARK=.handoff-tmp-mark
+our_tmp_dir() {  # DIR [KEY...]
+  local d="$1" b e has_mark=0 n=0 kf='' k
+  shift
+  b=${d##*/}
+  [ -d "$d" ] && [ ! -L "$d" ] || return 1
+  # One this script made is 0700 and this account's: one it can't read or
+  # search lists as empty, so it isn't taken for one (a user's, mode 0300).
+  [ -r "$d" ] && [ -x "$d" ] || return 1
+  for e in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    n=$((n + 1))
+    case "${e##*/}" in
+      "$TMP_MARK") [ -f "$e" ] && [ ! -L "$e" ] || return 1; has_mark=1 ;;
+      "$b.key") [ -f "$e" ] && [ ! -L "$e" ] || return 1; kf=$e ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$has_mark" -eq 1 ] || [ "$n" -eq 0 ] && return 0
+  # Unmarked, holding only its key: ours if that is a link to a KEY.
+  if [ "$n" -eq 1 ] && [ -n "$kf" ]; then
+    for k in "$@"; do
+      if [ -f "$k" ] && [ ! -L "$k" ] && [ "$kf" -ef "$k" ]; then return 0; fi
+    done
+  fi
+  return 1
+}
+# A new private directory, marked as this script's before anything goes in it.
+new_tmp_dir() {  # DIR -> prints the new directory
+  local t
+  t=$(mktemp -d -- "$1/.handoff-tmp.XXXXXX") || return 1
+  : >"$t/$TMP_MARK" || { rmdir -- "$t"; return 1; }
+  printf '%s\n' "$t"
+}
+
 # What a run killed with SIGKILL after taking the lock leaves: the lock, and
 # perhaps a temporary copy of the key (a second hard link to it). Named, with
 # the lock's rmdir, for a refusal that stops before the lock would; nothing
 # printed when there's neither. Only by the names this script makes.
-leftover_note() {  # DIR WHO (setup: no key, setup sweeps; rotate: a key --rotate can rotate; user: neither)
-  local d="$1" abs f nd=0 nf=0 tmps='' hint
+leftover_note() {  # DIR WHO [KEY] (setup: no key, setup sweeps; rotate: a key --rotate can rotate; user: neither)
+  local d="$1" abs f nd=0 tmps='' hint k="${3-}"
   for f in "$d"/.handoff-tmp.??????; do
-    if [ -d "$f" ] && [ ! -L "$f" ]; then nd=$((nd + 1)); fi
+    if our_tmp_dir "$f" ${k:+"$k" "$k.previous"}; then nd=$((nd + 1)); fi
   done
-  for f in "$d"/.handoff-setup.??????; do
-    if [ -f "$f" ] && [ ! -L "$f" ]; then nf=$((nf + 1)); fi
-  done
-  # Who removes what. With no key yet, the next setup sweeps both kinds (and
-  # --rotate refuses). Once a key exists, --rotate sweeps the directories, and
-  # nothing here removes a .handoff-setup file (--retire only one that is a
-  # hard link to the previous key), so the user is told. Where neither setup
-  # nor --rotate would run (a symlinked key, or another key in the way), the
-  # user is told about both.
-  if [ "$2" = setup ]; then
-    [ $((nd + nf)) -eq 0 ] || tmps="$((nd + nf)) temporary key file(s) or directory(ies) a killed setup left (the next setup removes them)"
-  elif [ "$2" = user ]; then
-    [ $((nd + nf)) -eq 0 ] || tmps="$((nd + nf)) temporary key file(s) or directory(ies) a killed run left (report them to the user, who removes them)"
-  else
-    [ "$nd" -eq 0 ] || tmps="$nd temporary key directory(ies) a killed run left (the next --rotate removes them)"
-    if [ "$nf" -gt 0 ]; then
-      tmps="${tmps:+$tmps, and }$nf temporary key file(s) a killed setup left (report them to the user, who removes them)"
-    fi
+  # Who removes what. With no key yet, the next setup sweeps them (and
+  # --rotate refuses); once a key exists, --rotate does. Where neither would
+  # run (a symlinked key, or another key in the way), the user is told.
+  if [ "$nd" -gt 0 ]; then
+    case "$2" in
+      setup) tmps="$nd temporary key directory(ies) a killed setup left (the next setup removes them)" ;;
+      user) tmps="$nd temporary key directory(ies) a killed run left (report them to the user, who removes them)" ;;
+      *) tmps="$nd temporary key directory(ies) a killed run left (the next --rotate removes them)" ;;
+    esac
   fi
   if [ -L "$d/.handoff-lock" ] || { [ -e "$d/.handoff-lock" ] && [ ! -d "$d/.handoff-lock" ]; }; then
     echo "note: $(qp "$d/.handoff-lock") exists but isn't a directory (no run makes one), and it stops setup, --rotate and --retire${tmps:+; also $tmps}. Report it to the user."
@@ -784,7 +813,7 @@ password: $pwn bytes"
     fi
     # A killed run's lock would stop the next --rotate; say so now, with the
     # remover the identity line above chose (who).
-    if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")" "$who") && [ -n "$kmsg" ]; then
+    if [ -n "$k" ] && kmsg=$(leftover_note "$(dirname -- "$k")" "$who" "$k") && [ -n "$kmsg" ]; then
       cs_out INFO leftovers "${kmsg#note: }"
     fi
   else
@@ -935,24 +964,12 @@ case "$mode" in
       echo "agent-setup.sh: $(qp "$prev.previous") exists, most likely left by an earlier --rotate given $(qp "$prev") as its KEY: the keys aren't where a rotation keeps them, and nothing was rotated. Stop and report it to the user (ROTATION.md: A .previous.previous file)" >&2
       exit 1
     fi
-    for f in "$dir"/.handoff-new.*; do
-      # A temporary key a killed --rotate left (the lock says none is running).
-      [ -e "$f" ] || [ -L "$f" ] || continue
-      # Never the key itself, whatever it's named (by its two names only: a
-      # temporary key hard-linked to the old key is still a temporary file).
-      # Compared as the glob spells them ($dir/name): a relative or doubled-
-      # slash KEY must still match.
-      if [ "$f" = "$dir/${key##*/}" ] || [ "$f" = "$dir/${prev##*/}" ]; then continue; fi
-      if [ ! -f "$f" ] || [ -L "$f" ]; then
-        echo "agent-setup.sh: $(qp "$f") is not a temporary key file; report it to the user" >&2; exit 1
-      fi
-      rm -f -- "$f"
-      echo "note: removed a temporary key a killed --rotate left behind: $(qp "$f")" >&2
-    done
+    # (A .handoff-new.* file is never swept: no version since 0.1.0 makes
+    # one, so one there is the user's, issue #80.)
     for f in "$dir"/.handoff-tmp.??????; do
       # The private directory of a killed --rotate or setup (the lock says
-      # none is running).
-      [ -d "$f" ] && [ ! -L "$f" ] || continue
+      # none is running), by its marker: never a user's directory of that name.
+      our_tmp_dir "$f" "$key" "$prev" || continue
       rm -rf -- "$f"
       echo "note: removed a temporary key directory a killed run left behind: $(qp "$f")" >&2
     done
@@ -976,7 +993,7 @@ case "$mode" in
     # A private directory (mode 0700, beside KEY so the rename stays on one
     # filesystem) holds the new key until it is checked: age-keygen makes the
     # file in it, and no name is ever freed for someone else to plant a link on.
-    newd=$(mktemp -d -- "$dir/.handoff-tmp.XXXXXX") || { echo "agent-setup.sh: cannot write a new key in $(qp "$dir")" >&2; exit 1; }
+    newd=$(new_tmp_dir "$dir") || { echo "agent-setup.sh: cannot write a new key in $(qp "$dir")" >&2; exit 1; }
     new="$newd/${newd##*/}.key"
     make_identity "$new" \
       || { echo "key generation failed; the old key is unchanged, and $(qp "$prev") holds it too: run --rotate again to finish (ROTATION.md step 1)" >&2; exit 1; }
@@ -1060,17 +1077,10 @@ case "$mode" in
       echo "agent-setup.sh: $(qp "$prev") holds the current key: the rotation didn't finish, or a key file was replaced since. Nothing was deleted: stop, and do what ROTATION.md says for this refusal where you are (Rotation step 5 or step 1 case 4, or Compromise step 2 or 4)" >&2
       exit 1
     fi
-    # A killed setup or --rotate can leave a temporary file that is a hard
-    # link to the old key: removing only $prev would leave its data on disk.
-    kdir=$(dirname -- "$key")
-    for f in "$kdir"/.handoff-setup.* "$kdir"/.handoff-new.*; do
-      # As the glob spells them, so a relative or doubled-slash KEY matches.
-      if [ "$f" = "$kdir/${prev##*/}" ] || [ "$f" = "$kdir/${key##*/}" ]; then continue; fi
-      if [ -f "$f" ] && [ ! -L "$f" ] && [ "$f" -ef "$prev" ]; then
-        rm -f -- "$f"
-        echo "note: removed $(qp "$f"), another link to the previous key" >&2
-      fi
-    done
+    # Another link to the old key, whatever its name, is the refusal below:
+    # no version since 0.1.0 leaves one by a temporary name (a killed run's
+    # copy is inside its private directory, which --rotate swept), so one
+    # there is the user's (issue #80).
     # Another name for the old key (a backup copy made with ln) would keep it
     # on disk after this: refuse, so the user can find and remove it first.
     # find reads a path starting with - as a predicate: ./ in front. And a
@@ -1165,10 +1175,10 @@ if [ -e "$PRIV" ] || [ -L "$PRIV" ]; then  # a dangling symlink there too
   if [ -n "${HANDOFF_PRIVKEY-}" ]; then hp=$(expand_home "$HANDOFF_PRIVKEY" HANDOFF_PRIVKEY 2>/dev/null) || hp=; fi
   if rotate_would_sweep "$PRIV" \
      && { { [ -n "$hp" ] && [ ! -L "$hp" ] && [ "${hp##*/}" = "${PRIV##*/}" ] \
-            && [ "$(dirname -- "$hp")" -ef "$(dirname -- "$PRIV")" ]; } \
+            && [ "$(dirname -- "$hp")" -ef "$(dirname -- "$PRIV")" ] && [ "$hp" -ef "$PRIV" ]; } \
           || { [ -z "${HANDOFF_PRIVKEY-}" ] && [ -z "${HANDOFF_KEY_DIR-}" ]; }; }; then
-    leftover_note "$(dirname -- "$PRIV")" rotate >&2
-  else leftover_note "$(dirname -- "$PRIV")" user >&2; fi
+    leftover_note "$(dirname -- "$PRIV")" rotate "$PRIV" >&2
+  else leftover_note "$(dirname -- "$PRIV")" user "$PRIV" >&2; fi
   exit 1
 fi
 
@@ -1213,25 +1223,21 @@ trap 'echo "agent-setup.sh: interrupted; run it again (if it then refuses, the k
 # once (or a setup beside a --rotate) could sweep each other's temporary
 # directory (issue #43 item 11).
 lock_dir "$KEY_DIR"
-# What a killed run (SIGKILL) left: temporary keys and private directories,
-# by mktemp's shape only (six characters), removed at once with one note.
-# Never the key itself, which is named handoff-identity.txt.
+# What a killed run (SIGKILL) left: private directories this script made
+# (our_tmp_dir: mktemp's shape and the marker), removed at once with one note.
+# Nothing else by those names, and never a file: the key itself is named
+# handoff-identity.txt.
 left=()
-for f in "$KEY_DIR"/.handoff-setup.?????? "$KEY_DIR"/.handoff-tmp.??????; do
-  if [ -L "$f" ] || [ ! -e "$f" ]; then continue; fi
-  case "$f" in
-    */.handoff-setup.*) [ -f "$f" ] || continue ;;
-    *) [ -d "$f" ] || continue ;;
-  esac
-  left+=("$f")
+for f in "$KEY_DIR"/.handoff-tmp.??????; do
+  our_tmp_dir "$f" && left+=("$f")
 done
 if [ "${#left[@]}" -gt 0 ]; then
   rm -rf -- "${left[@]}" \
-    || { echo "agent-setup.sh: cannot remove what a killed setup left in $(qp "$KEY_DIR") (${#left[@]} temporary files); nothing was written. Report it to the user." >&2; exit 1; }
-  echo "note: removed ${#left[@]} temporary key file(s) or directory(ies) a killed setup or --rotate left in $(qp "$KEY_DIR")" >&2
+    || { echo "agent-setup.sh: cannot remove what a killed setup left in $(qp "$KEY_DIR") (${#left[@]} temporary directories); nothing was written. Report it to the user." >&2; exit 1; }
+  echo "note: removed ${#left[@]} temporary key directory(ies) a killed setup or --rotate left in $(qp "$KEY_DIR")" >&2
 fi
 # A private directory holds the new key until it is checked (see --rotate).
-newd=$(mktemp -d -- "$KEY_DIR/.handoff-tmp.XXXXXX") || { echo "cannot write a key in $(qp "$KEY_DIR")" >&2; exit 1; }
+newd=$(new_tmp_dir "$KEY_DIR") || { echo "cannot write a key in $(qp "$KEY_DIR")" >&2; exit 1; }
 new="$newd/${newd##*/}.key"
 make_identity "$new" || { echo "key generation failed" >&2; exit 1; }
 chmod -- 600 "$new"
