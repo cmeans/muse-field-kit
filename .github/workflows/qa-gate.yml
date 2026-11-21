@@ -4,13 +4,21 @@ name: QA Gate
 # QA Approved label (the maintainer's sign-off). Adapted from mcp-synology.
 # "QA Gate" (the status context) is a required check in main's ruleset: if it
 # is renamed, update the ruleset, or every PR waits on a check that never comes.
-# On a fork's PR the token is read-only, so posting would fail with a 403:
-# the job is skipped there instead, and the maintainer handles a fork's PR by
-# hand (issue #124). The job is named post-qa-gate-status, not after the
-# label: it is always green itself, and its name read like an approval next
-# to a pending QA Gate.
+#
+# pull_request_target, not pull_request (issue #67 F8): it always runs this
+# file as it is on main, so a PR that edits it can't post its own "success".
+# A change to this file takes effect only once it's on main. The trigger
+# holds a write token even for a PR's code, so this job must never check out
+# or run anything from the PR: it only reads the PR through the API and posts
+# a status, and every value from the event reaches the script through env:.
+#
+# Fork PRs are skipped (pull requests here are collaborators-only, and the
+# label workflows skip them too); the maintainer handles one by hand (issue
+# #124). The job is named post-qa-gate-status, not after the label: it is
+# always green itself, and its name read like an approval next to a pending
+# QA Gate.
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
