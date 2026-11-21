@@ -13,9 +13,12 @@ name: PR Label Automation (CI)
 # PR's copy, so a change to it takes effect only after merge. On the PR that
 # adds it, the transitions are made by hand.
 #
-# Fork PRs: this runs with the base repository's token, but finds a PR only
-# by its head commit and head repository, so a fork can't steer it at
-# another PR.
+# Fork PRs: a fork PR's CI run uses the fork's own workflow files, so a fork
+# could gut ci.yml (or add any workflow named "CI") and have it succeed. This
+# job runs with the base repository's token, so it acts only on runs from this
+# repository's own branches (head_repository == this repository): fork PRs
+# are labeled by hand, as pr-labels.yml already does for them (issue #121).
+# Within that, it finds a PR only by its head commit and head repository.
 #
 # workflow_dispatch is here so the file can be run once by hand after it
 # first lands: the workflow_run listener doesn't always register until the
@@ -35,6 +38,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_run'
       && github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.head_repository.full_name == github.repository
       && github.event.workflow_run.status == 'completed'
     runs-on: ubuntu-latest
     concurrency:
