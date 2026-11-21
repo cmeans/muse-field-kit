@@ -1,22 +1,53 @@
 name: QA Gate
 
 # Posts a "QA Gate" commit status that is success only while the PR has the
-# QA Approved label (the maintainer's sign-off). Adapted from mcp-synology.
+# QA Approved label and the maintainer's account (MAINTAINER below) applied it
+# last: the bots can label too, and their QA Approved counts for nothing. (The
+# QA sessions work under the maintainer's account for now, so this can't tell
+# them apart.) Adapted from mcp-synology.
+#
+# This status is not the merge gate: any workflow can post a "QA Gate" status
+# (the ruleset accepts any Actions run), and a label event in the minute after
+# a push, before pr-labels.yml removes QA Approved, re-reads the old approval.
+# The gate is main's ruleset (issue #67 F8): an approving review of the most
+# recent push from an account with write access that neither opened the PR nor
+# made its last push. Today that is the maintainer's account (which the QA
+# sessions share), as long as it doesn't push to the PR itself: Dev's app opens
+# every PR, so it can't approve one, and workflows can't approve while "Allow
+# GitHub Actions to create and approve pull requests" stays off. An installed
+# app with Pull requests: write could approve too.
 # "QA Gate" (the status context) is a required check in main's ruleset: if it
 # is renamed, update the ruleset, or every PR waits on a check that never comes.
-# On a fork's PR the token is read-only, so posting would fail with a 403:
-# the job is skipped there instead, and the maintainer handles a fork's PR by
-# hand (issue #124). The job is named post-qa-gate-status, not after the
-# label: it is always green itself, and its name read like an approval next
-# to a pending QA Gate.
+#
+# pull_request_target, not pull_request (issue #67 F8): it always runs this
+# file as it is on main, so a PR's edits to it can't change its own gate. A
+# change to this file takes effect only once it's on main. The trigger holds a
+# write token even for a PR's code, so this job must never check out or run
+# anything from the PR: it only reads the PR through the API and posts a
+# status, and every value from the event reaches the script through env:.
+# (GitHub doesn't start pull_request_target for some branch names, such as
+# ones that look like a SHA: such a PR gets no QA Gate, and waits.)
+#
+# Fork PRs are skipped (pull requests here are collaborators-only, and the
+# label workflows skip them too); the maintainer handles one by hand (issue
+# #124). The job is named post-qa-gate-status, not after the label: it is
+# always green itself, and its name read like an approval next to a pending
+# QA Gate.
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   statuses: write
   pull-requests: read
+  issues: read # the label events, to see who applied QA Approved
+
+# One run at a time per PR, in order, so a late run can't overwrite a newer
+# decision.
+concurrency:
+  group: qa-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   post-qa-gate-status:
@@ -30,12 +61,15 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           EVENT_SHA: ${{ github.event.pull_request.head.sha }}
           ACTION: ${{ github.event.action }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MAINTAINER: cmeans
         run: |
           set -euo pipefail
           PENDING="Waiting for QA — add 'QA Approved' label when testing is complete"
           post() {
             gh api "repos/$REPO/statuses/$EVENT_SHA" --method POST \
-              -f state="$1" -f description="$2" -f context="QA Gate" > /dev/null
+              -f state="$1" -f description="$2" -f context="QA Gate" \
+              -f target_url="$RUN_URL" > /dev/null
             echo "QA Gate: $1 on $EVENT_SHA"
           }
 
@@ -62,8 +96,19 @@ jobs:
             echo "Stale event: $EVENT_SHA is no longer the head ($HEAD); not changing QA Gate"
             exit 0
           fi
-          if [ "$APPROVED" = "true" ]; then
+          if [ "$APPROVED" != "true" ]; then
+            post pending "$PENDING"
+            exit 0
+          fi
+          # Who applied QA Approved last: the events list is oldest first.
+          # Captured whole first, so a failed API call fails the job instead of
+          # reading as no one.
+          EVENTS=$(gh api --paginate "repos/$REPO/issues/$PR/events?per_page=100" \
+            --jq '.[] | select(.event == "labeled" and .label.name == "QA Approved") | .actor.login')
+          BY=$(printf '%s\n' "$EVENTS" | sed -n '$p')
+          if [ "$BY" = "$MAINTAINER" ]; then
             post success "QA testing completed"
           else
-            post pending "$PENDING"
+            echo "QA Approved was applied by '${BY:-unknown}', not $MAINTAINER; not approving"
+            post pending "QA Approved counts only when $MAINTAINER applies it"
           fi
