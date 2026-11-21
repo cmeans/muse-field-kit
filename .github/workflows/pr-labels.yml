@@ -1,6 +1,6 @@
 name: PR Label Automation
 
-# Label transitions triggered by PR events (push, label, unlabel).
+# Label transitions triggered by PR events (open, push, reopen, label, unlabel).
 # Promotion when CI finishes lives in pr-labels-ci.yml (workflow_run trigger).
 # Adapted from mcp-clipboard and mcp-synology.
 #
@@ -12,7 +12,7 @@ name: PR Label Automation
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, labeled, unlabeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   pull-requests: write
@@ -20,11 +20,17 @@ permissions:
 
 jobs:
   # A new push resets the PR to Awaiting CI and removes stale QA/workflow
-  # labels. Dev Active stays (it coexists with Awaiting CI: CI runs, but
-  # won't promote until Dev Active is removed).
+  # labels, Muse's verdict labels included: Dev's merge gates on Muse
+  # Approved for the current head (maintainer, 2026-11-21), so a verdict on
+  # an older head must not carry over. A reopen runs it too: commits pushed
+  # while a PR is closed may come with no synchronize event, and verdicts
+  # from before the close must not carry over to them (issue #135, as in
+  # cmeans/s3-blob-store#32). Dev Active stays (it coexists with Awaiting CI:
+  # CI runs, but won't promote until Dev Active is removed).
   on-push:
     if: >-
-      (github.event.action == 'opened' || github.event.action == 'synchronize')
+      (github.event.action == 'opened' || github.event.action == 'synchronize'
+       || github.event.action == 'reopened')
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
@@ -33,6 +39,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          ACTION: ${{ github.event.action }}
         run: |
           # Read now, not from the event: adding Dev Active just before a push
           # removes Awaiting CI in on-label while this runs, and the event's
@@ -45,7 +52,7 @@ jobs:
           fi
 
           REMOVE=""
-          for LABEL in "Ready for QA" "Ready for QA Signoff" "QA Approved" "QA Active" "QA Failed" "CI Failed"; do
+          for LABEL in "Ready for QA" "Ready for QA Signoff" "QA Approved" "QA Active" "QA Failed" "CI Failed" "Muse Approved" "Muse Failed"; do
             if echo "$PR_LABELS" | grep -q "\"$LABEL\""; then
               REMOVE="${REMOVE:+$REMOVE,}$LABEL"
             fi
@@ -59,8 +66,13 @@ jobs:
           fi
 
           if [ "$HAD_QA_ACTIVE" = true ]; then
+            if [ "$ACTION" = reopened ]; then
+              WHAT="PR reopened"
+            else
+              WHAT="New commits pushed"
+            fi
             gh pr comment "$PR" --repo "$REPO" \
-              --body "New commits pushed while QA was active. QA review invalidated — resetting to Awaiting CI."
+              --body "$WHAT while QA was active. QA review invalidated — resetting to Awaiting CI."
           fi
 
   # Dev Active removed: if CI already passed on the head commit, promote
