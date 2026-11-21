@@ -633,19 +633,20 @@ cs_out() {  # STATUS NAME DETAIL
        x=${x//$'\xef\xbf'[$'\xb9'-$'\xbb']/ }
        x=${x//$'\xf3\xa0'[$'\x80'-$'\x81']?/ }
        x=${x//$'\xf3\xa0'[$'\x84'-$'\x87']?/ }
-       case $x in
-         *[$'\x80'-$'\xff']*)
-           # printf %q of one byte, in C, is $'\ooo' on every bash.
-           y="" q=""
-           while [ -n "$x" ]; do
-             c=${x:0:1}; x=${x:1}
-             case $c in
-               [$'\x80'-$'\xff']) printf -v q '%q' "$c"; q=${q#\$\'}; y+=${q%\'} ;;
-               *) y+=$c ;;
-             esac
-           done
-           x=$y ;;
-       esac
+       # No case here: bash 3.2 can't parse a case pattern's ) inside $( ).
+       if [[ $x == *[$'\x80'-$'\xff']* ]]; then
+         # printf %q of one byte, in C, is $'\ooo' on every bash.
+         y="" q=""
+         while [ -n "$x" ]; do
+           c=${x:0:1}; x=${x:1}
+           if [[ $c == [$'\x80'-$'\xff'] ]]; then
+             printf -v q '%q' "$c"; q=${q#\$\'}; y+=${q%\'}
+           else
+             y+=$c
+           fi
+         done
+         x=$y
+       fi
        printf '%s' "$x" )
   printf '%s %s: %s\n' "$1" "$2" "$d"
   [ "$1" != FAIL ] || cs_failed=1
