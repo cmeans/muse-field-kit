@@ -3,8 +3,8 @@ name: PR Label Automation (CI)
 # Label transitions when the CI workflow finishes on a PR: Awaiting CI ->
 # Ready for QA on success, -> CI Failed on any other conclusion (failure,
 # timed_out, cancelled, startup_failure, action_required and the rest:
-# issue #124). Skipped while Dev Active
-# is on (pr-labels.yml's on-unlabel takes over when it comes off).
+# issue #124). Skipped while Dev Active is on (pr-labels.yml's on-unlabel
+# takes over when it comes off).
 #
 # NOTE: references the CI workflow by name ("CI"); if ci.yml's name changes,
 # update it here and in pr-labels.yml.
