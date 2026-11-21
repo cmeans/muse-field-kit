@@ -86,7 +86,12 @@ jobs:
             sh -c 'bash --version | head -1 && for f in agent-setup.sh handoff.sh test/run-test.sh; do bash -n "$f" || exit 1; done &&
               env POSIXLY_CORRECT=1 bash agent-setup.sh --help >/dev/null'
       - name: ruff
-        run: pipx run ruff==0.15.7 check encrypted-credential-handoff/ .github/scripts/md-links.py
+        # Pinned by hash in .github/ruff-requirements.txt (issue #67 F20).
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ruff"
+          "$RUNNER_TEMP/ruff/bin/pip" install -q --require-hashes --only-binary=:all: -r .github/ruff-requirements.txt
+          "$RUNNER_TEMP/ruff/bin/ruff" --version
+          "$RUNNER_TEMP/ruff/bin/ruff" check encrypted-credential-handoff/ .github/scripts/md-links.py
       - name: The docs link the documents they name, and every relative link to a document works
         # md-links.py: in each section, the first mention of another .md in the
         # repo is a link; every relative .md link names a file and heading that
@@ -131,6 +136,7 @@ jobs:
           echo "HANDOFF_TEST_OTHER_OWNER_DIR=$RUNNER_TEMP/other-owner-dir" >> "$GITHUB_ENV"
           echo "HANDOFF_TEST_ROOT_DIR=$RUNNER_TEMP/root-dir" >> "$GITHUB_ENV"
       - name: Install age from apt
+        # Unpinned on purpose: see the macos job's Install step.
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq age
@@ -429,7 +435,9 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: stable
+          # An exact release, not "stable", so a new Go can't change this job
+          # unannounced (issue #67 F20).
+          go-version: 1.27.4
           cache: false
       - name: Build age ${{ matrix.age }}
         # GONOSUMDB stays empty (and GONOSUMCHECK unset), so sum.golang.org
@@ -438,9 +446,10 @@ jobs:
         env:
           GOFLAGS: -mod=mod
           GONOSUMDB: ""
+          MATRIX_AGE: ${{ matrix.age }}
         run: |
           mkdir -p "$RUNNER_TEMP/age-bin"
-          GOBIN="$RUNNER_TEMP/age-bin" go install "filippo.io/age/cmd/...@${{ matrix.age }}"
+          GOBIN="$RUNNER_TEMP/age-bin" go install "filippo.io/age/cmd/...@$MATRIX_AGE"
           echo "$RUNNER_TEMP/age-bin" >> "$GITHUB_PATH"
       - name: Tool versions
         run: |
@@ -459,12 +468,14 @@ jobs:
         # --rewrap; 8 --check-setup. The rest (3b, 5, 5b, 7) test handoff.sh
         # input rules and platform facilities that don't depend on the age
         # version, and 5 needs the root-owned key and a terminal.
+        env:
+          MATRIX_AGE: ${{ matrix.age }}
         run: |
           set -o pipefail
           export HANDOFF_TEST_ONLY="1a 1b 1c 1d 2a 2b 3a 4a 4b 5a 6 8"
           ./encrypted-credential-handoff/test/run-test.sh | tee "$RUNNER_TEMP/run-test.log"
-          if ! grep -q "^age: .*${{ matrix.age }}" "$RUNNER_TEMP/run-test.log"; then
-            echo "age --version does not show ${{ matrix.age }}: the matrix did not test that version"
+          if ! grep -q "^age: .*$MATRIX_AGE" "$RUNNER_TEMP/run-test.log"; then
+            echo "age --version does not show $MATRIX_AGE: the matrix did not test that version"
             exit 1
           fi
           if grep -E '^(skip:|n/a on this OS)' "$RUNNER_TEMP/run-test.log"; then
@@ -479,8 +490,8 @@ jobs:
   # themselves, and would pass with that check gone. The sections that run
   # handoff.sh's input rules: 3a the round trip, 3b the maximum payload's
   # bytes, 5b the payload table (payload-cases.json's rawunitsep row is that
-  # case). Run as a
-  # plain user, as the suite expects, in a container pinned by digest.
+  # case). Run as a plain user, as the suite expects, in a container pinned
+  # by digest.
   linux-jq-1-6:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -518,6 +529,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install age and jq
+        # Unpinned on purpose, like apt's age in the Linux jobs: these test the
+        # age and jq a user installs today (the next step prints their
+        # versions), and linux-age-versions pins the older age releases.
         run: |
           brew install age jq
       - name: Tool versions
@@ -717,6 +731,7 @@ jobs:
           name: windows-interop-blobs
           path: ${{ runner.temp }}/windows-interop
       - name: Install age from apt
+        # Unpinned on purpose: see the macos job's Install step.
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq age
