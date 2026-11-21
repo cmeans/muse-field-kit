@@ -3929,10 +3929,10 @@ if command -v dash >/dev/null 2>&1; then
   got1=$(cd "$S" && LC_ALL=C dash -c "$c1 env" | LC_ALL=C sed -n 's/^HANDOFF_KEY_DIR=//p')
   got3=$(cd "$S" && LC_ALL=C dash -c "$c3 env" | LC_ALL=C sed -n 's/^HANDOFF_PRIVKEY=//p')
   got2=$(cd "$S" && LC_ALL=C dash -c "$(printf '%s' "$c2" | sed "s/^chmod -- go-w/printf '%s'/")")
-  [ "$got1" = "$pd" ] || fail "the HANDOFF_KEY_DIR command set another value under dash: $got1"
-  [ "$got3" = "$pd/handoff-identity.txt" ] || fail "the HANDOFF_PRIVKEY command set another value under dash: $got3"
-  [ "$got2" = "$pd" ] || fail "the chmod command names another path under dash: $got2"
-  [ ! -e "$S/PWNED" ] && [ ! -e "$pd/PWNED" ] || fail "a printed command ran code under dash"
+  [ ! -e "$S/PWNED" ] && [ ! -e "$pd/PWNED" ] || fail "a printed command ran code under dash: $c1 / $c3 / $c2"
+  [ "$got1" = "$pd" ] || fail "under dash, $c1 set HANDOFF_KEY_DIR to '$got1', not '$pd'"
+  [ "$got3" = "$pd/handoff-identity.txt" ] || fail "under dash, $c3 set HANDOFF_PRIVKEY to '$got3', not '$pd/handoff-identity.txt'"
+  [ "$got2" = "$pd" ] || fail "under dash, $c2 names '$got2', not '$pd'"
   echo "ok (commands for a non-ASCII path with a quote run as data under dash, and give the path back)"
 fi
 # pq quotes any path holding = (zsh expands =ls at a word's start and after a
@@ -3948,9 +3948,10 @@ for p in '=ls' 'a:=ls' 'x==ls' '~root' 'plain/path'; do
   esac
 done
 # Its safe class names characters, not ranges (bash before 5.0 matches a
-# range by the locale's collation, taking in some non-ASCII letters).
-! sed -n '/^pq() {/,/^}/p' ../agent-setup.sh | LC_ALL=C grep -q '[A-Za-z0-9]-[A-Za-z0-9]' \
-  || fail "pq's safe class uses a character range"
+# range by the locale's collation, taking in some non-ASCII letters) or a
+# [:class:], which follows the locale on every bash.
+! sed -n '/^pq() {/,/^}/p' ../agent-setup.sh | LC_ALL=C grep -qE '[A-Za-z0-9]-[A-Za-z0-9]|\[:' \
+  || fail "pq's safe class uses a character range or a [:class:]"
 echo "ok (pq quotes = and ~, names its safe characters, and leaves a plain path bare)"
 rm -rf "$pd" "$S/PWNED"
 echo "ok (no command to paste uses printf %q's \$'...' form)"
@@ -4118,6 +4119,7 @@ env HANDOFF_PRIVKEY="$nl/k.txt" bash ../agent-setup.sh --rotate >/dev/null 2>&1 
 ln "$nl/k.txt.previous" "$S/nlbackup.txt"
 rc=0; env HANDOFF_PRIVKEY="$nl/k.txt" bash ../agent-setup.sh --retire >/dev/null 2>"$S/qerr" || rc=$?
 [ "$rc" = 1 ] || fail "--retire with a newline in the path and another link: exit $rc"
+grep -qF "printf '%s\\0' * | od -c shows the bytes" "$S/qerr" || fail "the hard-link refusal gives no BusyBox way to see the name's bytes: $(cat "$S/qerr")"
 grep -qE -- "-xdev -inum [0-9]+, as root" "$S/qerr" || fail "the -inum hint isn't one number: $(cat "$S/qerr")"
 ! grep -q '^touch), as root' "$S/qerr" || fail "the -inum hint split on the newline: $(cat "$S/qerr")"
 # ...and with no inode to give (an ls -di that prints nothing), it gives no

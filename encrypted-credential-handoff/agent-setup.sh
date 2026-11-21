@@ -160,7 +160,8 @@ sq() {
   if has_ctl "$1"; then return 1; fi
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
-# sq only when the path needs it, as Python's shlex.quote does: a plain path
+# sq only when the path needs it, as Python's shlex.quote does (except that =
+# is quoted too, below): a plain path
 # reads as it did before (the chmod hint), and any other gets sq's quotes.
 # = isn't safe (issue #80 item 5): zsh expands =ls to /usr/bin/ls at the start
 # of a word and after a : in an assignment (HANDOFF_KEY_DIR=a:=ls). The safe
