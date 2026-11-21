@@ -59,7 +59,7 @@ def fail(msg):
 
 
 def run(argv, env=None, data=None):
-    p = subprocess.run(argv, input=data, capture_output=True, env=env)
+    p = subprocess.run(argv, input=data, capture_output=True, env=env, check=False)
     return p.returncode, p.stdout, p.stderr
 
 

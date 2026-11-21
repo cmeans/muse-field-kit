@@ -47,7 +47,7 @@ For `encrypted-credential-handoff` (run from the repository root):
 ```bash
 ./encrypted-credential-handoff/test/run-test.sh        # interop and refusal tests; ends ALL INTEROP CHECKS PASSED
 shellcheck encrypted-credential-handoff/*.sh encrypted-credential-handoff/test/*.sh
-pipx run ruff==0.15.7 check encrypted-credential-handoff/
+pipx run ruff==0.17.6 check encrypted-credential-handoff/
 # every script executable in git, as CI checks first (prints nothing when right):
 git ls-files -s encrypted-credential-handoff | awk '$1 != "100755" && $4 ~ /(\.sh|\.py)$/ { print $4 }'
 ```
