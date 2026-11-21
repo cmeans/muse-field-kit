@@ -203,7 +203,8 @@ jobs:
           [ -s "$RUNNER_TEMP/notes/notes.md" ]
 
       - name: Refuse if the release already exists
-        # Before attesting, so a re-run does not write another attestation.
+        # Before attesting, so a re-run after a published release does not
+        # attest again.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.build.outputs.tag }}
@@ -244,7 +245,12 @@ jobs:
           # Again, right before creating it: attesting takes seconds, and a
           # tag moved in that time would otherwise still get a release. (The
           # check before attesting stays, so a moved tag isn't attested.)
-          now=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha)
+          # A re-run then attests again once the tag is back on the built
+          # commit (the release-exists check passes while there's none).
+          if ! now=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha); then
+            echo "could not read $TAG from the API; the scripts were attested, but no release was created"
+            exit 1
+          fi
           if [ "$now" != "$GITHUB_SHA" ]; then
             echo "$TAG now points at $now, not the built commit $GITHUB_SHA; the scripts were attested, but no release was created"
             exit 1
