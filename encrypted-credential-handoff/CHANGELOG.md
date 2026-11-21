@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **Releases carry and attest the agent's scripts too** (refs #67 F9): `agent-setup.sh` and `consume.py` join `SHA256SUMS` and the attestations, and SETUP step 1 checks them after the checkout.
 - **CI lints with ruff 0.17.6** (refs #67 F22): `consume.py`'s two catch-all `except`s now name what they catch; behavior is unchanged.
 - **CI runs the whole suite as root too, and with a Latin-1 locale** (refs #79, #85): root is how Muse's agent runs it.
 - **The README drops its "Coming from 0.1.0?" note** (#122): nobody outside the project installed 0.1.0. The two refusals for a 0.1.0 RSA key no longer point at the README for it.

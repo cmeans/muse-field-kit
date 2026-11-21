@@ -1,7 +1,8 @@
 name: Release
 
-# Builds handoff.sh, handoff.ps1 and SHA256SUMS from the tagged tree, attests
-# the two scripts, and publishes them as a GitHub Release whose notes are the
+# Builds the kit's four scripts (handoff.sh, handoff.ps1, agent-setup.sh,
+# consume.py) and SHA256SUMS from the tagged tree, attests the four scripts,
+# and publishes them as a GitHub Release whose notes are the
 # CHANGELOG section for the version.
 #
 # Two jobs. "build" has the workflow's read-only token and no OIDC token: it
@@ -137,11 +138,11 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/assets"
           sha256sum -c SHA256SUMS
-          [ "$(wc -l < SHA256SUMS)" -eq 2 ]
-          for f in handoff.sh handoff.ps1; do
+          [ "$(wc -l < SHA256SUMS)" -eq 4 ]
+          for f in agent-setup.sh consume.py handoff.ps1 handoff.sh; do
             cmp "$f" "$GITHUB_WORKSPACE/encrypted-credential-handoff/$f"
           done
-          [ "$(printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS handoff.ps1 handoff.sh " ]
+          [ "$(printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS agent-setup.sh consume.py handoff.ps1 handoff.sh " ]
 
       - name: Upload the assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -198,8 +199,8 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/assets"
           sha256sum -c SHA256SUMS
-          [ "$(wc -l < SHA256SUMS)" -eq 2 ]
-          [ "$(printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS handoff.ps1 handoff.sh " ]
+          [ "$(wc -l < SHA256SUMS)" -eq 4 ]
+          [ "$(printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ')" = "SHA256SUMS agent-setup.sh consume.py handoff.ps1 handoff.sh " ]
           [ -s "$RUNNER_TEMP/notes/notes.md" ]
 
       - name: Refuse if the release already exists
@@ -235,6 +236,8 @@ jobs:
           subject-path: |
             ${{ runner.temp }}/assets/handoff.sh
             ${{ runner.temp }}/assets/handoff.ps1
+            ${{ runner.temp }}/assets/agent-setup.sh
+            ${{ runner.temp }}/assets/consume.py
 
       - name: Create the release
         env:
@@ -262,4 +265,6 @@ jobs:
             --notes-file "$RUNNER_TEMP/notes/notes.md" \
             "$RUNNER_TEMP/assets/handoff.sh" \
             "$RUNNER_TEMP/assets/handoff.ps1" \
+            "$RUNNER_TEMP/assets/agent-setup.sh" \
+            "$RUNNER_TEMP/assets/consume.py" \
             "$RUNNER_TEMP/assets/SHA256SUMS"
