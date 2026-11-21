@@ -3597,20 +3597,31 @@ if compgen -G "$S/dir-setup/handoff-identity.txt/*" >/dev/null || compgen -G "$S
   fail "a key was left inside the directory at the key path"
 fi
 # What a killed setup or --rotate left is removed by the next setup, at once
-# with one note, by mktemp's six-character shape only (issue #5 item 6).
+# with one note: a private directory of mktemp's six-character shape that
+# holds the marker (and its key), or is empty (issue #5 item 6, #80 items 1-2).
 mkdir -p "$S/stale-setup"; chmod 700 "$S/stale-setup"
-printf 'leftover\n' > "$S/stale-setup/.handoff-setup.Leftov"
-mkdir "$S/stale-setup/.handoff-tmp.AbCdEf"; printf 'x\n' > "$S/stale-setup/.handoff-tmp.AbCdEf/AbCdEf.key"
-# Not mktemp's shape (seven characters), and a symlink with a matching name:
-# neither is something setup makes, so both stay.
+mkdir "$S/stale-setup/.handoff-tmp.AbCdEf"; : > "$S/stale-setup/.handoff-tmp.AbCdEf/.handoff-tmp-mark"
+printf 'x\n' > "$S/stale-setup/.handoff-tmp.AbCdEf/.handoff-tmp.AbCdEf.key"
+mkdir "$S/stale-setup/.handoff-tmp.EmPtYd"
+# Never anything else by those names: a user's own six-character directory
+# with files in it, one holding only a key and no marker, a .handoff-setup
+# file (no version since 0.1.0 makes one; a user's key can be named so), a
+# name of another length, and a symlink.
+mkdir "$S/stale-setup/.handoff-tmp.backup"; printf 'mine\n' > "$S/stale-setup/.handoff-tmp.backup/notes.txt"
+mkdir "$S/stale-setup/.handoff-tmp.NoMark"; printf 'x\n' > "$S/stale-setup/.handoff-tmp.NoMark/.handoff-tmp.NoMark.key"
+cp "$TMPKEY" "$S/stale-setup/.handoff-setup.Leftov"
 printf 'keep\n' > "$S/stale-setup/.handoff-setup.Longer7"
 ln -s "$TMPKEY" "$S/stale-setup/.handoff-setup.LinkAb"
 HANDOFF_KEY_DIR="$S/stale-setup" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "first setup with leftover temporary files failed"; }
-grep -qxF "note: removed 2 temporary key file(s) or directory(ies) a killed setup or --rotate left in $S/stale-setup" "$S/err" \
-  || fail "the leftover temporary files weren't reported in one note: $(cat "$S/err")"
-[ ! -e "$S/stale-setup/.handoff-setup.Leftov" ] && [ ! -e "$S/stale-setup/.handoff-tmp.AbCdEf" ] || fail "the leftover temporary files weren't removed"
+grep -qxF "note: removed 2 temporary key directory(ies) a killed setup or --rotate left in $S/stale-setup" "$S/err" \
+  || fail "the leftover temporary directories weren't reported in one note: $(cat "$S/err")"
+[ ! -e "$S/stale-setup/.handoff-tmp.AbCdEf" ] && [ ! -e "$S/stale-setup/.handoff-tmp.EmPtYd" ] || fail "the leftover temporary directories weren't removed"
+[ -f "$S/stale-setup/.handoff-tmp.backup/notes.txt" ] || fail "setup's sweep removed a user's directory named like a temporary one"
+[ -f "$S/stale-setup/.handoff-tmp.NoMark/.handoff-tmp.NoMark.key" ] || fail "setup's sweep removed an unmarked directory"
+cmp -s "$TMPKEY" "$S/stale-setup/.handoff-setup.Leftov" || fail "setup's sweep removed a key named .handoff-setup.*"
 [ -e "$S/stale-setup/.handoff-setup.Longer7" ] || fail "the stale cleanup removed a name mktemp doesn't make"
 [ -L "$S/stale-setup/.handoff-setup.LinkAb" ] || fail "the stale cleanup removed a symlink, which no setup makes"
+rm -rf "$S/stale-setup/.handoff-tmp.backup" "$S/stale-setup/.handoff-tmp.NoMark" "$S/stale-setup/.handoff-setup.Leftov"
 # The setup's own temporary copy (a second hard link to the new key) is gone
 # once it's linked, and the directory is 0700, so no note about it either.
 [ -z "$(find "$S/stale-setup" -name '.handoff-tmp.*' -print)" ] || fail "first setup left its temporary directory: $(find "$S/stale-setup" -name '.handoff-tmp.*')"
@@ -3638,25 +3649,28 @@ expect_refusal "a rerun after a setup killed at the lock" 1 "exists: a setup, --
 grep -qF "refusing to overwrite existing key" "$S/err" || fail "the rerun didn't refuse to overwrite: $(cat "$S/err")"
 env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 grep -q '^INFO leftovers: .*\.handoff-lock exists' "$S/out" || fail "--check-setup didn't name a killed run's lock: $(cat "$S/out")"
-# Without the lock, each kind is named with what removes it, and that is
-# true: --rotate removes the directory, and leaves the file for the user.
+# Without the lock, the directory is named with what removes it, and that is
+# true: --rotate removes it. A .handoff-setup file isn't counted (no run
+# makes one) and --rotate leaves it, and a user's like-named directory too.
 rmdir "$S/locked-setup/.handoff-lock"
 printf 'leftover\n' >"$S/locked-setup/.handoff-setup.Leftov"
+mkdir "$S/locked-setup/.handoff-tmp.backup"; printf 'mine\n' > "$S/locked-setup/.handoff-tmp.backup/notes.txt"
 env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-grep -qxF "INFO leftovers: $S/locked-setup holds 1 temporary key directory(ies) a killed run left (the next --rotate removes them), and 1 temporary key file(s) a killed setup left (report them to the user, who removes them)" "$S/out" \
+grep -qxF "INFO leftovers: $S/locked-setup holds 1 temporary key directory(ies) a killed run left (the next --rotate removes them)" "$S/out" \
   || fail "--check-setup's leftovers line is wrong: $(grep leftovers "$S/out")"
 env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --rotate >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "--rotate in a directory with leftovers failed"; }
 [ ! -e "$S/locked-setup/.handoff-tmp.AbCdEf" ] || fail "--rotate didn't remove the temporary directory the leftovers line says it removes"
-[ -f "$S/locked-setup/.handoff-setup.Leftov" ] || fail "--rotate removed a .handoff-setup file (the leftovers line says the user does)"
-rm "$S/locked-setup/.handoff-setup.Leftov"
+[ -f "$S/locked-setup/.handoff-setup.Leftov" ] || fail "--rotate removed a .handoff-setup file"
+[ -f "$S/locked-setup/.handoff-tmp.backup/notes.txt" ] || fail "--rotate removed a user's directory named like a temporary one"
+rm -r "$S/locked-setup/.handoff-setup.Leftov" "$S/locked-setup/.handoff-tmp.backup"
 env HANDOFF_PRIVKEY="$S/locked-setup/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 ! grep -q '^INFO leftovers' "$S/out" || fail "--check-setup named leftovers where there are none: $(cat "$S/out")"
 # With no key yet (where SETUP step 1 runs --check-setup), the next setup
-# removes both kinds, and --rotate refuses: the line says setup.
+# removes the directory, and --rotate refuses: the line says setup.
 mkdir -p "$S/nokey-left"; chmod 700 "$S/nokey-left"
-printf 'leftover\n' >"$S/nokey-left/.handoff-setup.AbCdEf"; mkdir "$S/nokey-left/.handoff-tmp.XyZ123"
+mkdir "$S/nokey-left/.handoff-tmp.XyZ123"
 env HANDOFF_PRIVKEY="$S/nokey-left/handoff-identity.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-grep -qxF "INFO leftovers: $S/nokey-left holds 2 temporary key file(s) or directory(ies) a killed setup left (the next setup removes them)" "$S/out" \
+grep -qxF "INFO leftovers: $S/nokey-left holds 1 temporary key directory(ies) a killed setup left (the next setup removes them)" "$S/out" \
   || fail "--check-setup's leftovers line with no key is wrong: $(grep leftovers "$S/out")"
 HANDOFF_KEY_DIR="$S/nokey-left" bash ../agent-setup.sh >/dev/null 2>"$S/err" || { cat "$S/err" >&2; fail "setup into a directory with leftovers failed"; }
 [ -z "$(find "$S/nokey-left" -name '.handoff-*' -print)" ] || fail "setup didn't remove what the leftovers line said it removes"
@@ -3667,13 +3681,23 @@ mkdir -p "$S/other-left"; chmod 700 "$S/other-left"
 cp "$TMPKEY" "$S/other-left/handoff-identity.txt"; chmod 600 "$S/other-left/handoff-identity.txt"
 mkdir "$S/other-left/.handoff-tmp.XyZ123"
 env HANDOFF_PRIVKEY="$S/other-left/typo.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
-grep -qxF "INFO leftovers: $S/other-left holds 1 temporary key file(s) or directory(ies) a killed run left (report them to the user, who removes them)" "$S/out" \
+grep -qxF "INFO leftovers: $S/other-left holds 1 temporary key directory(ies) a killed run left (report them to the user, who removes them)" "$S/out" \
   || fail "--check-setup's leftovers line beside another key is wrong: $(grep leftovers "$S/out")"
 ln -s "$S/nowhere" "$S/other-left/link.txt"
 env HANDOFF_PRIVKEY="$S/other-left/link.txt" bash ../agent-setup.sh --check-setup >"$S/out" 2>/dev/null || true
 grep -q "^INFO leftovers: .*(report them to the user, who removes them)$" "$S/out" \
   || fail "--check-setup's leftovers line for a symlinked key is wrong: $(grep leftovers "$S/out")"
 rm -r "$S/other-left"
+# The overwrite refusal's "the next --rotate removes them" needs
+# HANDOFF_PRIVKEY to be this very key (#80 item 6): $(dirname ...) drops a
+# trailing newline, so a HANDOFF_PRIVKEY whose directory part ends in one
+# compared equal, though --rotate would refuse it ("no key file").
+mkdir -p "$S/nl-left"; chmod 700 "$S/nl-left"
+cp "$TMPKEY" "$S/nl-left/handoff-identity.txt"; chmod 600 "$S/nl-left/handoff-identity.txt"
+mkdir "$S/nl-left/.handoff-tmp.XyZ123"
+expect_refusal "the overwrite refusal, HANDOFF_PRIVKEY's directory with a trailing newline" 1 "a killed run left (report them to the user, who removes them)" \
+  env HANDOFF_KEY_DIR="$S/nl-left" HANDOFF_PRIVKEY="$S/nl-left"$'\n'"/handoff-identity.txt" bash ../agent-setup.sh
+rm -r "$S/nl-left"
 # The leftovers line's remover follows the identity line beside it: wherever
 # that line doesn't advise setup or pass a key --rotate would rotate, the
 # user is told. One state per row: a relative path, a key in a group-writable

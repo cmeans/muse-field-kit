@@ -4,6 +4,7 @@
 
 ### Changed
 
+- **`agent-setup.sh`'s sweeps remove only its own temporary directories** (refs #80 items 1, 2, 6, 8): each holds a marker now; a user's `.handoff-tmp.backup/` or a key named `.handoff-setup.*` is left alone.
 - **Releases carry and attest the agent's scripts too** (refs #67 F9): `agent-setup.sh` and `consume.py` join `SHA256SUMS` and the attestations, and SETUP step 1 checks them after the checkout.
 - **CI lints with ruff 0.17.6** (refs #67 F22): `consume.py`'s two catch-all `except`s now name what they catch; behavior is unchanged.
 - **CI runs the whole suite as root too, and with a Latin-1 locale** (refs #79, #85): root is how Muse's agent runs it.
