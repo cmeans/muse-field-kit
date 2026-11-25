@@ -1,3 +1,0 @@
-svc: matches label 'example'
-password: 16 bytes
-username: 14 bytes

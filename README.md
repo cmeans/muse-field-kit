@@ -6,13 +6,13 @@ Field-tested patterns, guides, and small tools for extending [Muse](https://ai.m
 
 I'm a developer. I develop MCP servers and related tooling, and I run Muse as a design partner, a builder, and one of a group of AI agents that test and cross-check each other's work. This repo collects the transferable pieces of that setup: the patterns, not the configs. No credentials, addresses, hostnames, or inventories are included, and the examples use placeholders throughout. Each folder also states plainly which of its parts are field-tested and which are new from the publication process itself — “generalized from daily use” should never quietly mean “rewritten last week.”
 
-**Platform:** my setup is Linux throughout, and everything here is developed and tested on Linux first. The *patterns* are platform-independent. The *scripts* say which platforms they cover, and each folder says what its CI runs on which systems and what has been field-tested, which is Linux so far: for example, `credential-lockbox`'s user side runs on Linux and macOS (`handoff.sh`) and on Windows (`handoff.ps1`), and its CI runs on all three. Each folder states its platform position plainly: where a reviewed reference exists for another platform it is included, and where a port would currently be unreviewed, the folder says so rather than pretending otherwise.
+**Platform:** my setup is Linux throughout, and everything here is developed and tested on Linux first. The *patterns* are platform-independent. The *scripts* say which platforms they cover, and each folder says what its CI runs on which systems and what has been field-tested, which is Linux so far: for example, Credential Lockbox's user side runs on Linux and macOS (`handoff.sh`) and on Windows (`handoff.ps1`), and its CI runs on all three. Each folder states its platform position plainly: where a reviewed reference exists for another platform it is included, and where a port would currently be unreviewed, the folder says so rather than pretending otherwise.
 
 ## What's in the kit
 
 | Folder | What it is |
 | --- | --- |
-| [Credential Lockbox](credential-lockbox/) | Pass service credentials to Muse as public-key ciphertext that it decrypts in memory on its own machine, keeping the plaintext out of the chat. |
+| [Credential Lockbox](https://github.com/credential-lockbox/credential-lockbox) | Pass service credentials to Muse as public-key ciphertext that it decrypts in memory on its own machine, keeping the plaintext out of the chat. **Moved to its own repository**, [`credential-lockbox/credential-lockbox`](https://github.com/credential-lockbox/credential-lockbox), from 0.3.1 on. Its releases through `credential-lockbox-v0.3.0` stay here ([`credential-lockbox/`](credential-lockbox/) says more). |
 
 More folders are added as each piece is generalized from daily use into publishable form:
 
@@ -45,7 +45,7 @@ Contributions come in as issues (bug reports, feature requests, platform test re
 
 This kit is one maintainer's work, built with AI agents that each have a fixed role. Muse, Meta's personal AI agent and the agent these guides are written for, built the first working version for its own setup, tested it on itself, and reviews changes as the end user the patterns serve. Claude Code (Anthropic's Claude) generalized that version and wrote most of what's here now, and a separate Claude Code session reviewed each change as QA before the maintainer's sign-off. Claude on claude.ai reviewed the whole repository once. Nothing merged without the maintainer's sign-off.
 
-The reviews found real bugs, which is why they're there, but they all ran inside one setup. That's peer review, not a third-party audit: each release's [CHANGELOG](credential-lockbox/CHANGELOG.md) says what was reviewed and what wasn't run.
+The reviews found real bugs, which is why they're there, but they all ran inside one setup. That's peer review, not a third-party audit: each release's CHANGELOG says what was reviewed and what wasn't run ([Credential Lockbox's](https://github.com/credential-lockbox/credential-lockbox/blob/main/CHANGELOG.md)).
 
 ## License
 
