@@ -59,7 +59,7 @@ Credential Lockbox, the folder that had scripts and their test suite, moved to [
 
 ## Releases
 
-No folder is released from this repository today. Credential Lockbox's releases through `credential-lockbox-v0.3.0` (and before its rename, `encrypted-credential-handoff-v0.2.1`, `v0.2.0` and `v0.1.0`) were made here, and those tags and releases stay; it's now released from [`credential-lockbox/credential-lockbox`](https://github.com/credential-lockbox/credential-lockbox). Only the maintainer can create, move or delete a release tag (the repository's "release tags" ruleset). A future folder that ships scripts brings its own release workflow.
+No folder is released from this repository today. Credential Lockbox's releases through `credential-lockbox-v0.3.0` (and before its rename, `encrypted-credential-handoff-v0.2.1`, `v0.2.0` and `v0.1.0`) were made here, and those tags and releases stay; it's now released from [`credential-lockbox/credential-lockbox`](https://github.com/credential-lockbox/credential-lockbox). Only the maintainer can create, move or delete a release tag (the repository's "release tags" ruleset). A future folder that ships scripts brings its own release workflow: the `release.yml` this repository had at `a877955` (before the move), or the one in `credential-lockbox/credential-lockbox`, is a template.
 
 ## Contact
 

@@ -6,7 +6,7 @@ Each folder is versioned on its own, in its `CHANGELOG.md`. Security fixes go in
 
 No folder in this repository has a supported release today.
 
-**Credential Lockbox**, the only folder released from here so far, moved to [`credential-lockbox/credential-lockbox`](https://github.com/credential-lockbox/credential-lockbox), where its supported versions are listed in [its `SECURITY.md`](https://github.com/credential-lockbox/credential-lockbox/blob/main/SECURITY.md). Report Credential Lockbox problems there. The releases it left here (`credential-lockbox-v0.3.0` and older) get no fixes; its 0.3.1 and later, with the same scripts as 0.3.0, are in the new repository.
+**Credential Lockbox**, the only folder released from here so far, moved to [`credential-lockbox/credential-lockbox`](https://github.com/credential-lockbox/credential-lockbox), where its supported versions are listed in [its `SECURITY.md`](https://github.com/credential-lockbox/credential-lockbox/blob/main/SECURITY.md). Report Credential Lockbox problems there. The releases it left here (`credential-lockbox-v0.3.0` and older) get no fixes; its 0.3.1 (the same scripts as 0.3.0) and later releases are in the new repository.
 
 ## Reporting an issue
 
@@ -25,7 +25,7 @@ Guides and patterns without scripts (documentation problems) can be reported as 
 ## Please include
 
 - What the problem is and what it lets an attacker do.
-- Steps to reproduce, or a proof of concept. Use the published test keys under a folder's `test/` directory, never a real key or credential.
+- Steps to reproduce, or a proof of concept. Use a folder's published test keys, where it has them, never a real key or credential.
 - The folder and its version (the release tag, or the commit you used).
 - Your platform and tool versions.
 - Whether it reproduces with the folder's scripts used exactly as its instructions say (`SETUP.md`, and `ROTATION.md` where there is one), or only with a changed setup.
@@ -53,7 +53,7 @@ Each security-relevant folder's own `SECURITY.md` says what its pattern claims t
 
 **Out of scope**
 
-- Anything a folder's threat model lists under "does not defend against" . A report that one of those isn't defended is a documentation discussion, not a vulnerability.
+- Anything a folder's threat model lists under "does not defend against". A report that one of those isn't defended is a documentation discussion, not a vulnerability.
 - Vulnerabilities in the tools a folder uses (`age`, Python, `jq`, `bash`, PowerShell): report them upstream.
 - Vulnerabilities in Muse, its platform or its connectors: report them to Meta.
 - Attacks that need shell access as the agent's account, or the private key, already.

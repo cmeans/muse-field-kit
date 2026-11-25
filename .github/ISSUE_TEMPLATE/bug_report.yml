@@ -7,7 +7,7 @@ body:
       value: |
         Thanks for reporting. **An exploitable security flaw never goes here:** report it privately instead (SECURITY.md).
         **Credential Lockbox has moved:** report its problems in https://github.com/credential-lockbox/credential-lockbox instead.
-        Never paste a credential, a private key or a real blob. Use the published test keys under the folder's `test/` directory to reproduce.
+        Never paste a credential, a private key or a real blob. If the folder has published test keys, use them to reproduce.
   - type: dropdown
     id: folder
     attributes:
@@ -20,7 +20,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: The release tag you downloaded, or the commit you used (`git rev-parse --short HEAD`).
+      description: The release tag, if the folder has releases, or the commit you used (`git rev-parse --short HEAD`).
       placeholder: "abc1234"
     validations:
       required: true
@@ -41,10 +41,10 @@ body:
     id: tools
     attributes:
       label: Tool versions
-      description: The tools the folder uses, as their own `--version` prints them.
+      description: The tools the folder uses, as their own `--version` prints them, if it uses any.
       render: shell
     validations:
-      required: true
+      required: false
   - type: textarea
     id: description
     attributes:
@@ -64,7 +64,7 @@ body:
     id: output
     attributes:
       label: Output
-      description: The script's messages, with anything secret removed.
+      description: The messages you saw, with anything secret removed.
       render: shell
     validations:
       required: false

@@ -23,6 +23,8 @@ import sys
 SKIP_FILES = {'CHANGELOG.md', 'SKILL.md'}
 SKIP_DIRS = {'.git', '.claude', 'node_modules'}
 # A document named without ".md" ("SETUP step 3", "README's threat model").
+# The names are the documents folders here have used; a new folder whose own
+# documents are named without ".md" adds them.
 STEMS = re.compile(
     r'(?<![\w./\[-])(README|SETUP|ROTATION|STORES|DESIGN|CONTRIBUTING|STORE-TEST'
     r'|INSTALL-linux-macos|INSTALL-windows|INSTALL-options)(?![\w-]|\.\w)')

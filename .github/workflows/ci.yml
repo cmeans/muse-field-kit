@@ -23,7 +23,9 @@ jobs:
   # No folder here has scripts since Credential Lockbox moved to
   # credential-lockbox/credential-lockbox (its jobs moved with it), so this
   # checks the docs and CI's own script. A folder that ships scripts adds its
-  # jobs here, and to ci-ok's needs.
+  # jobs here, and to ci-ok's needs. Templates: the jobs and release.yml this
+  # repository had at a877955 (before the move), or the ones in
+  # credential-lockbox/credential-lockbox, which carried them over.
   docs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -31,6 +33,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: No CR line endings in the scripts
+        # .gitattributes keeps them LF on checkout; this catches a commit
+        # that slipped a CR in anyway.
+        run: |
+          bad=$(git ls-files -z -- '*.sh' '*.py' '*.json' '*.txt' '*.ps1' '*.age' | xargs -0 grep -l $'\r' || true)
+          if [ -n "$bad" ]; then
+            echo "CR line endings in: $bad"
+            exit 1
+          fi
       - name: ruff
         # Pinned by hash in .github/ruff-requirements.txt (issue #67 F20).
         run: |
@@ -62,8 +73,7 @@ jobs:
           d=$(fx good '# A\n\nEach folder has a `OTHER.md`. "OTHER.md, step 2"\n\n## OTHER.md\n\n> Read OTHER.md.\n\nSee [`OTHER.md`](../OTHER.md#two-words), then `OTHER.md` again.\n')
           python3 -I .github/scripts/md-links.py "$d"
 
-  # The one CI check main's ruleset requires besides QA Gate, once the
-  # maintainer swaps it in (see the note at the top of jobs:). It passes
+  # The one CI check main's ruleset requires besides QA Gate. It passes
   # only when every job it needs passed. Each folder's jobs
   # cover the platforms that folder supports, so a Linux-only folder adds
   # Linux jobs and the ruleset never changes. Add every new job to `needs` below:

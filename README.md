@@ -39,7 +39,7 @@ I direct this work and submit it myself. The patterns come from my own setup, an
 
 ## Contributing, security and conduct
 
-Contributions come in as issues (bug reports, feature requests, platform test reports); pull requests are opened by collaborators. See [`CONTRIBUTING.md`](CONTRIBUTING.md). An exploitable security flaw goes through a private advisory, never a public issue: [`SECURITY.md`](SECURITY.md). Everyone taking part follows the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+Contributions come in as issues (bug reports, feature requests); pull requests are opened by collaborators. See [`CONTRIBUTING.md`](CONTRIBUTING.md). An exploitable security flaw goes through a private advisory, never a public issue: [`SECURITY.md`](SECURITY.md). Everyone taking part follows the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Acknowledgments
 
