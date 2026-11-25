@@ -3,9 +3,9 @@ contact_links:
   - name: Report a security problem (privately)
     url: https://github.com/cmeans/muse-field-kit/security/advisories/new
     about: Never in a public issue. Opens a private advisory only the maintainer sees (SECURITY.md).
-  - name: Credential Lockbox, README and setup
-    url: https://github.com/cmeans/muse-field-kit/tree/main/credential-lockbox#readme
-    about: What it is, the threat model, and how to set it up.
+  - name: Credential Lockbox (moved to its own repository)
+    url: https://github.com/credential-lockbox/credential-lockbox
+    about: Credential Lockbox's issues, releases and security reports are in credential-lockbox/credential-lockbox now.
   - name: How to contribute
     url: https://github.com/cmeans/muse-field-kit/blob/main/CONTRIBUTING.md
     about: Contributions come in as issues; pull requests are opened by collaborators.

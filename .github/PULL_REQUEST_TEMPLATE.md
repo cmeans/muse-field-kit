@@ -11,7 +11,7 @@
 
 <!-- A checklist QA can run. Each item names the exact command or file and the expected result. -->
 
-1. - [ ] `./credential-lockbox/test/run-test.sh` ends `ALL INTEROP CHECKS PASSED`
+1. - [ ] `python3 -I .github/scripts/md-links.py .` is clean
 2. - [ ] `gh pr checks <PR>`: all green
 
 ## CHANGELOG
